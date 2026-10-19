@@ -11,7 +11,7 @@ TG ──▶ bot ──▶ parse:8000 (解析) ──▶ 下载 ──▶ rclone
                                       data/state.json ──▶ web:8080 展示页
 ```
 
-![展示页](docs/preview.png)
+![展示页](docs/preview.jpg)
 
 ## 前置
 
@@ -131,13 +131,23 @@ docker compose pull && docker compose up -d
 
 `web` 服务把同一份 `data/state.json` 渲染成一页：架构说明、统计卡片、最近入库列表（点行直接打开对应 Drive 文件夹），每 30 秒自动刷新。
 
+视觉语言与参考站一致：纯黑底 + 青色光晕 + 细颗粒，标题走渐变扫光，数字用等宽字体，圆角 8px（小组件）/20–28px（大卡片），描边统一 `rgba(255,255,255,.10)`。
+
+![登录页](docs/preview.jpg)
+
 ```bash
 # 只看展示（不依赖 bot 运行）
 docker compose up -d web
 open http://<host>:8080
 ```
 
-公网暴露时加 Basic 认证，在 `.env` 里设 `WEB_AUTH=用户名:密码`，然后 `docker compose up -d web`。
+公网暴露时开启登录，在 `.env` 里设 `WEB_AUTH=用户名:密码`，然后 `docker compose up -d web`：
+
+```bash
+WEB_AUTH=Alanmaster:xg363034
+```
+
+未登录访问返回 401 并渲染专用登录页（`app/login.html`）：账号/密码输入、显示密码、错误提示、加载态，成功后跳看板。页面保留 `WWW-Authenticate: Basic`，因此普通访问仍会触发浏览器原生登录框。账号与密码分别做常量时间比较，密码含 `:` 也能解析。
 
 本地预览（用示例数据，不碰真实 Drive）：
 
