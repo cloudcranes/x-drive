@@ -96,6 +96,37 @@ X-Drive/<作者uid>_<作者名>/<YYYY-MM>/<推文id>/
 | 回执「未授权」 | 把回执里的 user id 加进 `ALLOWED_USER_IDS` 并 `docker compose up -d` |
 | 下载慢/超时 | 调大 `MAX_FILE_MB` 之外无他法；视频直链有时效，必须即到即下 |
 
+## 视频兼容转码
+
+X 的 mp4 常见 `avc1.64001F`（H.264 High profile），部分老播放器、电视盒子、车载屏打不开或只有声音。`bot` 镜像内置 ffmpeg，下载完视频后按 `VIDEO_TRANSCODE` 处理：
+
+| 值 | 行为 |
+|---|---|
+| `auto`（默认） | ffprobe 读 profile，非 Main/Baseline 才转，已是就跳过 |
+| `always` | 一律重编码 |
+| `off` | 不转，保留原始字节 |
+
+转码参数 `libx264 -profile:v main -level 4.0 -preset medium -crf 18`，音频 `aac 128k`，带 `+faststart`。实测 8 分 44 秒 720p 素材约 42 秒、22.5MB → 16.0MB，时长与分辨率不变。
+
+转码失败会保留原文件继续上传，只在日志里记一条 warning，不影响入库。
+
+## 用预构建镜像部署（不本机构建）
+
+GitHub Actions 在推 `main` 或 `v*` tag 时构建并推送 `ghcr.io/cloudcranes/x-drive`：
+
+```bash
+# 首次需要登录（镜像默认 private；在 Packages 里改 Public 后可跳过）
+echo "$GHCR_TOKEN" | docker login ghcr.io -u cloudcranes --password-stdin
+
+cd /opt/x-drive
+sed -i 's|^# BOT_IMAGE=.*|BOT_IMAGE=ghcr.io/cloudcranes/x-drive:latest|' .env
+docker compose pull && docker compose up -d
+```
+
+标签规则：`latest`（main）、`main`、`v1.2.3` / `1.2`（tag）、`sha-xxxxxxx`（每次提交）。
+
+不想用远端镜像时，删掉 `.env` 里的 `BOT_IMAGE` 就会回退到本机 `docker compose up --build`。
+
 ## 展示页
 
 `web` 服务把同一份 `data/state.json` 渲染成一页：架构说明、统计卡片、最近入库列表（点行直接打开对应 Drive 文件夹），每 30 秒自动刷新。
@@ -121,7 +152,7 @@ STATE_PATH=docs/sample-state.json PARSE_BASE_URL=http://127.0.0.1:9 \
 
 - **图文混排的推文会丢图**：`parse-video-py` 的 X 解析器只取第一条视频的最高码率 mp4，遇到视频就不再取图片；多视频也只取第一个。需要完整媒体时，得在 `app/main.py` 里加一步 fallback（直接调 Twitter syndication 接口，token 算法见参考仓库），或改上游。
 - 依赖 X 的非公开接口，可能被限流或风控；不做登录态抓取。
-- 不处理 HLS(`.m3u8`) 直播流，不转码。
+- 不处理 HLS(`.m3u8`) 直播流；视频转码只做 profile 兼容，不做画质提升（源码率低就是低）。
 - 单个 Google 账号上传上限 750GB/日。
 - 只处理单条消息里的第一个链接；不做队列持久化，进程重启会丢进行中的任务（已入库的不受影响）。
 
