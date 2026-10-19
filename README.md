@@ -79,8 +79,8 @@ docker compose exec bot python -m app.main --check
 Drive 里的结构：
 
 ```
-X-Drive/<作者uid>_<作者名>/<YYYY-MM>/<推文id>/
-    01.jpg  02.jpg  03.mp4  meta.json
+X-Drive/<作者名>/<YYYY-MM>/<推文id>/
+    <作者>_<YYYY-MM-DD>_01.jpg  _02.mp4  meta.json
 ```
 
 再发同一条链接会直接复用已有链接，不重复上传。
@@ -165,6 +165,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 
 - `app/core.py`：纯函数层（URL 提取、路径、命名、回执），无 IO
 - `app/main.py`：Telegram 编排与 rclone 调用，`tests/test_flow.py` 用 stub 覆盖下载/上传/去重/部分失败
+- `app/media.py`：ffmpeg 兼容转码，`tests/test_media.py` 覆盖跳过/转码/关闭/失败
 - `app/web.py` + `app/webui.html`：零依赖展示页，`tests/test_web.py` 起真实 HTTP 服务验证接口与 Basic 认证
 
 共 22 个测试，`python -m pytest tests -q` 约 3 秒跑完。
