@@ -1,9 +1,8 @@
-"""展示页 + 实时看板：读 /data/state.json，单页展示已转存记录与健康状态。
+"""展示页 + 实时看板（瀑布流卡片）：读 /data/state.json，单页展示已转存记录与健康状态。
 
 零第三方依赖（标准库 http.server），与 bot 共用同一镜像，command 覆盖入口。
 环境变量：WEB_PORT(8080)、WEB_BIND(0.0.0.0)、WEB_AUTH(用户名:密码，可选，
-设置后浏览器会弹原生登录框，401 时提示「需要登录」)，
-STATE_PATH、PARSE_BASE_URL。
+设置后浏览器会弹原生登录框，401 时返回登录页)、STATE_PATH、PARSE_BASE_URL。
 """
 from __future__ import annotations
 
@@ -12,11 +11,12 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from . import core
 
@@ -28,8 +28,12 @@ BIND = os.getenv("WEB_BIND", "0.0.0.0")
 PORT = int(os.getenv("WEB_PORT", "8080"))
 AUTH = os.getenv("WEB_AUTH", "").strip()
 HTML_PATH = Path(__file__).with_name("webui.html")
-
 LOGIN_PATH = Path(__file__).with_name("login.html")
+
+STATUS_RE = re.compile(
+    r"^https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/([^/]+)/status(?:es)?/(\d+)"
+)
+THUMB_MAX = 6 * 1024 * 1024
 
 _health = {"at": 0.0, "parse": False}
 
@@ -47,24 +51,62 @@ def parse_online(ttl: float = 15.0) -> bool:
     return ok
 
 
+def tweet_info(source: str, tweet_id: str) -> tuple[str, str]:
+    """从原始链接解析 (作者账号, 推文地址)；解析不出来就用 id 兜底。"""
+    match = STATUS_RE.match(source or "")
+    if match:
+        handle, tid = match.group(1), match.group(2)
+        return handle, f"https://x.com/{handle}/status/{tid}"
+    if tweet_id:
+        return "", f"https://x.com/i/status/{tweet_id}"
+    return "", (source or "")
+
+
+def thumb_url(kind: str, original: str, tweet_id: str, name: str) -> str:
+    """同源缩略图地址，避免浏览器直连 pbs.twimg.com。"""
+    query = "&".join(
+        f"{key}={quote(str(value), safe='')}"
+        for key, value in (("u", original), ("k", kind), ("t", tweet_id), ("f", name))
+    )
+    return f"/thumb?{query}"
+
+
 def collect() -> dict:
     state = core.load_state(STATE)
     tasks = []
     for key, item in state.items():
         files = item.get("files") or []
         images, videos = core.split_counts(files)
+        source = item.get("source") or ""
+        handle, url = tweet_info(source, key)
+        media = []
+        for name in sorted(files):
+            ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            kind = "image" if ext in core.IMAGE_EXTS else ("video" if ext in core.VIDEO_EXTS else None)
+            if not kind:
+                continue
+            original = (item.get("orig") or {}).get(name) or ""
+            media.append(
+                {
+                    "kind": kind,
+                    "name": name,
+                    "thumb": thumb_url(kind, original, key, name) if original else "",
+                }
+            )
         tasks.append(
             {
                 "id": key,
                 "title": item.get("title") or "",
                 "author": item.get("author") or "",
-                "source": item.get("source") or "",
+                "handle": handle,
+                "url": url,
                 "link": item.get("link") or "",
                 "path": item.get("path") or "",
                 "at": item.get("at") or "",
                 "files": files,
                 "images": images,
                 "videos": videos,
+                "media": media,
             }
         )
     tasks.sort(key=lambda t: t["at"] or "", reverse=True)
@@ -111,16 +153,24 @@ class Handler(BaseHTTPRequestHandler):
             password, want_password
         )
 
+    def _login(self) -> None:
+        try:
+            body = LOGIN_PATH.read_bytes()
+        except OSError:
+            body = "<h1>需要登录</h1>".encode()
+        self._send(
+            401,
+            body,
+            "text/html; charset=utf-8",
+            {"WWW-Authenticate": 'Basic realm="x-drive", charset="UTF-8"'},
+        )
+
     def do_GET(self) -> None:  # noqa: N802 (标准库命名)
         if not self._authorized():
-            try:
-                body = LOGIN_PATH.read_bytes()
-            except OSError:
-                body = "<h1>需要登录</h1>".encode()
-            self._send(401, body, "text/html; charset=utf-8",
-                       {"WWW-Authenticate": 'Basic realm="x-drive", charset="UTF-8"'})
+            self._login()
             return
-        path = urlsplit(self.path).path
+        parts = urlsplit(self.path)
+        path = parts.path
         if path in ("/", "/index.html"):
             try:
                 body = HTML_PATH.read_bytes()
@@ -135,7 +185,28 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             self._json({"ok": True, "parse": parse_online()})
             return
+        if path == "/thumb":
+            self._thumb(parse_qs(parts.query))
+            return
         self._send(404, b"not found", "text/plain; charset=utf-8")
+
+    def _thumb(self, query: dict) -> None:
+        """同源代理缩略图：只放行 twimg 域名，避免开放代理被滥用。"""
+        url = (query.get("u") or [""])[0]
+        host = (urlsplit(url).hostname or "").lower()
+        if not url or not (host == "twimg.com" or host.endswith(".twimg.com")):
+            self._send(400, b"bad thumb url", "text/plain; charset=utf-8")
+            return
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0 (compatible; x-drive-web)"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read(THUMB_MAX)
+                ctype = resp.headers.get("Content-Type") or "image/jpeg"
+            self._send(200, data, ctype, {"Cache-Control": "public, max-age=86400"})
+        except Exception as exc:  # 单张缩略图失败不该拖垮页面
+            self._send(502, f"thumb failed: {exc}".encode(), "text/plain; charset=utf-8")
 
     def _json(self, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()

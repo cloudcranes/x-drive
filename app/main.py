@@ -24,7 +24,7 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
-from . import core
+from . import core, media
 
 log = logging.getLogger("x-drive")
 
@@ -45,6 +45,7 @@ class Config:
     state_path: str
     tmp_root: str
     rclone_config: str
+    transcode: str = "auto"
 
     @property
     def max_bytes(self) -> int:
@@ -71,6 +72,7 @@ class Config:
             state_path=os.getenv("STATE_PATH", "/data/state.json"),
             tmp_root=os.getenv("TMP_ROOT", "/downloads"),
             rclone_config=os.getenv("RCLONE_CONFIG", "/config/rclone/rclone.conf"),
+            transcode=(os.getenv("VIDEO_TRANSCODE", "auto").strip().lower() or "auto"),
         )
 
 
@@ -201,6 +203,7 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
     tmp.mkdir(parents=True, exist_ok=True)
 
     saved: list[str] = []
+    origins: dict[str, str] = {}
     failures: list[str] = []
     link: str | None = None
     try:
@@ -214,6 +217,14 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
             try:
                 await download(client, media_url, tmp / name, cfg.max_bytes)
                 saved.append(name)
+                origins[name] = core.orig_image_url(media_url)
+                if kind == "video":
+                    await edit(status, "⏳ 转码兼容 Main profile…")
+                    changed, info = await media.make_compatible(tmp / name, cfg.transcode)
+                    if changed:
+                        log.info("已转码 %s（原 profile %s）", name, info or "?")
+                    elif info and info.lower() not in media.OK_PROFILES:
+                        log.warning("转码未生效 %s：%s", name, info)
                 await edit(status, f"⏳ 下载 {len(saved)}/{len(entries)}")
             except Exception as exc:  # 单个媒体失败不中断整条推文
                 failures.append(f"{name}: {str(exc)[:80]}")
@@ -258,6 +269,7 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
                 "path": target,
                 "link": link,
                 "files": saved,
+                "orig": origins,
                 "title": title,
                 "author": author.get("name") or "",
                 "source": expanded,

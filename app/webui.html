@@ -10,115 +10,147 @@
     --bg:#000; --panel:rgba(13,13,13,.85); --panel-2:rgba(26,26,26,.85);
     --line:rgba(255,255,255,.10); --line-2:rgba(251,219,163,.22);
     --text:#f8fafc; --muted:#a3b0c2; --dim:#6b7c94;
-    --cyan:#3ebaf4; --green:#3ebaf4; --blue:#7aa7ff; --red:#ef6a6a;
+    --cyan:#3ebaf4; --red:#ef6a6a; --violet:#c9a3ff;
     --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
     --sans:"Plus Jakarta Sans",-apple-system,"Segoe UI","Noto Sans SC",sans-serif;
+    --gap:18px;
   }
   *{box-sizing:border-box}
   body{
     margin:0; min-height:100vh; color:var(--text); background:var(--bg);
     background-image:
       radial-gradient(760px 460px at 86% -8%, rgba(62,186,244,.16), transparent 68%),
-      radial-gradient(620px 420px at 4% 4%, rgba(236,72,153,.07), transparent 70%);
-    font:15px/1.6 var(--sans);
-    -webkit-font-smoothing:antialiased;
+      radial-gradient(620px 420px at 4% 2%, rgba(236,72,153,.07), transparent 70%);
+    background-attachment:fixed;
+    font:15px/1.6 var(--sans); -webkit-font-smoothing:antialiased;
   }
-  .wrap{max-width:980px;margin:0 auto;padding:56px 22px 72px}
-  .badge{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border:1px solid var(--line);
-    border-radius:999px;background:rgba(13,13,13,.85);font-family:var(--mono);font-size:11.5px;
-    letter-spacing:.04em;color:var(--muted)}
-  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
+
+  /* 顶栏 */
+  header{
+    position:sticky; top:0; z-index:20; backdrop-filter:blur(16px);
+    background:rgba(0,0,0,.72); border-bottom:1px solid var(--line);
+  }
+  .bar{max-width:1440px; margin:0 auto; padding:12px 26px; display:flex; align-items:center; gap:16px}
+  .brand{display:flex; align-items:center; gap:9px; font-weight:800; letter-spacing:-.02em; font-size:17px}
+  .brand .mark{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;
+    background:linear-gradient(150deg,rgba(62,186,244,.32),rgba(62,186,244,.10));
+    border:1px solid rgba(62,186,244,.4)}
+  .brand .mark svg{width:13px;height:13px;stroke:var(--cyan)}
+  .brand i{font-style:normal; color:var(--cyan)}
+  .badge{margin-left:auto; display:inline-flex; align-items:center; gap:7px; padding:5px 11px;
+    border:1px solid var(--line); border-radius:999px; background:rgba(13,13,13,.85);
+    font-family:var(--mono); font-size:11.5px; letter-spacing:.04em; color:var(--muted)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
   .dot.off{background:var(--red);box-shadow:0 0 10px var(--red)}
-  h1{font-size:42px;letter-spacing:-.025em;margin:20px 0 10px;font-weight:800;line-height:1.15;
+
+  /* hero + 统计 */
+  .hero{max-width:1440px; margin:0 auto; padding:34px 26px 0}
+  .eyebrow{font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--cyan); display:flex; align-items:center; gap:7px}
+  .eyebrow::before{content:""; width:5px;height:5px;border-radius:50%;background:var(--cyan);
+    box-shadow:0 0 10px var(--cyan)}
+  h1{font-size:38px; letter-spacing:-.025em; margin:12px 0 8px; font-weight:800; line-height:1.15;
     background:linear-gradient(120deg,#f8fafc 0%,#f8fafc 34%,var(--cyan) 52%,#f8fafc 70%,#f8fafc 100%);
-    background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
+    background-size:220% 100%; -webkit-background-clip:text; background-clip:text; color:transparent;
     animation:shine 7s linear infinite}
   @keyframes shine{from{background-position:130% 0}to{background-position:-30% 0}}
-  .lead{color:var(--muted);font-size:17px;max-width:620px;margin:0}
-  .flow{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:38px 0 0}
-  .step{border:1px solid var(--line);border-radius:20px;padding:16px 16px 15px;position:relative;
-    background:linear-gradient(135deg,rgba(26,26,26,.85) 0%,rgba(10,10,10,.9) 100%)}
-  .step b{display:block;font-size:13px;color:var(--muted);font-weight:500;letter-spacing:.06em}
-  .step p{margin:6px 0 0;font-size:14px}
-  .step i{position:absolute;right:14px;top:13px;font-style:normal;font-family:var(--mono);
-    font-size:11px;color:var(--cyan);opacity:.75;letter-spacing:.08em}
-  .stats{display:grid;grid-template-columns:repeat(4,1fr);border-radius:20px;padding:16px 8px;margin:22px 0 0;
-    border:1px solid var(--line-2);background:linear-gradient(135deg,rgba(26,26,26,.85),rgba(10,10,10,.9));
+  .desc{color:var(--muted); font-size:14px; margin:0 0 20px; max-width:640px}
+
+  .capsule{display:inline-grid; grid-template-columns:repeat(4,auto); border-radius:20px; padding:14px 8px;
+    border:1px solid var(--line-2); background:linear-gradient(135deg,rgba(26,26,26,.85),rgba(10,10,10,.9));
     box-shadow:0 0 18px -2px rgba(92,182,206,.28)}
-  .stat{padding:0 14px;border-right:1px solid var(--line)}
-  .stat:last-child{border-right:0}
-  .stat b{display:block;font-family:var(--mono);font-size:24px;font-weight:800;letter-spacing:-.02em;
-    font-variant-numeric:tabular-nums;line-height:1.25}
-  .stat span{font-size:11px;color:var(--dim);letter-spacing:.05em}
-  section h2{font-family:var(--mono);font-size:11.5px;font-weight:700;letter-spacing:.14em;
-    color:var(--cyan);text-transform:uppercase;margin:44px 0 14px;
-    display:flex;align-items:center;gap:8px}
-  section h2::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--cyan);
-    box-shadow:0 0 10px var(--cyan)}
-  .list{display:flex;flex-direction:column;gap:9px}
-  .row{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);
-    border-radius:8px;background:rgba(13,13,13,.7);transition:border-color .18s,background .18s;
-    box-shadow:0 2px 8px -2px rgba(0,0,0,.7);text-decoration:none;color:inherit}
-  .row:hover{border-color:rgba(62,186,244,.5);background:rgba(26,26,26,.85);
-    box-shadow:0 0 22px -8px rgba(62,186,244,.6)}
-  .who{min-width:0;flex:1}
-  .who b{display:block;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .who small{color:var(--dim);font-family:var(--mono);font-size:11.5px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .tags{display:flex;gap:6px;flex-shrink:0}
-  .tag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);
-    color:var(--muted);white-space:nowrap}
-  .tag.img{color:var(--cyan);border-color:rgba(62,186,244,.35);background:rgba(62,186,244,.08)}
-  .tag.vid{color:#c9a3ff;border-color:rgba(201,163,255,.32);background:rgba(201,163,255,.07)}
-  .go{color:var(--cyan);font-size:12.5px;flex-shrink:0;font-weight:600}
-  .empty{border:1px dashed var(--line);border-radius:8px;padding:26px;text-align:center;
-    color:var(--muted);font-size:13.5px}
-  code{font-family:var(--mono);background:rgba(255,255,255,.06);border:1px solid var(--line);
-    border-radius:6px;padding:2px 6px;font-size:12px;color:var(--text)}
-  .usage p{color:var(--muted);margin:0 0 10px;font-size:13.5px}
-  footer{margin-top:52px;color:var(--dim);font-family:var(--mono);font-size:12px;border-top:1px solid var(--line);padding-top:18px;
-    display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
-  @media(max-width:720px){
-    h1{font-size:34px}.flow,.stats{grid-template-columns:1fr 1fr}
-    .row{flex-wrap:wrap}.tags{order:3}
-  }
-  @media(max-width:440px){.flow,.stats{grid-template-columns:1fr}}
+  .metric{padding:0 22px; border-right:1px solid var(--line)}
+  .metric:last-child{border-right:0}
+  .metric b{display:block; font-family:var(--mono); font-size:22px; font-weight:800;
+    letter-spacing:-.02em; line-height:1.25; font-variant-numeric:tabular-nums}
+  .metric span{font-size:11px; color:var(--dim); letter-spacing:.05em}
+
+  /* 瀑布流：CSS columns，卡片 break-inside:avoid 保证不被拆断 */
+  .feed{max-width:1440px; margin:0 auto; padding:26px 26px 72px; column-gap:var(--gap); column-count:4}
+  @media(max-width:1280px){.feed{column-count:3}}
+  @media(max-width:900px){.feed{column-count:2}}
+  @media(max-width:600px){.feed{column-count:1; padding:20px 14px 56px} .hero{padding:26px 14px 0}
+    .bar{padding:10px 14px}}
+
+  .card{break-inside:avoid; -webkit-column-break-inside:avoid; page-break-inside:avoid;
+    margin:0 0 var(--gap); border:1px solid var(--line); border-radius:8px;
+    background:rgba(13,13,13,.72); overflow:hidden;
+    box-shadow:0 2px 8px -2px rgba(0,0,0,.7);
+    transition:border-color .18s, box-shadow .18s, transform .18s}
+  .card:hover{border-color:rgba(62,186,244,.45); transform:translateY(-2px);
+    box-shadow:0 0 26px -8px rgba(62,186,244,.55)}
+  .card-media{position:relative; background:#080808; line-height:0}
+  .card-media img{width:100%; height:auto; display:block; object-fit:cover}
+  .card-media .ph{width:100%; aspect-ratio:4/5; display:grid; place-items:center;
+    color:#2a2f36; font-family:var(--mono); font-size:11px}
+  .badge-media{position:absolute; left:9px; top:9px; display:flex; gap:6px}
+  .chip{font-family:var(--mono); font-size:10.5px; padding:3px 7px; border-radius:5px;
+    background:rgba(0,0,0,.72); border:1px solid var(--line); color:var(--text); backdrop-filter:blur(6px)}
+  .chip.img{color:var(--cyan); border-color:rgba(62,186,244,.4)}
+  .chip.vid{color:var(--violet); border-color:rgba(201,163,255,.36)}
+  .more{position:absolute; right:9px; bottom:9px; font-family:var(--mono); font-size:10.5px;
+    padding:3px 7px; border-radius:5px; background:rgba(0,0,0,.72); border:1px solid var(--line);
+    color:var(--muted)}
+
+  .card-body{padding:12px 13px 13px}
+  .who{display:flex; align-items:center; gap:7px; margin-bottom:7px; min-width:0}
+  .avatar{width:22px;height:22px;border-radius:50%;flex:none;display:grid;place-items:center;
+    background:linear-gradient(150deg,rgba(62,186,244,.30),rgba(236,72,153,.22));
+    border:1px solid var(--line); font-family:var(--mono); font-size:10px; font-weight:700; color:var(--text)}
+  .who .name{font-weight:700; font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .who .handle{color:var(--dim); font-family:var(--mono); font-size:11px; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis}
+  .title{font-size:13.5px; color:var(--text); margin:0 0 10px; line-height:1.55;
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden}
+  .meta{display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:10.5px; color:var(--dim)}
+  .meta .sp{flex:1}
+  .meta a{color:var(--cyan); text-decoration:none; font-weight:600}
+  .meta a:hover{text-decoration:underline}
+
+  .empty{max-width:1440px; margin:0 auto 60px; padding:34px 20px; color:var(--muted);
+    border:1px dashed var(--line); border-radius:8px; text-align:center}
+  footer{max-width:1440px; margin:0 auto; padding:0 26px 40px; color:var(--dim);
+    font-family:var(--mono); font-size:11.5px; display:flex; justify-content:space-between;
+    gap:14px; flex-wrap:wrap}
+
+  @media(prefers-reduced-motion:reduce){h1{animation:none} .card{transition:none}}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="badge"><span class="dot" id="dot"></span><span id="health">连接中…</span></div>
-  <h1>x-<span>drive</span></h1>
-  <p class="lead">把 x.com 链接发给 Telegram 机器人，推文里的图片和视频自动下载、归档到 Google Drive，回一条文件夹链接。</p>
-
-  <div class="flow">
-    <div class="step"><i>01</i><b>收链接</b><p>Telegram 长轮询，只认白名单用户与 X 域名</p></div>
-    <div class="step"><i>02</i><b>解析下载</b><p>parse-video-py 取原始媒体，逐文件落盘</p></div>
-    <div class="step"><i>03</i><b>存 Drive</b><p>rclone 上传并生成文件夹分享链接</p></div>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <span class="mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v11"/><path d="m7.5 11.5 4.5 4 4.5-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+        </svg>
+      </span>
+      x-<i>drive</i>
+    </div>
+    <div class="badge"><span class="dot" id="dot"></span><span id="health">连接中…</span></div>
   </div>
+</header>
 
-  <div class="stats">
-    <div class="stat"><b id="s-tasks">0</b><span>已转存推文</span></div>
-    <div class="stat"><b id="s-images">0</b><span>图片</span></div>
-    <div class="stat"><b id="s-videos">0</b><span>视频</span></div>
-    <div class="stat"><b id="s-last">—</b><span>最近入库</span></div>
-  </div>
-
-  <section>
-    <h2>最近入库</h2>
-    <div class="list" id="list"><div class="empty">正在读取…</div></div>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Archive Stream</div>
+    <h1>推文媒体归档</h1>
+    <p class="desc">发给 Telegram 机器人的每条 x.com 链接，图片与视频都会落到 Google Drive，这里按时间倒序铺开。</p>
+    <div class="capsule">
+      <div class="metric"><b id="s-tasks">0</b><span>归档推文</span></div>
+      <div class="metric"><b id="s-images">0</b><span>图片</span></div>
+      <div class="metric"><b id="s-videos">0</b><span>视频</span></div>
+      <div class="metric"><b id="s-last">—</b><span>最近入库</span></div>
+    </div>
   </section>
 
-  <section class="usage">
-    <h2>用法</h2>
-    <p>在 Telegram 里发送：<code>https://x.com/用户/status/1234567890</code></p>
-    <p>落盘格式：<code>X-Drive/作者/年-月/推文id/作者_日期_序号.ext</code></p>
-  </section>
-
+  <section class="feed" id="feed"></section>
+  <div id="empty-slot"></div>
   <footer>
     <span>parse-video-py · rclone · python-telegram-bot</span>
     <span id="updated"></span>
   </footer>
-</div>
+</main>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -134,6 +166,63 @@ const el = (tag, cls, text) => {
   if (text != null) n.textContent = text;
   return n;
 };
+const initial = s => (s || "?").trim().charAt(0).toUpperCase() || "?";
+
+/** 一条推文 → 一张瀑布流卡片；首张媒体作封面 */
+function card(t) {
+  const node = el("article", "card");
+  const media = el("div", "card-media");
+  const cover = (t.media || [])[0];
+
+  if (cover && cover.thumb) {
+    const img = new Image();
+    img.loading = "lazy";
+    img.alt = t.title || t.id;
+    img.src = cover.thumb;
+    img.addEventListener("error", () => {
+      media.textContent = "";
+      media.append(el("div", "ph", "预览不可用"));
+    });
+    media.append(img);
+  } else {
+    media.append(el("div", "ph", "无预览"));
+  }
+
+  const badges = el("div", "badge-media");
+  if (t.images) badges.append(el("span", "chip img", t.images + " 图"));
+  if (t.videos) badges.append(el("span", "chip vid", t.videos + " 视频"));
+  if (badges.childElementCount) media.append(badges);
+  if (cover && cover.kind === "video") media.append(el("span", "more", "▶ 视频"));
+  else if ((t.media || []).length > 1) media.append(el("span", "more", "+" + (t.media.length - 1)));
+  node.append(media);
+
+  const body = el("div", "card-body");
+  const who = el("div", "who");
+  who.append(el("span", "avatar", initial(t.author)));
+  who.append(el("span", "name", t.author || "未知作者"));
+  if (t.handle) who.append(el("span", "handle", "@" + t.handle));
+  body.append(who);
+
+  const title = (t.title || "").replace(/https?:\/\/t\.co\/\S+/g, "").trim();
+  if (title) body.append(el("p", "title", title));
+
+  const meta = el("div", "meta");
+  meta.append(el("span", null, fmt(t.at)));
+  meta.append(el("span", "sp"));
+  if (t.url) {
+    const src = el("a", null, "原推 →");
+    src.href = t.url; src.target = "_blank"; src.rel = "noopener";
+    meta.append(src);
+  }
+  if (t.link) {
+    const drv = el("a", null, "Drive ↗");
+    drv.href = t.link; drv.target = "_blank"; drv.rel = "noopener";
+    meta.append(drv);
+  }
+  body.append(meta);
+  node.append(body);
+  return node;
+}
 
 async function load() {
   try {
@@ -147,26 +236,14 @@ async function load() {
     $("s-videos").textContent = d.stats.videos;
     $("s-last").textContent = d.stats.last ? fmt(d.stats.last) : "—";
 
-    const list = $("list");
-    list.textContent = "";
+    const feed = $("feed"), slot = $("empty-slot");
+    feed.textContent = ""; slot.textContent = "";
     if (!d.tasks.length) {
-      list.append(el("div", "empty", "还没有记录。给机器人发一条带图片或视频的 x 链接试试。"));
+      slot.append(el("div", "empty", "还没有记录。给机器人发一条带图片或视频的 x 链接试试。"));
     } else {
-      for (const t of d.tasks) {
-        const row = el(t.link ? "a" : "div", "row");
-        if (t.link) { row.href = t.link; row.target = "_blank"; row.rel = "noopener"; }
-        const who = el("div", "who");
-        who.append(el("b", null, t.title || t.source || t.id));
-        who.append(el("small", null, `${t.author || "未知作者"} · ${fmt(t.at)}`));
-        row.append(who);
-        const tags = el("div", "tags");
-        if (t.images) tags.append(el("span", "tag img", t.images + " 图"));
-        if (t.videos) tags.append(el("span", "tag vid", t.videos + " 视频"));
-        tags.append(el("span", "tag", t.files.length + " 文件"));
-        row.append(tags);
-        if (t.link) row.append(el("span", "go", "打开 Drive ↗"));
-        list.append(row);
-      }
+      const frag = document.createDocumentFragment();
+      for (const t of d.tasks) frag.append(card(t));
+      feed.append(frag);
     }
     $("updated").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN");
   } catch (e) {

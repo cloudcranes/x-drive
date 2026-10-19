@@ -3,6 +3,7 @@ import base64
 import json
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -20,6 +21,10 @@ def server(tmp_path, monkeypatch):
                 "path": "gdrive:X-Drive/Elon_Musk/2026-10/123",
                 "link": "https://drive.google.com/drive/folders/AAA",
                 "files": ["Elon_Musk_2026-10-19_01.jpg", "Elon_Musk_2026-10-19_02.mp4"],
+                "orig": {
+                    "Elon_Musk_2026-10-19_01.jpg": "https://pbs.twimg.com/media/aaa.jpg?name=orig",
+                    "Elon_Musk_2026-10-19_02.mp4": "https://video.twimg.com/v/1.mp4",
+                },
                 "title": "hello <b>world</b>",
                 "author": "Elon Musk",
                 "source": "https://x.com/u/status/123",
@@ -64,8 +69,25 @@ def test_api_tasks(server):
     assert data["stats"] == {"tasks": 2, "images": 2, "videos": 1, "last": "2026-10-19T12:00:00"}
     assert data["tasks"][0]["id"] == "123"
     assert data["tasks"][0]["images"] == 1 and data["tasks"][0]["videos"] == 1
+    first = data["tasks"][0]
+    assert first["handle"] == "u" and first["url"] == "https://x.com/u/status/123"
+    media = first["media"]
+    assert [m["kind"] for m in media] == ["image", "video"]
+    assert media[0]["thumb"].startswith("/thumb?") and "pbs.twimg.com" in media[0]["thumb"]
     assert data["tasks"][1]["link"] == ""
     assert data["health"]["parse"] is False
+
+
+def test_thumb_rejects_foreign_host(server):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        get(server + "/thumb?u=" + urllib.parse.quote("https://evil.example.com/a.jpg", safe=""))
+    assert exc.value.code == 400
+
+
+def test_thumb_requires_url(server):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        get(server + "/thumb")
+    assert exc.value.code == 400
 
 
 def test_api_health(server):
