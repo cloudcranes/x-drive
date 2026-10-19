@@ -24,7 +24,7 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
-from . import core, media
+from . import core, fallback, media
 
 log = logging.getLogger("x-drive")
 
@@ -187,10 +187,19 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
             return core.receipt(hit["link"], hit.get("files", []), [], hit.get("title", ""))
 
     await edit(status, "⏳ 解析媒体…")
-    data = await parse_link(client, cfg, expanded)
+    try:
+        data = await parse_link(client, cfg, expanded)
+    except Exception as exc:
+        # 敏感推文 syndication 返回 TweetTombstone，parse-video-py 会报「没有找到视频或图片」
+        log.warning("主解析器失败：%s，尝试 fxtwitter 兜底", exc)
+        data = {}
     entries = core.media_entries(data)
     if not entries:
-        return "❌ 该推文没有可下载的图片或视频"
+        await edit(status, "⏳ 主解析器无结果，改用备用通道…")
+        data = await fallback.fetch(client, key) or {}
+        entries = core.media_entries(data)
+    if not entries:
+        return "❌ 该推文没有可下载的图片或视频（敏感内容或已删除）"
 
     author = data.get("author") or {}
     title = (data.get("title") or "").strip()

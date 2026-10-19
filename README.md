@@ -160,6 +160,7 @@ STATE_PATH=docs/sample-state.json PARSE_BASE_URL=http://127.0.0.1:9 \
 
 ## 已知限制
 
+- **敏感推文的解析走兜底通道**：X 的 syndication 接口对部分推文只返回 `TweetTombstone`，`parse-video-py` 会报「没有找到视频或图片」。`app/fallback.py` 会用 fxtwitter 再取一次（多图、单视频都能拿到），失败才回执失败。兜底只覆盖 X，其他平台仍走原解析器。
 - **图文混排的推文会丢图**：`parse-video-py` 的 X 解析器只取第一条视频的最高码率 mp4，遇到视频就不再取图片；多视频也只取第一个。需要完整媒体时，得在 `app/main.py` 里加一步 fallback（直接调 Twitter syndication 接口，token 算法见参考仓库），或改上游。
 - 依赖 X 的非公开接口，可能被限流或风控；不做登录态抓取。
 - 不处理 HLS(`.m3u8`) 直播流；视频转码只做 profile 兼容，不做画质提升（源码率低就是低）。
