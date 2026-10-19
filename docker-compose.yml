@@ -1,0 +1,32 @@
+services:
+  parse:
+    image: wujunwei928/parse-video-py:latest
+    restart: unless-stopped
+    environment:
+      PARSE_VIDEO_PROXY: ${PARSE_VIDEO_PROXY:-}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/',timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      parse:
+        condition: service_healthy
+    volumes:
+      - ${RCLONE_CONFIG_HOST:?在 .env 里设置 RCLONE_CONFIG_HOST 指向 rclone.conf}:/config/rclone/rclone.conf:ro
+      - ./data:/data
+      - ./downloads:/downloads
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.main", "--check"]
+      interval: 120s
+      timeout: 60s
+      retries: 3
+      start_period: 60s
