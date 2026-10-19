@@ -166,6 +166,10 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:  # noqa: N802 (标准库命名)
+        # 健康检查不要求认证，否则容器 healthcheck 永远 401
+        if urlsplit(self.path).path == "/api/health":
+            self._json({"ok": True, "parse": parse_online()})
+            return
         if not self._authorized():
             self._login()
             return
@@ -181,9 +185,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/tasks":
             self._json(collect())
-            return
-        if path == "/api/health":
-            self._json({"ok": True, "parse": parse_online()})
             return
         if path == "/thumb":
             self._thumb(parse_qs(parts.query))

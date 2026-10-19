@@ -100,6 +100,11 @@ def test_unknown_path_404(server):
     assert exc.value.code == 404
 
 
+def test_health_needs_no_auth(server, monkeypatch):
+    monkeypatch.setattr(web, "AUTH", "u:p")
+    assert json.loads(get(server + "/api/health").read())["ok"] is True
+
+
 def test_basic_auth(server, monkeypatch):
     monkeypatch.setattr(web, "AUTH", "u:p")
     with pytest.raises(urllib.error.HTTPError) as exc:
