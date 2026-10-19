@@ -77,3 +77,10 @@ def test_failure_keeps_original(video, monkeypatch):
     assert changed is False and "编码器炸了" in err
     assert video.read_bytes() == b"x" * 1024
     assert not (video.parent / "clip.compat.mp4").exists()
+
+
+def test_missing_binary_reports_readable_error(video, monkeypatch):
+    monkeypatch.setattr(media.shutil, "which", lambda name: None)
+    changed, err = asyncio.run(media.make_compatible(video, "auto"))
+    assert changed is False and "缺少 ffprobe" in err
+    assert video.read_bytes() == b"x" * 1024

@@ -6,12 +6,16 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 
 OK_PROFILES = {"main", "baseline", "constrained baseline"}
 
 
 async def _run(*args: str, timeout: float) -> tuple[int, str, str]:
+    if shutil.which(args[0]) is None:
+        # 镜像里缺 ffmpeg 时给出可读原因，而不是裸 FileNotFoundError
+        return 127, "", f"缺少 {args[0]}（镜像未安装 ffmpeg）"
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
@@ -37,6 +41,8 @@ async def make_compatible(path: Path, mode: str = "auto") -> tuple[bool, str]:
     """返回 (是否转码, 原 profile 或错误摘要)。"""
     if mode == "off":
         return False, ""
+    if shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None:
+        return False, "缺少 ffprobe/ffmpeg（镜像未安装 ffmpeg），已跳过转码"
     profile = await video_profile(path)
     if mode != "always" and profile.lower() in OK_PROFILES:
         return False, profile
