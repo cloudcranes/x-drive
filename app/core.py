@@ -112,10 +112,16 @@ def save_state(path: str, state: dict) -> None:
     os.replace(tmp, path)
 
 
+def split_counts(files: list[str]) -> tuple[int, int]:
+    """按扩展名分出 (图片数, 视频数)。"""
+    images = sum(1 for f in files if os.path.splitext(f)[1].lower() in IMAGE_EXTS)
+    videos = sum(1 for f in files if os.path.splitext(f)[1].lower() in VIDEO_EXTS)
+    return images, videos
+
+
 def receipt(link: str | None, saved: list[str], failures: list[str], title: str = "") -> str:
     """生成回执正文，控制在 TG 4096 字符内。"""
-    images = sum(1 for f in saved if os.path.splitext(f)[1].lower() in IMAGE_EXTS)
-    videos = sum(1 for f in saved if os.path.splitext(f)[1].lower() in VIDEO_EXTS)
+    images, videos = split_counts(saved)
     if not saved:
         head = "❌ 没有文件入库"
     else:

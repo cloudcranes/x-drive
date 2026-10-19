@@ -259,6 +259,8 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
                 "link": link,
                 "files": saved,
                 "title": title,
+                "author": author.get("name") or "",
+                "source": expanded,
                 "at": datetime.now().isoformat(timespec="seconds"),
             }
             core.save_state(cfg.state_path, state)

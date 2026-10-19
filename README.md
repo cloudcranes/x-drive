@@ -7,7 +7,11 @@
 ```
 TG ──▶ bot ──▶ parse:8000 (解析) ──▶ 下载 ──▶ rclone copy ──▶ gdrive:/X-Drive/...
         └────────────────────────────────────────── 回执 ──▶ TG
+                                                   │
+                                      data/state.json ──▶ web:8080 展示页
 ```
+
+![展示页](docs/preview.png)
 
 ## 前置
 
@@ -92,6 +96,27 @@ X-Drive/<作者uid>_<作者名>/<YYYY-MM>/<推文id>/
 | 回执「未授权」 | 把回执里的 user id 加进 `ALLOWED_USER_IDS` 并 `docker compose up -d` |
 | 下载慢/超时 | 调大 `MAX_FILE_MB` 之外无他法；视频直链有时效，必须即到即下 |
 
+## 展示页
+
+`web` 服务把同一份 `data/state.json` 渲染成一页：架构说明、统计卡片、最近入库列表（点行直接打开对应 Drive 文件夹），每 30 秒自动刷新。
+
+```bash
+# 只看展示（不依赖 bot 运行）
+docker compose up -d web
+open http://<host>:8080
+```
+
+公网暴露时加 Basic 认证，在 `.env` 里设 `WEB_AUTH=用户名:密码`，然后 `docker compose up -d web`。
+
+本地预览（用示例数据，不碰真实 Drive）：
+
+```bash
+STATE_PATH=docs/sample-state.json PARSE_BASE_URL=http://127.0.0.1:9 \
+  python -m app.web            # 打开 http://127.0.0.1:8080
+```
+
+两个接口：`GET /api/tasks`（记录 + 统计 + parse 健康）、`GET /api/health`。
+
 ## 已知限制
 
 - **图文混排的推文会丢图**：`parse-video-py` 的 X 解析器只取第一条视频的最高码率 mp4，遇到视频就不再取图片；多视频也只取第一个。需要完整媒体时，得在 `app/main.py` 里加一步 fallback（直接调 Twitter syndication 接口，token 算法见参考仓库），或改上游。
@@ -107,4 +132,8 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 .venv/bin/python -m pytest tests -q
 ```
 
-`app/core.py` 是纯函数层（URL 提取、路径、命名、回执），`app/main.py` 是 Telegram 编排与 rclone 调用，`tests/test_flow.py` 用 stub 覆盖了下载/上传/去重/部分失败四条路径。
+- `app/core.py`：纯函数层（URL 提取、路径、命名、回执），无 IO
+- `app/main.py`：Telegram 编排与 rclone 调用，`tests/test_flow.py` 用 stub 覆盖下载/上传/去重/部分失败
+- `app/web.py` + `app/webui.html`：零依赖展示页，`tests/test_web.py` 起真实 HTTP 服务验证接口与 Basic 认证
+
+共 22 个测试，`python -m pytest tests -q` 约 3 秒跑完。
