@@ -218,13 +218,13 @@ function mediaImg(item, alt) {
 function videoPlayer(item, compact) {
   const wrap = el("div", "vwrap" + (compact ? " compact" : ""));
   const video = document.createElement("video");
-  video.preload = "metadata";
+  video.preload = "none";          // 点击后才加载，避免首屏并发请求被中断触发 error
   video.playsInline = true;
   video.controls = true;
   video.muted = true;
   video.loop = false;
-  if (item.play) video.src = item.play;
   video.style.opacity = "0";
+  let loaded = false;
 
   if (item.thumb) {
     const poster = new Image();
@@ -244,13 +244,18 @@ function videoPlayer(item, compact) {
 
   const showVideo = () => {
     wrap.classList.add("playing");
-    video.style.opacity = "1";
     btn.style.display = "none";
-    video.play().catch(() => { video.muted = true; video.play().catch(() => {}); });
+    if (!loaded && item.play) { video.src = item.play; loaded = true; }
+    video.style.opacity = "1";
+    video.play().catch(() => {
+      video.muted = true;
+      video.play().catch(() => {});
+    });
   };
   btn.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); showVideo(); });
-  video.addEventListener("loadeddata", () => { if (!wrap.classList.contains("playing")) video.style.opacity = "0"; });
+  video.addEventListener("loadeddata", () => { if (wrap.classList.contains("playing")) video.style.opacity = "1"; });
   video.addEventListener("error", () => {
+    if (!loaded) return;   // 还没尝试加载，不算失败
     wrap.classList.remove("playing");
     video.style.opacity = "0";
     btn.style.display = "";
