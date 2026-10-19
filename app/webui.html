@@ -177,12 +177,17 @@ function card(t) {
   if (cover && cover.thumb) {
     const img = new Image();
     img.loading = "lazy";
+    img.decoding = "async";
     img.alt = t.title || t.id;
-    img.src = cover.thumb;
+    img.referrerPolicy = "no-referrer";   // pbs.twimg.com 对带 referer 的请求偶发 403
+    // 先走同源代理；失败再直连原图，最后才显示占位
+    let fallback = cover.raw || "";
     img.addEventListener("error", () => {
+      if (fallback) { img.src = fallback; fallback = ""; return; }
       media.textContent = "";
       media.append(el("div", "ph", "预览不可用"));
     });
+    img.src = cover.thumb;
     media.append(img);
   } else {
     media.append(el("div", "ph", "无预览"));

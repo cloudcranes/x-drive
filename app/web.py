@@ -91,6 +91,7 @@ def collect() -> dict:
                     "kind": kind,
                     "name": name,
                     "thumb": thumb_url(kind, original, key, name) if original else "",
+                    "raw": original,
                 }
             )
         tasks.append(
@@ -200,7 +201,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             req = urllib.request.Request(
-                url, headers={"User-Agent": "Mozilla/5.0 (compatible; x-drive-web)"}
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+                    ),
+                    "Referer": "https://x.com/",
+                    "Accept": "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8",
+                },
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = resp.read(THUMB_MAX)
