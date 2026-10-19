@@ -38,6 +38,10 @@ THUMB_MAX = 6 * 1024 * 1024
 _health = {"at": 0.0, "parse": False}
 
 
+def bytes_range_header() -> str:
+    return "bytes"
+
+
 def parse_online(ttl: float = 15.0) -> bool:
     if time.time() - _health["at"] < ttl:
         return bool(_health["parse"])
@@ -143,11 +147,15 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def _send(self, code: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
+        extra = dict(extra or {})
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for key, value in (extra or {}).items():
+        # 允许调用方覆盖，避免出现两个 Content-Length / Cache-Control
+        self.send_header("Cache-Control", extra.pop("Cache-Control", "no-store"))
+        for key, value in extra.items():
+            if key.lower() == "content-length":
+                continue
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
@@ -179,6 +187,9 @@ class Handler(BaseHTTPRequestHandler):
             "text/html; charset=utf-8",
             {"WWW-Authenticate": 'Basic realm="x-drive", charset="UTF-8"'},
         )
+
+    def do_HEAD(self) -> None:  # noqa: N802 (标准库命名)
+        self.do_GET()
 
     def do_GET(self) -> None:  # noqa: N802 (标准库命名)
         # 健康检查不要求认证，否则容器 healthcheck 永远 401
@@ -236,42 +247,62 @@ class Handler(BaseHTTPRequestHandler):
             self._send(502, f"thumb failed: {exc}".encode(), "text/plain; charset=utf-8")
 
     def _video(self, query: dict) -> None:
-        """同源视频代理（支持 Range），供 <video> 预览与拖动。"""
+        """同源视频代理：流式转发并透传 Range，供 <video> 边下边播与拖动。"""
         url = (query.get("u") or [""])[0]
         host = (urlsplit(url).hostname or "").lower()
         if not url or not (host == "twimg.com" or host.endswith(".twimg.com")):
             self._send(400, b"bad video url", "text/plain; charset=utf-8")
             return
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; x-drive-web)", "Referer": "https://x.com/"}
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+            ),
+            "Referer": "https://x.com/",
+            "Accept": "*/*",
+        }
         rng = self.headers.get("Range")
         if rng:
             headers["Range"] = rng
+        head_only = self.command == "HEAD"
+
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                status = resp.status
-                data = resp.read()
-                ctype = resp.headers.get("Content-Type") or "video/mp4"
-                extra = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"}
-                cr = resp.headers.get("Content-Range")
-                if cr:
-                    extra["Content-Range"] = cr
-                cl = resp.headers.get("Content-Length")
-                if cl:
-                    extra["Content-Length"] = cl
-            if status == 206:
-                self.send_response(206)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(data)))
-                for k, v in extra.items():
-                    if k != "Content-Length":
-                        self.send_header(k, v)
-                self.end_headers()
-                self.wfile.write(data)
-                return
-            self._send(200, data, ctype, extra)
+            upstream = urllib.request.urlopen(req, timeout=30)
         except Exception as exc:
             self._send(502, f"video failed: {exc}".encode(), "text/plain; charset=utf-8")
+            return
+
+        with upstream:
+            upstream_status = getattr(upstream, "status", 200) or 200
+            status = upstream_status if upstream_status in (200, 206) else 200
+            ctype = upstream.headers.get("Content-Type") or "video/mp4"
+            length = upstream.headers.get("Content-Length")
+            content_range = upstream.headers.get("Content-Range")
+
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            if length:
+                self.send_header("Content-Length", length)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            if content_range:
+                self.send_header("Content-Range", content_range)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            if head_only:
+                return
+            # 分块转发，避免一次性读入内存、也避免大文件首包延迟
+            try:
+                while True:
+                    chunk = upstream.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                return  # 浏览器 seek 时会主动断开旧请求
 
     def _json(self, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()

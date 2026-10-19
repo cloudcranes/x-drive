@@ -254,12 +254,24 @@ function videoPlayer(item, compact) {
   };
   btn.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); showVideo(); });
   video.addEventListener("loadeddata", () => { if (wrap.classList.contains("playing")) video.style.opacity = "1"; });
+  let triedRaw = false;
+  const errName = () => {
+    const code = video.error && video.error.code;
+    return {1: "aborted", 2: "network", 3: "decode", 4: "unsupported"}[code] || ("err" + (code || "?"));
+  };
   video.addEventListener("error", () => {
-    if (!loaded) return;   // 还没尝试加载，不算失败
+    if (!loaded) return;                     // 还没尝试加载，不算失败
+    // 第一次失败先退回直连 twimg 原片
+    if (!triedRaw && item.raw && item.raw !== video.currentSrc) {
+      triedRaw = true;
+      video.src = item.raw;
+      video.play().catch(() => {});
+      return;
+    }
     wrap.classList.remove("playing");
     video.style.opacity = "0";
     btn.style.display = "";
-    btn.textContent = "无法预览 · 打开原推";
+    btn.textContent = "无法预览（" + errName() + "）· 打开原推";
     btn.classList.add("bad");
     btn.onclick = e => { e.preventDefault(); e.stopPropagation(); window.open(item.raw || "#", "_blank"); };
   });

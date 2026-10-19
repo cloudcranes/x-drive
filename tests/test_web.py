@@ -1,5 +1,6 @@
 """展示页服务测试：真实起 http.server，验证 HTML 与 /api/tasks。"""
 import base64
+import http.client
 import json
 import threading
 import urllib.error
@@ -97,6 +98,45 @@ def test_video_item_has_play_url(server):
     # 视频直链不是图片，不能塞进 <img>
     assert video["thumb"] == ""
     assert video["raw"].endswith(".mp4")
+
+
+def test_video_proxy_streams_and_passes_range(server, monkeypatch):
+    """代理应透传 Range 并流式转发，不能把整个文件读进内存。"""
+    calls = {}
+
+    class FakeUpstream:
+        status = 206
+        headers = {"Content-Type": "video/mp4", "Content-Length": "8",
+                   "Content-Range": "bytes 0-7/1000"}
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n: int = -1):
+            if calls.get("done"):
+                return b""
+            calls["done"] = True
+            return b"01234567"
+
+    def fake_urlopen(req, timeout=None):
+        calls["range"] = req.headers.get("Range")
+        calls["referer"] = req.headers.get("Referer")
+        return FakeUpstream()
+
+    monkeypatch.setattr(web.urllib.request, "urlopen", fake_urlopen)
+    # 用 http.client：monkeypatch 改的是同一个 urllib.request 模块，不能再用它发测试请求
+    base = server.removeprefix("http://")
+    host, port = base.split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=10)
+    path = "/video?u=" + urllib.parse.quote("https://video.twimg.com/a.mp4", safe="")
+    conn.request("GET", path, headers={"Range": "bytes=0-7"})
+    resp = conn.getresponse()
+    body = resp.read()
+    assert resp.status == 206
+    assert resp.getheader("Content-Range") == "bytes 0-7/1000"
+    assert resp.getheader("Accept-Ranges") == "bytes"
+    assert body == b"01234567"
+    conn.close()
+    assert calls["range"] == "bytes=0-7"
+    assert calls["referer"] == "https://x.com/"
 
 
 def test_thumb_requires_url(server):
