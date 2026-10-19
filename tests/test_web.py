@@ -188,3 +188,10 @@ def test_basic_auth_password_with_colon(server, monkeypatch):
     token = base64.b64encode(b"u:p:a").decode()
     ok = json.loads(get(server + "/api/tasks", {"Authorization": f"Basic {token}"}).read())
     assert ok["stats"]["tasks"] == 2
+
+
+def test_url_credentials_warning_absent():
+    """页面脚本应处理 URL 内嵌凭据，避免 fetch 报错（静态断言）。"""
+    html = (web.HTML_PATH).read_text(encoding="utf-8")
+    assert "AUTH_HEADER" in html
+    assert "includes credentials" in html or "Request cannot be constructed" in html
