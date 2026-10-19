@@ -226,7 +226,11 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
             try:
                 await download(client, media_url, tmp / name, cfg.max_bytes)
                 saved.append(name)
-                origins[name] = core.orig_image_url(media_url)
+                if kind == "video":
+                    # 视频本身不能当 <img> 用，缩略图用封面图
+                    origins[name] = core.video_cover(data)
+                else:
+                    origins[name] = core.orig_image_url(media_url)
                 if kind == "video":
                     await edit(status, "⏳ 转码兼容 Main profile…")
                     changed, info = await media.make_compatible(tmp / name, cfg.transcode)

@@ -84,6 +84,21 @@ def test_thumb_rejects_foreign_host(server):
     assert exc.value.code == 400
 
 
+def test_video_rejects_foreign_host(server):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        get(server + "/video?u=" + urllib.parse.quote("https://evil.example.com/a.mp4", safe=""))
+    assert exc.value.code == 400
+
+
+def test_video_item_has_play_url(server):
+    data = json.loads(get(server + "/api/tasks").read())
+    video = [m for m in data["tasks"][0]["media"] if m["kind"] == "video"][0]
+    assert video["play"].startswith("/video?") and "video.twimg.com" in video["play"]
+    # 视频直链不是图片，不能塞进 <img>
+    assert video["thumb"] == ""
+    assert video["raw"].endswith(".mp4")
+
+
 def test_thumb_requires_url(server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         get(server + "/thumb")

@@ -92,6 +92,23 @@
   .grid.n3 .cell:first-child{grid-row:span 2}
   .grid img{width:100%; height:100%; object-fit:cover; display:block}
   .grid .ph{aspect-ratio:auto; height:100%}
+  /* 视频播放器 */
+  .vwrap{position:relative; background:#080808; line-height:0; aspect-ratio:9/16; overflow:hidden}
+  .vwrap video{width:100%; height:100%; object-fit:contain; display:block; background:#000}
+  .vwrap .poster{position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block}
+  .vwrap.playing .poster{display:none}
+  .vwrap.compact{aspect-ratio:auto; height:100%}
+  .playbtn{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:52px; height:52px; border-radius:50%; cursor:pointer;
+    border:1px solid rgba(255,255,255,.35); background:rgba(0,0,0,.55);
+    color:#fff; font-size:16px; backdrop-filter:blur(6px);
+    display:grid; place-items:center; transition:transform .15s, background .15s}
+  .playbtn:hover{transform:translate(-50%,-50%) scale(1.06); background:rgba(62,186,244,.35)}
+  .playbtn.bad{width:auto; height:30px; padding:0 12px; border-radius:6px; font-size:11px;
+    font-family:var(--mono)}
+  .vwrap.playing video{position:relative; z-index:2}
+  .vwrap.playing .playbtn{display:none !important}
+  .vwrap.compact .playbtn{width:34px; height:34px; font-size:12px}
   .cellplay{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
     width:26px; height:26px; border-radius:50%; display:grid; place-items:center;
     background:rgba(0,0,0,.6); border:1px solid var(--line); color:#fff; font-size:10px}
@@ -197,6 +214,53 @@ function mediaImg(item, alt) {
   return img;
 }
 
+/** 视频：先显示封面 + 播放按钮，点击就地播放（同源 /video 代理，支持拖动） */
+function videoPlayer(item, compact) {
+  const wrap = el("div", "vwrap" + (compact ? " compact" : ""));
+  const video = document.createElement("video");
+  video.preload = "metadata";
+  video.playsInline = true;
+  video.controls = true;
+  video.muted = true;
+  video.loop = false;
+  if (item.play) video.src = item.play;
+  video.style.opacity = "0";
+
+  if (item.thumb) {
+    const poster = new Image();
+    poster.loading = "lazy";
+    poster.className = "poster";
+    poster.referrerPolicy = "no-referrer";
+    poster.alt = "";
+    poster.src = item.thumb;
+    wrap.append(poster);
+  }
+
+  const btn = el("button", "playbtn", "▶");
+  btn.type = "button";
+  btn.setAttribute("aria-label", "播放视频");
+  wrap.append(btn);
+  wrap.append(video);
+
+  const showVideo = () => {
+    wrap.classList.add("playing");
+    video.style.opacity = "1";
+    btn.style.display = "none";
+    video.play().catch(() => { video.muted = true; video.play().catch(() => {}); });
+  };
+  btn.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); showVideo(); });
+  video.addEventListener("loadeddata", () => { if (!wrap.classList.contains("playing")) video.style.opacity = "0"; });
+  video.addEventListener("error", () => {
+    wrap.classList.remove("playing");
+    video.style.opacity = "0";
+    btn.style.display = "";
+    btn.textContent = "无法预览 · 打开原推";
+    btn.classList.add("bad");
+    btn.onclick = e => { e.preventDefault(); e.stopPropagation(); window.open(item.raw || "#", "_blank"); };
+  });
+  return wrap;
+}
+
 /** 一条推文 → 一张瀑布流卡片；多图时铺宫格，否则单图封面 */
 function card(t) {
   const node = el("article", "card");
@@ -205,14 +269,19 @@ function card(t) {
   const cover = items[0];
 
   if (cover) {
-    if (items.length === 1) {
+    if (items.length === 1 && cover.kind === "video") {
+      media.append(videoPlayer(cover));
+    } else if (items.length === 1) {
       media.append(mediaImg(cover, t.title || t.id));
     } else {
       const grid = el("div", "grid n" + Math.min(items.length, 4));
       for (const item of items.slice(0, 4)) {
         const cell = el("div", "cell");
-        cell.append(mediaImg(item, t.title || t.id));
-        if (item.kind === "video") cell.append(el("span", "cellplay", "▶"));
+        if (item.kind === "video") {
+          cell.append(videoPlayer(item, true));
+        } else {
+          cell.append(mediaImg(item, t.title || t.id));
+        }
         grid.append(cell);
       }
       media.append(grid);

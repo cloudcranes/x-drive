@@ -50,6 +50,7 @@ def to_parse_shape(payload: dict) -> dict | None:
         "title": (tweet.get("text") or "").strip(),
         "music_url": "",
         "images": images,
+        "video_cover": cover if video_url else "",
         "author": {
             "uid": str(author.get("id") or ""),
             "name": author.get("name") or author.get("screen_name") or "",

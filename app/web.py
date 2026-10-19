@@ -71,6 +71,15 @@ def thumb_url(kind: str, original: str, tweet_id: str, name: str) -> str:
     return f"/thumb?{query}"
 
 
+def video_url(original: str, tweet_id: str, name: str) -> str:
+    """同源视频地址，走 /video 代理（支持 Range）。"""
+    query = "&".join(
+        f"{key}={quote(str(value), safe='')}"
+        for key, value in (("u", original), ("t", tweet_id), ("f", name))
+    )
+    return f"/video?{query}"
+
+
 def collect() -> dict:
     state = core.load_state(STATE)
     tasks = []
@@ -86,12 +95,17 @@ def collect() -> dict:
             if not kind:
                 continue
             original = (item.get("orig") or {}).get(name) or ""
+            poster = original
+            if kind == "video" and not re.search(r"\.(png|jpe?g|webp|gif)(\?|$)", original, re.I):
+                # 旧数据里存的是视频直链：不能当 <img>，但仍可作为播放源
+                poster = ""
             media.append(
                 {
                     "kind": kind,
                     "name": name,
-                    "thumb": thumb_url(kind, original, key, name) if original else "",
+                    "thumb": thumb_url(kind, poster, key, name) if poster else "",
                     "raw": original,
+                    "play": video_url(original, key, name) if (kind == "video" and original) else "",
                 }
             )
         tasks.append(
@@ -190,6 +204,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/thumb":
             self._thumb(parse_qs(parts.query))
             return
+        if path == "/video":
+            self._video(parse_qs(parts.query))
+            return
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
     def _thumb(self, query: dict) -> None:
@@ -217,6 +234,44 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, data, ctype, {"Cache-Control": "public, max-age=86400"})
         except Exception as exc:  # 单张缩略图失败不该拖垮页面
             self._send(502, f"thumb failed: {exc}".encode(), "text/plain; charset=utf-8")
+
+    def _video(self, query: dict) -> None:
+        """同源视频代理（支持 Range），供 <video> 预览与拖动。"""
+        url = (query.get("u") or [""])[0]
+        host = (urlsplit(url).hostname or "").lower()
+        if not url or not (host == "twimg.com" or host.endswith(".twimg.com")):
+            self._send(400, b"bad video url", "text/plain; charset=utf-8")
+            return
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; x-drive-web)", "Referer": "https://x.com/"}
+        rng = self.headers.get("Range")
+        if rng:
+            headers["Range"] = rng
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                status = resp.status
+                data = resp.read()
+                ctype = resp.headers.get("Content-Type") or "video/mp4"
+                extra = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"}
+                cr = resp.headers.get("Content-Range")
+                if cr:
+                    extra["Content-Range"] = cr
+                cl = resp.headers.get("Content-Length")
+                if cl:
+                    extra["Content-Length"] = cl
+            if status == 206:
+                self.send_response(206)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                for k, v in extra.items():
+                    if k != "Content-Length":
+                        self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            self._send(200, data, ctype, extra)
+        except Exception as exc:
+            self._send(502, f"video failed: {exc}".encode(), "text/plain; charset=utf-8")
 
     def _json(self, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()

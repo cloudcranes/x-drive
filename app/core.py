@@ -82,6 +82,11 @@ def orig_image_url(url: str) -> str:
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
+def video_cover(data: dict) -> str:
+    """视频缩略图：优先兜底解析器给的 video_cover，其次 cover_url。"""
+    return (data.get("video_cover") or data.get("cover_url") or "").strip()
+
+
 def media_entries(data: dict) -> list[tuple[str, str]]:
     """把解析结果摊平成 [(kind, url)]；kind 为 video 或 image。"""
     entries: list[tuple[str, str]] = []
