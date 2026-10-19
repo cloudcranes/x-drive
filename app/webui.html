@@ -83,6 +83,18 @@
   .card-media img{width:100%; height:auto; display:block; object-fit:cover}
   .card-media .ph{width:100%; aspect-ratio:4/5; display:grid; place-items:center;
     color:#2a2f36; font-family:var(--mono); font-size:11px}
+  /* 多图宫格：2 图左右分栏，3 图左大右两小，4 图四宫格 */
+  .grid{display:grid; gap:2px; background:#0a0a0a}
+  .grid.n2{grid-template-columns:1fr 1fr; aspect-ratio:16/10}
+  .grid.n3{grid-template-columns:1.35fr 1fr; grid-template-rows:1fr 1fr; aspect-ratio:4/3}
+  .grid.n4{grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; aspect-ratio:1}
+  .grid .cell{position:relative; overflow:hidden; min-height:0}
+  .grid.n3 .cell:first-child{grid-row:span 2}
+  .grid img{width:100%; height:100%; object-fit:cover; display:block}
+  .grid .ph{aspect-ratio:auto; height:100%}
+  .cellplay{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:26px; height:26px; border-radius:50%; display:grid; place-items:center;
+    background:rgba(0,0,0,.6); border:1px solid var(--line); color:#fff; font-size:10px}
   .badge-media{position:absolute; left:9px; top:9px; display:flex; gap:6px}
   .chip{font-family:var(--mono); font-size:10.5px; padding:3px 7px; border-radius:5px;
     background:rgba(0,0,0,.72); border:1px solid var(--line); color:var(--text); backdrop-filter:blur(6px)}
@@ -168,27 +180,43 @@ const el = (tag, cls, text) => {
 };
 const initial = s => (s || "?").trim().charAt(0).toUpperCase() || "?";
 
-/** 一条推文 → 一张瀑布流卡片；首张媒体作封面 */
+/** 单个媒体 → <img>，代理失败回退直连原图，再失败显示占位 */
+function mediaImg(item, alt) {
+  const img = new Image();
+  img.loading = "lazy";
+  img.decoding = "async";
+  img.alt = alt || "";
+  img.referrerPolicy = "no-referrer";
+  let fallback = item.raw || "";
+  img.addEventListener("error", () => {
+    if (fallback) { const f = fallback; fallback = ""; img.src = f; return; }
+    const ph = el("div", "ph", "预览不可用");
+    img.replaceWith(ph);
+  });
+  img.src = item.thumb || item.raw || "";
+  return img;
+}
+
+/** 一条推文 → 一张瀑布流卡片；多图时铺宫格，否则单图封面 */
 function card(t) {
   const node = el("article", "card");
   const media = el("div", "card-media");
-  const cover = (t.media || [])[0];
+  const items = (t.media || []).filter(m => m.thumb || m.raw);
+  const cover = items[0];
 
-  if (cover && cover.thumb) {
-    const img = new Image();
-    img.loading = "lazy";
-    img.decoding = "async";
-    img.alt = t.title || t.id;
-    img.referrerPolicy = "no-referrer";   // pbs.twimg.com 对带 referer 的请求偶发 403
-    // 先走同源代理；失败再直连原图，最后才显示占位
-    let fallback = cover.raw || "";
-    img.addEventListener("error", () => {
-      if (fallback) { img.src = fallback; fallback = ""; return; }
-      media.textContent = "";
-      media.append(el("div", "ph", "预览不可用"));
-    });
-    img.src = cover.thumb;
-    media.append(img);
+  if (cover) {
+    if (items.length === 1) {
+      media.append(mediaImg(cover, t.title || t.id));
+    } else {
+      const grid = el("div", "grid n" + Math.min(items.length, 4));
+      for (const item of items.slice(0, 4)) {
+        const cell = el("div", "cell");
+        cell.append(mediaImg(item, t.title || t.id));
+        if (item.kind === "video") cell.append(el("span", "cellplay", "▶"));
+        grid.append(cell);
+      }
+      media.append(grid);
+    }
   } else {
     media.append(el("div", "ph", "无预览"));
   }
@@ -197,8 +225,8 @@ function card(t) {
   if (t.images) badges.append(el("span", "chip img", t.images + " 图"));
   if (t.videos) badges.append(el("span", "chip vid", t.videos + " 视频"));
   if (badges.childElementCount) media.append(badges);
-  if (cover && cover.kind === "video") media.append(el("span", "more", "▶ 视频"));
-  else if ((t.media || []).length > 1) media.append(el("span", "more", "+" + (t.media.length - 1)));
+  if (items.length > 4) media.append(el("span", "more", "+" + (items.length - 4)));
+  else if (items.length === 1 && cover.kind === "video") media.append(el("span", "more", "▶ 视频"));
   node.append(media);
 
   const body = el("div", "card-body");
