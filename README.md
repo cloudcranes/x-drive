@@ -11,8 +11,6 @@ TG ──▶ bot ──▶ parse:8000 (解析) ──▶ 下载 ──▶ rclone
                                       data/state.json ──▶ web:8080 展示页
 ```
 
-![展示页](docs/preview.jpg)
-
 ## 前置
 
 - Docker（含 compose v2）
@@ -136,8 +134,6 @@ docker compose pull && docker compose up -d
 缩略图走同源 `/thumb` 代理（只放行 `*.twimg.com`），避免浏览器直连 `pbs.twimg.com` 时被墙或拿到占位图；未登录同样需要认证。
 
 视觉语言与参考站一致：纯黑底 + 青色光晕 + 细颗粒，标题走渐变扫光，数字用等宽字体，圆角 8px（卡片）/20–28px（统计胶囊），描边统一 `rgba(255,255,255,.10)`。
-
-![瀑布流看板](docs/preview.jpg)
 
 ```bash
 # 只看展示（不依赖 bot 运行）
