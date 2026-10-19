@@ -28,7 +28,16 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt pytest
-      - run: python -m pytest tests -q
+      - run: |
+          python -c "import sys, telegram, httpx; print(sys.version, 'ptb', telegram.__version__)"
+          python -m pytest --version
+      - run: python -m pytest tests -q 2>&1 | tee /tmp/pytest.log
+      - name: 失败摘要
+        if: failure()
+        run: |
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 60 /tmp/pytest.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: test
