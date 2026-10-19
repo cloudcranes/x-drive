@@ -83,6 +83,26 @@ def test_basic_auth(server, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as exc:
         get(server + "/api/tasks")
     assert exc.value.code == 401
+    assert exc.value.headers["WWW-Authenticate"].startswith("Basic")
+    # 401 返回可读的登录页而不是纯文本
+    page = exc.value.read().decode()
+    assert "需要登录" in page and "x-drive" in page
+
     token = base64.b64encode(b"u:p").decode()
+    ok = json.loads(get(server + "/api/tasks", {"Authorization": f"Basic {token}"}).read())
+    assert ok["stats"]["tasks"] == 2
+
+
+def test_basic_auth_rejects_wrong_password(server, monkeypatch):
+    monkeypatch.setattr(web, "AUTH", "u:p")
+    bad = base64.b64encode(b"u:wrong").decode()
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        get(server + "/api/tasks", {"Authorization": f"Basic {bad}"})
+    assert exc.value.code == 401
+
+
+def test_basic_auth_password_with_colon(server, monkeypatch):
+    monkeypatch.setattr(web, "AUTH", "u:p:a")
+    token = base64.b64encode(b"u:p:a").decode()
     ok = json.loads(get(server + "/api/tasks", {"Authorization": f"Basic {token}"}).read())
     assert ok["stats"]["tasks"] == 2

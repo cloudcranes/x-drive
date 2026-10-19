@@ -137,7 +137,13 @@ docker compose up -d web
 open http://<host>:8080
 ```
 
-公网暴露时加 Basic 认证，在 `.env` 里设 `WEB_AUTH=用户名:密码`，然后 `docker compose up -d web`。
+公网暴露时加登录认证，在 `.env` 里设 `WEB_AUTH=用户名:密码`，然后 `docker compose up -d web`：
+
+```bash
+WEB_AUTH=Alanmaster:xg363034
+```
+
+未登录访问会返回 401 和一张登录提示页，浏览器同时弹出原生登录框；输入账号密码后即可进入。账号密码用常量时间比较，密码中含 `:` 也能正确解析。
 
 本地预览（用示例数据，不碰真实 Drive）：
 
