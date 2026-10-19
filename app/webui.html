@@ -245,7 +245,7 @@ function videoPlayer(item, compact) {
   const showVideo = () => {
     wrap.classList.add("playing");
     btn.style.display = "none";
-    if (!loaded && item.play) { video.src = item.play; loaded = true; }
+    if (!loaded && item.play) { video.src = abs(item.play); loaded = true; }
     video.style.opacity = "1";
     video.play().catch(() => {
       video.muted = true;
@@ -264,7 +264,7 @@ function videoPlayer(item, compact) {
     // 第一次失败先退回直连 twimg 原片
     if (!triedRaw && item.raw && item.raw !== video.currentSrc) {
       triedRaw = true;
-      video.src = item.raw;
+      video.src = abs(item.raw);
       video.play().catch(() => {});
       return;
     }
@@ -346,6 +346,11 @@ function card(t) {
 // 若通过 http://user:pass@host 打开，浏览器会把凭据留在 location 里，
 // 此时 fetch("/api/...") 会抛 "Request cannot be constructed from a URL that includes credentials"。
 // 这里把凭据取出来手动放到 Authorization 头，并把地址栏里的凭据抹掉。
+// 绝对地址前缀：即使地址栏里带 user:pass，用 origin + 相对路径构造请求也不会触发
+// “Request cannot be constructed from a URL that includes credentials”
+const BASE = location.origin;
+const abs = p => (p && p.charAt(0) === "/") ? BASE + p : (p || "");
+
 const AUTH_HEADER = (() => {
   const m = location.href.match(/^(https?:\/\/)([^/@]+)@/);
   if (!m) return null;
@@ -358,7 +363,7 @@ async function load() {
   try {
     const init = {cache: "no-store"};
     if (AUTH_HEADER) init.headers = {Authorization: AUTH_HEADER};
-    const r = await fetch("/api/tasks", init);
+    const r = await fetch(BASE + "/api/tasks", init);
     if (!r.ok) throw new Error("HTTP " + r.status);
     const d = await r.json();
     $("dot").className = d.health.parse ? "dot" : "dot off";
