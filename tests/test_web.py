@@ -86,7 +86,7 @@ def test_basic_auth(server, monkeypatch):
     assert exc.value.headers["WWW-Authenticate"].startswith("Basic")
     # 401 返回可读的登录页而不是纯文本
     page = exc.value.read().decode()
-    assert "需要登录" in page and "x-drive" in page
+    assert "登录控制台" in page and 'id="u"' in page and 'id="p"' in page
 
     token = base64.b64encode(b"u:p").decode()
     ok = json.loads(get(server + "/api/tasks", {"Authorization": f"Basic {token}"}).read())
