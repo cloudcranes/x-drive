@@ -150,8 +150,8 @@ def test_pending_written_on_partial_and_cleared_on_success(tmp_path, stub_networ
     assert rec["stage"] == "partial" and rec["failures"]
 
 
-def test_force_bypasses_cache(tmp_path, stub_network, monkeypatch):
-    """force=True 时即便 state 命中也要重新跑（用于重试失败的媒体）。"""
+def test_force_reruns_when_failures_recorded(tmp_path, stub_network, monkeypatch):
+    """有失败项时 force 会重新解析并重跑。"""
     calls = []
 
     async def fake_parse(client, cfg, url):
@@ -161,8 +161,23 @@ def test_force_bypasses_cache(tmp_path, stub_network, monkeypatch):
     monkeypatch.setattr(main, "parse_link", fake_parse)
     monkeypatch.setattr(main, "folder_link", lambda cfg, target: asyncio.sleep(0, result="https://d/y"))
     state = {"123": {"path": "gdrive:X-Drive/a/2026-10/123", "link": "https://old",
-                     "files": ["a.jpg"], "title": "t"}}
+                     "files": ["a.jpg"], "title": "t", "failures": ["01.jpg: 下载 403"]}}
     text = asyncio.run(main.deliver(make_ctx(tmp_path, state), "https://x.com/u/status/123",
                                     FakeMessage(), force=True))
-    assert calls, "force 必须重新解析"
-    assert "https://old" not in text
+    assert calls, "有失败项时必须重新解析"
+    assert "https://d/y" in text
+
+
+def test_retry_skips_completed_record(tmp_path, stub_network, monkeypatch):
+    """已完整入库的记录，/retry 不应重复上传。"""
+    async def boom(*a, **k):
+        raise AssertionError("已完成的记录不该再解析")
+
+    monkeypatch.setattr(main, "parse_link", boom)
+    state = {"123": {"path": "gdrive:X-Drive/a/2026-10/123", "link": "https://drive/ok",
+                     "files": ["a.jpg"], "title": "t", "failures": []}}
+    msg = FakeMessage()
+    text = asyncio.run(main.deliver(make_ctx(tmp_path, state), "https://x.com/u/status/123",
+                                    msg, force=True))
+    assert "https://drive/ok" in text
+    assert "无需重试" in msg.text, "应通过进度消息说明跳过原因"

@@ -271,17 +271,31 @@ async def run_task(
     force: bool = False,
     chat_id: int | None = None,
 ) -> str:
-    """解析 → 下载 → 转码 → 上传。progress(text) 用来更新外部消息，便于重启补跑时复用。"""
+    """解析 → 下载 → 转码 → 上传。progress(text) 用来更新外部消息，便于重启补跑时复用。
+
+    幂等：无论正常流程还是重启补跑，先看 state。只要目标目录里确实有文件就不再重复上传，
+    这样「上传成功但进程在写 state 前被杀」也不会产生第二份。
+    """
     expanded = await expand_short(client, url)
     key = cache_key(expanded)
     hit = state.get(key) or {}
-    if hit.get("link") and not force:
+    if hit.get("link"):
         rc, out, _ = await rclone(cfg, "lsf", hit["path"], timeout=120.0)
         if rc == 0 and out.strip():
-            await progress("♻️ 此前已存过，复用链接")
-            return core.receipt(hit["link"], hit.get("files", []), [], hit.get("title", ""))
+            clear_pending(cfg, key)
+            if force:
+                # /retry：不该把已完成的再传一遍；只有存在失败项时才继续
+                if not hit.get("failures"):
+                    await progress("♻️ 该推文已完整入库，无需重试")
+                    return core.receipt(hit["link"], hit.get("files", []), [], hit.get("title", ""))
+            else:
+                await progress("♻️ 此前已存过，复用链接")
+                return core.receipt(hit["link"], hit.get("files", []), [], hit.get("title", ""))
 
     mark_pending(cfg, key, url=expanded, stage="parsing", chat_id=chat_id)
+    if force:
+        # 强制重跑会重新解析，先清掉历史失败项，避免「已成功仍被判为 partial」
+        hit.pop("failures", None)
     await progress("⏳ 解析媒体…")
     try:
         data = await parse_link(client, cfg, expanded)
@@ -412,6 +426,8 @@ async def run_task(
         if failures:
             # 部分成功也要留待办，方便 /retry 补抓
             mark_pending(cfg, key, url=expanded, stage="partial", chat_id=chat_id, failures=failures)
+        else:
+            clear_pending(cfg, key)     # 全部成功：确保不留任何待办
         return core.receipt(link, saved, failures, title)
     except Exception:
         # 失败保留临时文件与待办，重启后可补跑；成功路径在下面清理
