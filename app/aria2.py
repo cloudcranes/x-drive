@@ -1,9 +1,6 @@
-"""通过 aria2-pro 容器的 JSON-RPC 下载磁力/BT（替代镜像内置 aria2c）。
+"""aria2 RPC 的薄封装（web 后台也用它，所以放在这里独立成模块）。
 
-对应 p3terx/aria2-pro 的部署方式：RPC 端口 + RPC_SECRET，容器内常驻，
-本服务只下发任务并轮询状态，下载好的文件落在共享卷里。
-
-接口：http://<host>:<port>/jsonrpc
+对应 p3terx/aria2-pro 的部署方式：RPC 端口 + RPC_SECRET。
 """
 from __future__ import annotations
 
@@ -15,10 +12,13 @@ import httpx
 
 log = logging.getLogger("x-drive.aria2")
 
-# 常见的过期/停止状态
 DONE = "complete"
 ERROR = "error"
 REMOVED = "removed"
+STATUS_FIELDS = [
+    "gid", "status", "totalLength", "completedLength", "downloadSpeed",
+    "uploadSpeed", "errorMessage", "files", "dir", "bittorrent", "connections",
+]
 
 
 class RpcError(RuntimeError):
@@ -51,20 +51,12 @@ class Aria2:
             raise RpcError(body["error"].get("message") or str(body["error"]))
         return body.get("result")
 
-    async def ping(self, client: httpx.AsyncClient) -> bool:
-        try:
-            return bool(await self.call(client, "getVersion"))
-        except Exception as exc:
-            log.warning("aria2 rpc 不可用：%s", exc)
-            return False
-
-    async def add_magnet(
-        self, client: httpx.AsyncClient, magnet: str, directory: str
-    ) -> str:
+    # ---------------------------------------------------------------- 任务提交
+    async def add_magnet(self, client, magnet: str, directory: str) -> str:
         options = {
             "dir": directory,
-            "seed-time": "0",            # 下完不做种
-            "bt-stop-timeout": "180",    # 无进度 3 分钟退出
+            "seed-time": "0",
+            "bt-stop-timeout": "180",
             "file-allocation": "none",
             "auto-file-renaming": "false",
             "allow-overwrite": "true",
@@ -73,38 +65,60 @@ class Aria2:
         log.info("已提交磁力任务 gid=%s dir=%s", gid, directory)
         return gid
 
-    async def wait(
-        self, client: httpx.AsyncClient, gid: str, progress=None
-    ) -> dict:
-        """轮询直到完成/失败/超时；progress(percent, speed, eta) 用于回执。"""
+    async def add_uri(self, client, url: str, directory: str, filename: str = "") -> str:
+        options = {
+            "dir": directory,
+            "file-allocation": "none",
+            "auto-file-renaming": "false",
+            "allow-overwrite": "true",
+        }
+        if filename:
+            options["out"] = filename
+        gid = await self.call(client, "addUri", [url], options)
+        log.info("已提交直链任务 gid=%s dir=%s", gid, directory)
+        return gid
+
+    # ---------------------------------------------------------------- 查询
+    async def list_tasks(self, client) -> dict:
+        """活动 + 等待 + 已停止，供后台列表展示。"""
+        active = await self.call(client, "tellActive", STATUS_FIELDS) or []
+        waiting = await self.call(client, "tellWaiting", 0, 50, STATUS_FIELDS) or []
+        stopped = await self.call(client, "tellStopped", 0, 50, STATUS_FIELDS) or []
+        stat = await self.call(client, "getGlobalStat") or {}
+        return {"active": active, "waiting": waiting, "stopped": stopped, "stat": stat}
+
+    async def wait(self, client, gid: str, progress=None) -> dict:
+        """轮询到完成/失败/超时；progress(percent, speed, status) 用于回执。"""
         deadline = time.monotonic() + self.timeout
-        last = 0
+        last = -1.0
         while True:
-            status = await self.call(client, "tellStatus", gid, [
-                "status", "totalLength", "completedLength", "downloadSpeed",
-                "errorMessage", "files", "dir", "bittorrent",
-            ])
+            status = await self.call(client, "tellStatus", gid, STATUS_FIELDS)
             st = status.get("status")
             total = int(status.get("totalLength") or 0)
             done = int(status.get("completedLength") or 0)
             percent = (done / total) if total else 0
             speed = int(status.get("downloadSpeed") or 0)
-            if progress and (percent - last >= 0.02 or percent >= 1 or st != "active"):
+            if progress and (percent - last >= 0.02 or status.get("status") != "active"):
                 await progress(percent, speed, status)
                 last = percent
             if st == DONE:
                 return status
             if st in (ERROR, REMOVED):
-                raise RuntimeError(
-                    f"aria2 任务失败：{status.get('errorMessage') or st}"
-                )
+                raise RuntimeError(f"aria2 任务失败：{status.get('errorMessage') or st}")
             if time.monotonic() > deadline:
                 raise RuntimeError(f"aria2 下载超时（{int(self.timeout)}s）")
             await asyncio.sleep(self.poll)
 
-    async def shutdown(self, client: httpx.AsyncClient, gid: str) -> None:
-        """下载结束后移除任务记录，避免影响下次。"""
+    async def shutdown(self, client, gid: str) -> None:
         try:
             await self.call(client, "removeDownloadResult", gid)
         except Exception:
             pass
+
+    async def remove(self, client, gid: str) -> None:
+        """删除任务（活动任务先停再删记录）。"""
+        try:
+            await self.call(client, "forceRemove", gid)
+        except Exception:
+            pass
+        await self.shutdown(client, gid)

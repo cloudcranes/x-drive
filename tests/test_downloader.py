@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import codes, core, fetcher, main
+from app import codes, core, fetcher, main, pipeline
 
 
 def make_cfg(tmp_path, **over):
@@ -48,11 +48,11 @@ def stub(monkeypatch, tmp_path):
     async def fake_link(cfg, target):
         return "https://drive/folder/" + target.rsplit("/", 1)[-1]
 
-    async def fake_magnet(aria, client, magnet, dest_dir, progress=None):
-        await fake_http(None, magnet, dest_dir, 1 << 30)
+    async def fake_download(aria, client, source, work, progress=None):
+        await fake_http(None, source, work, 1 << 30)
 
     monkeypatch.setattr(fetcher, "download_http", fake_http)
-    monkeypatch.setattr(fetcher, "download_magnet", fake_magnet)
+    monkeypatch.setattr(pipeline, "download", fake_download)
     monkeypatch.setattr(main, "rclone", fake_rclone)
     monkeypatch.setattr(main, "folder_link", fake_link)
     return calls
@@ -96,9 +96,9 @@ def test_unknown_code_falls_back_to_unclassified(tmp_path, stub, monkeypatch):
         (dest_dir / "video_only.mp4").write_bytes(b"x" * (2 << 20))
     monkeypatch.setattr(fetcher, "download_http", fake_http)
 
-    async def fake_magnet(aria, client, magnet, dest_dir, progress=None):
-        await fake_http(None, magnet, dest_dir, 1 << 30)
-    monkeypatch.setattr(fetcher, "download_magnet", fake_magnet)
+    async def fake_download(aria, client, source, work, progress=None):
+        await fake_http(None, source, work, 1 << 30)
+    monkeypatch.setattr(pipeline, "download", fake_download)
 
     reply, _, cfg, state = run(tmp_path, {}, "magnet:?xt=urn:btih:bb")
     key = next(iter(state))
@@ -127,9 +127,9 @@ def test_failure_keeps_pending(tmp_path, stub, monkeypatch):
         raise RuntimeError("下载中断")
 
     monkeypatch.setattr(fetcher, "download_http", boom)
-    async def boom_magnet(aria, client, magnet, dest_dir, progress=None):
+    async def boom_download(aria, client, source, work, progress=None):
         raise RuntimeError("下载中断")
-    monkeypatch.setattr(fetcher, "download_magnet", boom_magnet)
+    monkeypatch.setattr(pipeline, "download", boom_download)
     reply, _, cfg, _ = run(tmp_path, {}, "SSIS-123 magnet:?xt=urn:btih:aa")
     assert "失败" in reply
     assert list(Path(cfg.pending_dir).glob("*.json")), "失败要留待办"
@@ -143,9 +143,9 @@ def test_quota_blocks_upload(tmp_path, stub, monkeypatch):
         (dest_dir / "SSIS-123.mp4").write_bytes(b"x" * (2 << 20))
     monkeypatch.setattr(fetcher, "download_http", fake_http)
 
-    async def fake_magnet(aria, client, magnet, dest_dir, progress=None):
-        await fake_http(None, magnet, dest_dir, 1 << 30)
-    monkeypatch.setattr(fetcher, "download_magnet", fake_magnet)
+    async def fake_download(aria, client, source, work, progress=None):
+        await fake_http(None, source, work, 1 << 30)
+    monkeypatch.setattr(pipeline, "download", fake_download)
 
     cfg = dataclasses.replace(make_cfg(tmp_path), daily_upload_gb=1)
     main.add_usage(cfg, 1023 * 1024**2)   # 距 1GB 上限只剩 1MB

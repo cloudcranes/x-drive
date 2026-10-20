@@ -61,18 +61,21 @@ async def download_http(
     return dest
 
 
-async def download_magnet(
-    aria, client, magnet: str, dest_dir: Path, progress=None
+async def download_rpc(
+    aria, client, source: str, dest_dir: Path, progress=None
 ) -> None:
-    """把磁力提交给 aria2-pro 容器的 RPC，轮询到完成。
+    """把磁力/直链都交给 aria2-pro 的 RPC，轮询到完成。
 
-    aria2-pro 与 bot 共用同一个 downloads 卷，所以只要给它一个容器内路径即可。
+    aria2-pro 与 bot 共用同一个 downloads 卷，所以只要给它容器内路径即可。
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
-    gid = await aria.add_magnet(client, magnet, str(dest_dir))
+    if is_magnet(source):
+        gid = await aria.add_magnet(client, source, str(dest_dir))
+    else:
+        gid = await aria.add_uri(client, source, str(dest_dir))
     try:
         status = await aria.wait(client, gid, progress=progress)
-        log.info("磁力下载完成 gid=%s 完成 %s 字节", gid, status.get("completedLength"))
+        log.info("下载完成 gid=%s 完成 %s 字节", gid, status.get("completedLength"))
     finally:
         await aria.shutdown(client, gid)
 

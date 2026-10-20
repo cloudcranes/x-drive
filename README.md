@@ -57,7 +57,7 @@ bot 只通过 JSON-RPC 下发任务，两边共用 `./downloads` 卷。要点：
 - `ARIA2_RPC_SECRET` 必须设置，否则容器拒绝连接
 - `LISTEN_PORT=6888` 需要在防火墙/路由器放行 TCP+UDP，否则 BT 只能被动连接，速度很慢
 - `aria2-config/` 挂 `/config`，容器自己维护配置与 tracker 列表（`UPDATE_TRACKERS=true`）
-- 自带 AriaNg Web 管理界面：`http://<host>:6880`（compose 里的 `ariang` 服务，已预填 RPC 地址与密钥），可查看队列、进度、速度、做种情况，也能手动加任务
+- **下载管理已集成进看板**（`http://<host>:8080`）：右上「+ 新建下载」粘贴磁力/直链即可提交，页面显示实时进度、速度与 Drive 链接；不需要单独的 AriaNg
 不想用远端镜像就删掉 `.env` 里的 `BOT_IMAGE`，改用本机 `docker compose up -d --build`。
 
 ## 配置

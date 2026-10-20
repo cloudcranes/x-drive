@@ -50,6 +50,29 @@
     transition:color .16s, border-color .16s, background .16s; white-space:nowrap}
   .chipbtn:hover{color:var(--text); border-color:rgba(255,255,255,.2)}
   .chipbtn.on{color:var(--cyan); border-color:rgba(62,186,244,.5); background:rgba(62,186,244,.10)}
+  .chipbtn.primary{color:#04140d; background:linear-gradient(150deg,var(--cyan),#2b9fd0);
+    border-color:transparent; font-weight:700}
+  .chipbtn.primary:hover{filter:brightness(1.08)}
+  .panel{max-width:1440px; margin:18px auto 0; padding:16px 18px; border:1px solid var(--line);
+    border-radius:12px; background:rgba(13,13,13,.85)}
+  .panel[hidden]{display:none}
+  .panel label{display:block; font-size:12px; color:var(--muted); margin-bottom:8px}
+  .panel textarea{width:100%; resize:vertical; padding:10px 12px; border-radius:8px;
+    border:1px solid var(--line); background:rgba(0,0,0,.55); color:var(--text);
+    font-family:var(--mono); font-size:12.5px; outline:none}
+  .panel textarea:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+  .panel-actions{display:flex; align-items:center; gap:10px; margin-top:10px}
+  .panel .hint{font-family:var(--mono); font-size:11.5px; color:var(--dim)}
+  .jobs{max-width:1440px; margin:16px auto 0; padding:0 26px; display:flex; flex-direction:column; gap:8px}
+  .jobs:empty{display:none}
+  .job{display:flex; align-items:center; gap:12px; padding:10px 14px; border:1px solid var(--line);
+    border-radius:8px; background:rgba(13,13,13,.7); font-family:var(--mono); font-size:12px}
+  .job .st{min-width:74px; color:var(--cyan)}
+  .job .bar{flex:1; height:4px; border-radius:2px; background:rgba(255,255,255,.08); overflow:hidden}
+  .job .bar i{display:block; height:100%; background:var(--cyan); width:0; transition:width .3s}
+  .job .txt{color:var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .job.failed .st{color:#ff8a8a}
+  .job.done .st{color:#5fd38d}
   .refresh{margin-left:auto; width:32px; height:32px; padding:0; display:grid; place-items:center;
     border-radius:8px; border:1px solid var(--line); background:rgba(13,13,13,.85);
     color:var(--muted); cursor:pointer; transition:color .16s, border-color .16s, background .16s}
@@ -228,6 +251,7 @@
       <button class="chipbtn" data-filter="single" type="button">单文件</button>
       <button class="chipbtn" data-filter="multi" type="button">多文件</button>
     </div>
+    <button class="chipbtn primary" id="new-task" type="button">+ 新建下载</button>
     <button class="refresh" id="refresh" type="button" title="立即刷新" aria-label="立即刷新">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
            stroke-linecap="round" stroke-linejoin="round">
@@ -265,6 +289,18 @@
       <div class="metric"><b id="s-last">—</b><span>最近归档</span></div>
     </div>
   </section>
+
+  <section class="panel" id="panel" hidden>
+    <label for="dl-text">磁力或直链（可带番号，如 <code>SSIS-123 magnet:?xt=...</code>）</label>
+    <textarea id="dl-text" rows="3" placeholder="magnet:?xt=urn:btih:..."></textarea>
+    <div class="panel-actions">
+      <button class="chipbtn primary" id="dl-submit" type="button">开始下载</button>
+      <button class="chipbtn" id="dl-cancel" type="button">取消</button>
+      <span class="hint" id="dl-hint"></span>
+    </div>
+  </section>
+
+  <section class="jobs" id="jobs"></section>
 
   <section class="groups" id="groups"></section>
   <section class="feed" id="feed"></section>
@@ -546,12 +582,81 @@ $("logout").addEventListener("click", async () => {
   location.replace("/");
 });
 
+// ── 新建下载
+$("new-task").addEventListener("click", () => {
+  const panel = $("panel");
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) $("dl-text").focus();
+});
+$("dl-cancel").addEventListener("click", () => { $("panel").hidden = true; $("dl-hint").textContent = ""; });
+
+$("dl-submit").addEventListener("click", async () => {
+  const text = $("dl-text").value.trim();
+  if (!text) { $("dl-hint").textContent = "先粘贴磁力或直链"; return; }
+  $("dl-submit").disabled = true;
+  $("dl-hint").textContent = "提交中…";
+  try {
+    const init = {method: "POST", cache: "no-store",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text})};
+    if (AUTH_HEADER) init.headers.Authorization = AUTH_HEADER;
+    const r = await fetch(BASE + "/api/download", init);
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      $("dl-hint").textContent = `已提交 ${d.count} 个任务` + (d.code ? ` · 番号 ${d.code}` : "");
+      $("dl-text").value = "";
+      loadJobs();
+    } else {
+      $("dl-hint").textContent = d.error || "提交失败";
+    }
+  } catch (e) {
+    $("dl-hint").textContent = "提交失败：" + e.message;
+  } finally {
+    $("dl-submit").disabled = false;
+  }
+});
+
+// ── 任务进度
+const STAGE_TEXT = {queued: "排队", downloading: "下载", organizing: "整理", uploading: "上传", done: "完成", failed: "失败"};
+
+async function loadJobs() {
+  try {
+    const init = {cache: "no-store"};
+    if (AUTH_HEADER) init.headers = {Authorization: AUTH_HEADER};
+    const r = await fetch(BASE + "/api/jobs", init);
+    if (!r.ok) return;
+    const {jobs} = await r.json();
+    const box = $("jobs");
+    box.textContent = "";
+    for (const j of jobs) {
+      const node = el("div", "job " + (j.stage === "failed" ? "failed" : j.stage === "done" ? "done" : ""));
+      node.append(el("span", "st", STAGE_TEXT[j.stage] || j.stage));
+      const bar = el("div", "bar");
+      const fill = el("i");
+      fill.style.width = (j.percent || 0) + "%";
+      bar.append(fill);
+      node.append(bar);
+      const speed = j.speed ? (j.speed / 1048576).toFixed(1) + "MB/s" : "";
+      const label = j.code || (j.source || "").slice(0, 42);
+      node.append(el("span", "txt", [label, speed, j.error].filter(Boolean).join(" · ")));
+      if (j.link) {
+        const a = el("a", null, "Drive ↗");
+        a.href = j.link; a.target = "_blank"; a.rel = "noopener";
+        node.append(a);
+      }
+      box.append(node);
+    }
+  } catch (e) { /* 静默 */ }
+}
+
 $("refresh").addEventListener("click", () => {
   $("refresh").classList.add("spin");
   load();
 });
 load();
+loadJobs();
 setInterval(load, 30000);
+setInterval(loadJobs, 3000);
 
 // 有会话时展示退出入口；401 说明会话过期，直接回登录页
 fetch(BASE + "/api/session", {cache: "no-store"})

@@ -14,25 +14,38 @@ import logging
 import os
 import re
 import time
+import asyncio
+import shutil
+import subprocess
+import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import core
+import httpx
+
+from . import aria2, codes, core, pipeline
 
 log = logging.getLogger("x-drive.web")
 
 STATE = os.getenv("STATE_PATH", "/data/state.json")
 METRICS = os.getenv("METRICS_PATH", "/data/metrics.json")
 PENDING_DIR = os.getenv("PENDING_DIR", "/data/pending")
+ARIA2_RPC = os.getenv("ARIA2_RPC", "http://aria2:6800").strip()
+RCLONE_REMOTE = os.getenv("RCLONE_REMOTE", "gdrive").strip()
+DRIVE_ROOT = os.getenv("DRIVE_ROOT", "X-Drive").strip().strip("/")
+RCLONE_CONFIG = os.getenv("RCLONE_CONFIG", "/config/rclone/rclone.conf")
+DAILY_UPLOAD_GB = int(os.getenv("DAILY_UPLOAD_GB", "0") or 0)
+ARIA2_SECRET = os.getenv("ARIA2_RPC_SECRET", "").strip()
+TMP_ROOT = os.getenv("TMP_ROOT", "/downloads")
+
 BIND = os.getenv("WEB_BIND", "0.0.0.0")
 PORT = int(os.getenv("WEB_PORT", "8080"))
 AUTH = os.getenv("WEB_AUTH", "").strip()
 HTML_PATH = Path(__file__).with_name("webui.html")
 LOGIN_PATH = Path(__file__).with_name("login.html")
 
-THUMB_MAX = 6 * 1024 * 1024
 
 SESSION_COOKIE = "xd_session"
 SESSION_TTL = 7 * 24 * 3600
@@ -103,6 +116,117 @@ def metrics_snapshot() -> dict:
     data = m.snapshot(METRICS)
     data["pending"] = pending_count()
     return data
+
+
+# ---------------------------------------------------------------- 下载任务
+
+JOBS: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+
+
+def job_update(job_id: str, **fields) -> None:
+    with _jobs_lock:
+        record = JOBS.setdefault(job_id, {"id": job_id, "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        record.update(fields)
+
+
+def jobs_snapshot() -> list[dict]:
+    with _jobs_lock:
+        items = [dict(j) for j in JOBS.values()]
+    return sorted(items, key=lambda j: j["at"], reverse=True)[:20]
+
+
+def rclone(*args: str, timeout: float = 7200.0) -> tuple[int, str, str]:
+    cmd = ["rclone", "--config", RCLONE_CONFIG, *args]
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "", "rclone 超时"
+    return done.returncode, done.stdout.decode(errors="replace"), done.stderr.decode(errors="replace")
+
+
+def upload_folder(work: Path, folder: str) -> tuple[str | None, int]:
+    """把目录推到 Drive/<番号>，返回 (分享链接, 字节数)。"""
+    target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}"
+    rclone("mkdir", target, timeout=120.0)
+    rc, _, err = rclone(
+        "copy", str(work), target,
+        "--transfers", "2", "--drive-chunk-size", "64M",
+        "--retries", "2", "--timeout", "30m",
+        "--drive-stop-on-upload-limit",
+    )
+    if rc != 0:
+        raise RuntimeError(f"rclone 上传失败：{err.strip()[:300]}")
+    rc, out, _ = rclone("link", target, timeout=120.0)
+    return (out.strip() if rc == 0 and out.strip().startswith("http") else None), 0
+
+
+def run_web_job(job_id: str, source: str, code: str) -> None:
+    """在独立线程里跑完整流程（下载走 aria2 RPC，上传走 rclone）。"""
+    work = pipeline.job_dir(TMP_ROOT, code or job_id)
+
+    async def main() -> None:
+        aria = aria2.Aria2(ARIA2_RPC, ARIA2_SECRET, poll=3.0)
+        async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
+            pipeline.cleanup(work)
+            work.mkdir(parents=True, exist_ok=True)
+            job_update(job_id, stage="downloading", percent=0.0, speed=0)
+
+            async def on_progress(percent, speed, status):
+                job_update(job_id, percent=round(percent * 100, 1), speed=speed or 0)
+
+            await pipeline.download(aria, client, source, work, progress=on_progress)
+
+    try:
+        asyncio.run(main())
+        job_update(job_id, stage="organizing")
+        names = " ".join(p.name for p in work.glob("*"))
+        folder, files = pipeline.organize(work, code or codes.detect(names) or "")
+        size = pipeline.total_size(files)
+
+        if DAILY_UPLOAD_GB and size > DAILY_UPLOAD_GB * 1024**3:
+            raise RuntimeError(f"单任务 {core.human_size(size)} 超过 DAILY_UPLOAD_GB 限制")
+
+        job_update(job_id, stage="uploading", folder=folder, size=size, percent=100.0)
+        link, _ = upload_folder(work, folder)
+
+        state = core.load_state(STATE)
+        state[folder] = {
+            "code": folder,
+            "path": f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}",
+            "link": link or "",
+            "files": [f.name for f in files],
+            "size": size,
+            "source": source[:300],
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        core.save_state(STATE, state)
+        job_update(job_id, stage="done", link=link or "", code=folder, size=size)
+    except Exception as exc:
+        log.exception("网页任务失败")
+        job_update(job_id, stage="failed", error=str(exc)[:300])
+    finally:
+        pipeline.cleanup(work)
+
+
+def start_job(source: str, code: str) -> str:
+    job_id = f"j{int(time.time() * 1000) % 10**10}"
+    job_update(job_id, source=source[:300], code=code, stage="queued", percent=0.0, speed=0)
+    threading.Thread(target=run_web_job, args=(job_id, source, code), daemon=True).start()
+    return job_id
+
+
+def aria_tasks() -> dict:
+    """实时队列（来自 aria2），供页面展示正在下载的内容。"""
+    async def main() -> dict:
+        aria = aria2.Aria2(ARIA2_RPC, ARIA2_SECRET)
+        async with httpx.AsyncClient() as client:
+            return await aria.list_tasks(client)
+
+    try:
+        return asyncio.run(main())
+    except Exception as exc:
+        return {"error": str(exc)[:200], "active": [], "waiting": [], "stopped": [], "stat": {}}
 
 
 def collect() -> dict:
@@ -207,6 +331,49 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok": False, "error": "账号或密码不正确"}, 401)
             return
+        if path == "/api/download":
+            if not self._authorized():
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 8192)) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                self._json({"ok": False, "error": "bad request"}, 400)
+                return
+            text = (payload.get("text") or "").strip()
+            sources = core.extract_urls(text)
+            if not sources:
+                self._json({"ok": False, "error": "需要一个磁力或直链"}, 400)
+                return
+            code = codes.detect(text) or ""
+            ids = [start_job(src, code) for src in sources]
+            self._json({"ok": True, "jobs": ids, "code": code, "count": len(ids)})
+            return
+        if path == "/api/aria2/remove":
+            if not self._authorized():
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                gid = (json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}).get("gid", "")
+            except (ValueError, json.JSONDecodeError):
+                gid = ""
+            if not gid:
+                self._json({"ok": False, "error": "缺少 gid"}, 400)
+                return
+
+            async def remove() -> None:
+                aria = aria2.Aria2(ARIA2_RPC, ARIA2_SECRET)
+                async with httpx.AsyncClient() as client:
+                    await aria.remove(client, gid)
+
+            try:
+                asyncio.run(remove())
+                self._json({"ok": True})
+            except Exception as exc:
+                self._json({"ok": False, "error": str(exc)[:200]}, 502)
+            return
         if path == "/api/logout":
             self._json(
                 {"ok": True},
@@ -246,6 +413,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/metrics":
             self._json(metrics_snapshot())
+            return
+        if path == "/api/jobs":
+            self._json({"jobs": jobs_snapshot()})
+            return
+        if path == "/api/aria2":
+            self._json(aria_tasks())
             return
         self._send(404, b"not found", "text/plain; charset=utf-8")
 

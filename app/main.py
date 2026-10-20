@@ -25,7 +25,7 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import aria2, codes, core, fetcher, metrics
+from . import aria2, codes, core, fetcher, metrics, pipeline
 
 log = logging.getLogger("x-drive")
 
@@ -277,7 +277,7 @@ async def run_task(
     force: bool = False,
     chat_id: int | None = None,
 ) -> str:
-    """番号 → 下载（直链/磁力）→ 归一化文件名 → 按番号上传 Drive。"""
+    """番号 → 下载（磁力/直链都走 aria2）→ 整理 → 按番号上传 Drive。"""
     aria = aria2.Aria2(cfg.aria2_rpc, cfg.aria2_secret, cfg.aria2_poll, cfg.magnet_timeout)
     sources = fetcher.sources(text)
     if not sources:
@@ -291,61 +291,37 @@ async def run_task(
     failures: list[str] = []
 
     for index, source in enumerate(sources, start=1):
-        mark_pending(cfg, code or f"job{index}", url=source, stage="downloading", chat_id=chat_id)
-        # 同一番号已在库里：除非 force，否则不重复下
+        key = code or f"job{index}"
+        mark_pending(cfg, key, url=source, stage="downloading", chat_id=chat_id)
+
         known = state.get(code) if code else None
         if known and known.get("link") and not force:
             results.append(f"♻️ {code} 已存在：{known['link']}")
-            clear_pending(cfg, code)
+            clear_pending(cfg, key)
             continue
 
-        work = Path(cfg.tmp_root) / safe_dir_name(code or f"job{index}")
-        shutil.rmtree(work, ignore_errors=True)
+        work = pipeline.job_dir(cfg.tmp_root, key)
+        pipeline.cleanup(work)
         work.mkdir(parents=True, exist_ok=True)
         try:
+            async def on_progress(percent, speed, status, _p=progress, _i=index):
+                mb = (speed or 0) / 1048576
+                await _p(f"⏳ 下载 {_i}/{len(sources)} · {percent * 100:.1f}% · {mb:.1f}MB/s")
+
             await progress(f"⏳ 下载 {index}/{len(sources)}…（磁力可能较慢）")
-            if fetcher.is_magnet(source):
-                async def bt_progress(percent, speed, status, _p=progress, _i=index):
-                    mb = speed / 1048576 if speed else 0
-                    await _p(
-                        f"⏳ 磁力 {_i}/{len(sources)} · {percent * 100:.1f}% · {mb:.1f}MB/s"
-                    )
+            await pipeline.download(aria, client, source, work, progress=on_progress)
 
-                await fetcher.download_magnet(
-                    aria, client, source, work, progress=bt_progress
-                )
-            else:
-                await fetcher.download_http(client, source, work, cfg.max_bytes)
-            fetcher.flatten(work)
+            final_code = code or codes.detect(fetcher.media_files(work)[0].name if fetcher.media_files(work) else "")
+            folder, files = pipeline.organize(work, final_code or "")
+            total = pipeline.total_size(files)
 
-            files = fetcher.media_files(work)
-            if not files:
-                raise RuntimeError("下载完成但没有找到视频文件")
-
-            # 番号优先取消息里的，其次从文件名推断；都没有就用时间戳目录
-            final_code = code or codes.detect(files[0].name) or ""
-            folder = codes.safe_folder(final_code) if final_code else ""
-            if not folder or len(folder) < 3:
-                folder = f"unclassified-{datetime.now():%Y%m%d-%H%M%S}"
-
-            # 单文件重命名为 <番号>.<ext>；多文件保留原名加序号前缀
-            if len(files) == 1:
-                target_name = f"{folder}{files[0].suffix.lower()}"
-                files[0].rename(work / target_name)
-                files = [work / target_name]
-            else:
-                for i, f in enumerate(files, start=1):
-                    f.rename(work / f"{folder}-{i}{f.suffix.lower()}")
-                files = fetcher.media_files(work)
-
-            total = sum(f.stat().st_size for f in files)
             if quota_exceeded(cfg, total):
                 raise RuntimeError(
-                    f"今日上传量已达 {cfg.daily_upload_gb}GB 上限，文件留在 /downloads 可明天 /retry"
+                    f"今日上传量已达 {cfg.daily_upload_gb}GB 上限，文件留在 /downloads 可明天重试"
                 )
 
             target = f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
-            await progress(f"⏳ 上传 {folder}（{total / 1073741824:.2f}GB）…")
+            await progress(f"⏳ 上传 {folder}（{core.human_size(total)}）…")
             rc, _, err = await rclone(cfg, "mkdir", target, timeout=120.0)
             rc, _, err = await rclone(
                 cfg, "copy", str(work), target,
@@ -373,16 +349,15 @@ async def run_task(
             core.save_state(cfg.state_path, state)
             clear_pending(cfg, folder)
             results.append(
-                f"✅ {folder} · {total / 1073741824:.2f}GB"
-                + (f"\n📁 {link}" if link else "")
+                f"✅ {folder} · {core.human_size(total)}" + (f"\n📁 {link}" if link else "")
             )
-        except Exception as exc:  # 单条链接失败不影响其他
+        except Exception as exc:
             log.exception("下载失败 %s", source[:80])
             failures.append(f"{source[:40]}…: {str(exc)[:160]}")
-            mark_pending(cfg, code or f"job{index}", url=source, stage="failed", chat_id=chat_id)
+            mark_pending(cfg, key, url=source, stage="failed", chat_id=chat_id)
         finally:
             if not failures:
-                shutil.rmtree(work, ignore_errors=True)
+                pipeline.cleanup(work)
 
     parts = results + [f"⚠️ {len(failures)} 项失败：" + "；".join(failures)] if failures else results
     return "\n".join(parts) or "❌ 没有任何结果"

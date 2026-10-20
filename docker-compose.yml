@@ -60,8 +60,14 @@ services:
     env_file: .env
     environment:
       WEB_PORT: "8080"
+      ARIA2_RPC: "http://aria2:6800"
+    depends_on:
+      aria2:
+        condition: service_started
     volumes:
-      - ./data:/data:ro
+      - ./data:/data
+      - ./downloads:/downloads
+      - ${RCLONE_CONFIG_HOST:?在 .env 里设置 RCLONE_CONFIG_HOST 指向 rclone.conf}:/config/rclone/rclone.conf:ro
     ports:
       - "${WEB_PORT:-8080}:8080"
     healthcheck:
@@ -70,16 +76,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
-
-  # aria2 的 Web 管理界面（AriaNg），连 aria2 的 RPC
-  ariang:
-    image: p3terx/ariang:latest
-    restart: unless-stopped
-    environment:
-      # RPC 地址与密钥，AriaNg 会预填到设置里
-      ARIA2_RPC: "http://aria2:6800/jsonrpc"
-      ARIA2_RPC_SECRET: ${ARIA2_RPC_SECRET}
-    ports:
-      - "${ARIANG_PORT:-6880}:6880"
-    depends_on:
-      - aria2
