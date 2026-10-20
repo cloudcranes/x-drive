@@ -71,3 +71,86 @@ def classify(text: str) -> str:
     if "⚠️" in text:
         return "partial"
     return "ok"
+
+
+# ---------------------------------------------------------------- 阶段耗时
+
+PHASES = ("download", "organize", "upload")
+
+
+def record_timing(path: str, timing: dict) -> None:
+    """记录一次任务的阶段耗时（秒）。
+
+    只保留最近 50 条明细 + 每个阶段的累计/最大/平均，用于回答
+    「到底慢在哪一步」这种问题 —— 之前完全没有这方面的数据。
+    """
+    data = _load(path)
+    phases = data.setdefault("phases", {})
+
+    for key in PHASES:
+        value = float(timing.get(key) or 0)
+        if value <= 0:
+            continue
+        bucket = phases.setdefault(key, {"count": 0, "sum": 0.0, "max": 0.0})
+        bucket["count"] = int(bucket.get("count", 0)) + 1
+        bucket["sum"] = round(float(bucket.get("sum", 0)) + value, 3)
+        bucket["max"] = round(max(float(bucket.get("max", 0)), value), 3)
+
+    total = float(timing.get("total") or 0)
+    if total > 0:
+        bucket = phases.setdefault("total", {"count": 0, "sum": 0.0, "max": 0.0})
+        bucket["count"] = int(bucket.get("count", 0)) + 1
+        bucket["sum"] = round(float(bucket.get("sum", 0)) + total, 3)
+        bucket["max"] = round(max(float(bucket.get("max", 0)), total), 3)
+
+    recent = data.setdefault("recent_timings", [])
+    recent.insert(0, {
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "code": (timing.get("code") or "")[:40],
+        "size": int(timing.get("size") or 0),
+        "outcome": (timing.get("outcome") or "ok")[:16],
+        **{k: round(float(timing.get(k) or 0), 2) for k in ("download", "organize", "upload", "total")},
+    })
+    del recent[50:]
+
+    data["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        tmp = f"{path}.tmp"
+        Path(tmp).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def timing_snapshot(path: str) -> dict:
+    """把累计值换算成平均值，并给出「上传吞吐」这类能直接比较的指标。"""
+    data = _load(path)
+    phases = data.get("phases") or {}
+    out = {}
+    for key, bucket in phases.items():
+        count = int(bucket.get("count", 0)) or 0
+        if not count:
+            continue
+        total_sum = float(bucket.get("sum", 0))
+        out[key] = {
+            "count": count,
+            "avg": round(total_sum / count, 2),
+            "max": round(float(bucket.get("max", 0)), 2),
+            "sum": round(total_sum, 2),
+        }
+
+    recent = data.get("recent_timings") or []
+    uploads = [r for r in recent if r.get("upload") and r.get("size")]
+    throughput = None
+    if uploads:
+        rates = [r["size"] / r["upload"] / 1048576 for r in uploads if r["upload"] > 0]
+        if rates:
+            throughput = round(sum(rates) / len(rates), 2)
+
+    return {
+        "phases": out,
+        "upload_mbps": throughput,
+        "recent": recent[:20],
+        "updated": data.get("updated", ""),
+    }

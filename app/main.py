@@ -320,17 +320,26 @@ async def run_task(
         pipeline.cleanup(work)
         work.mkdir(parents=True, exist_ok=True)
         uploaded = False
+        clock = {"download": 0.0, "organize": 0.0, "upload": 0.0}
+        job_size = 0
+        job_started = time.monotonic()
         try:
             async def on_progress(percent, speed, status, _p=progress, _i=index):
                 mb = (speed or 0) / 1048576
                 await _p(f"⏳ 下载 {_i}/{len(sources)} · {percent * 100:.1f}% · {mb:.1f}MB/s")
 
             await progress(f"⏳ 下载 {index}/{len(sources)}…{hint or '（磁力可能较慢）'}")
+            phase = time.monotonic()
             await pipeline.download(aria, client, source, work, progress=on_progress)
+            clock["download"] = time.monotonic() - phase
 
-            final_code = code or codes.detect(fetcher.media_files(work)[0].name if fetcher.media_files(work) else "")
+            phase = time.monotonic()
+            found = fetcher.media_files(work)
+            final_code = code or codes.detect(found[0].name if found else "")
             folder, files = pipeline.organize(work, final_code or "")
             total = pipeline.total_size(files)
+            clock["organize"] = time.monotonic() - phase
+            job_size = total
 
             if quota_exceeded(cfg, total):
                 raise RuntimeError(
@@ -339,6 +348,7 @@ async def run_task(
 
             target = f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
             await progress(f"⏳ 上传 {folder}（{core.human_size(total)}）…")
+            phase = time.monotonic()
             rc, _, err = await rclone(cfg, "mkdir", target, timeout=120.0)
             rc, _, err = await rclone(
                 cfg, "copy", str(work), target,
@@ -351,6 +361,7 @@ async def run_task(
                 if "uploadLimitExceeded" in err or "quota" in err.lower():
                     raise RuntimeError("Drive 上传配额已用完，明日再试")
                 raise RuntimeError(f"rclone 上传失败：{err.strip()[:300]}")
+            clock["upload"] = time.monotonic() - phase
             add_usage(cfg, total)
 
             link = await folder_link(cfg, target)
@@ -374,6 +385,15 @@ async def run_task(
             failures.append(f"{source[:40]}…: {str(exc)[:160]}")
             mark_pending(cfg, key, url=source, stage="failed", chat_id=chat_id)
         finally:
+            metrics.record_timing(cfg.metrics_path, {
+                "code": key,
+                "size": job_size,
+                "outcome": "ok" if uploaded else "fail",
+                "download": clock["download"],
+                "organize": clock["organize"],
+                "upload": clock["upload"],
+                "total": time.monotonic() - job_started,
+            })
             # 只看「这一个任务」是否成功：之前用累计的 failures 判断，
             # 前面失败过一次，后面成功任务的目录就再也不会被清，磁盘一路涨。
             # 失败时保留目录，方便 /retry 续传，但整体有容量上限。

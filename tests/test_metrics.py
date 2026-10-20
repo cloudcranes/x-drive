@@ -86,3 +86,55 @@ def test_usage_resets_next_day(tmp_path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"date": "2000-01-01", "bytes": 10**12}))
     assert main.today_bytes(cfg) == 0, "跨天必须清零"
+
+
+def test_record_timing_accumulates_and_averages(tmp_path):
+    from app import metrics
+    path = str(tmp_path / "m.json")
+    metrics.record_timing(path, {"code": "A-1", "size": 100 * 1048576,
+                                 "download": 10, "organize": 1, "upload": 5, "total": 16})
+    metrics.record_timing(path, {"code": "A-2", "size": 100 * 1048576,
+                                 "download": 20, "organize": 1, "upload": 5, "total": 26})
+
+    snap = metrics.timing_snapshot(path)
+    assert snap["phases"]["download"]["count"] == 2
+    assert snap["phases"]["download"]["avg"] == 15.0
+    assert snap["phases"]["download"]["max"] == 20.0
+    assert snap["phases"]["upload"]["avg"] == 5.0
+    assert snap["phases"]["total"]["avg"] == 21.0
+
+
+def test_timing_throughput_is_mbps(tmp_path):
+    from app import metrics
+    path = str(tmp_path / "m.json")
+    # 100MB 传 5 秒 = 20MB/s
+    metrics.record_timing(path, {"code": "B-1", "size": 100 * 1048576, "upload": 5, "total": 6})
+    assert metrics.timing_snapshot(path)["upload_mbps"] == 20.0
+
+
+def test_timing_skips_zero_phases(tmp_path):
+    """失败的下载没有 upload 阶段，不能污染上传平均耗时。"""
+    from app import metrics
+    path = str(tmp_path / "m.json")
+    metrics.record_timing(path, {"code": "C-1", "download": 3, "outcome": "download_fail"})
+    snap = metrics.timing_snapshot(path)
+    assert "upload" not in snap["phases"]
+    assert snap["phases"]["download"]["count"] == 1
+
+
+def test_timing_recent_is_capped(tmp_path):
+    from app import metrics
+    path = str(tmp_path / "m.json")
+    for i in range(80):
+        metrics.record_timing(path, {"code": f"X-{i}", "download": 1, "total": 1})
+    assert len(metrics.timing_snapshot(path)["recent"]) == 20   # 快照取前 20
+    raw = metrics._load(path)["recent_timings"]
+    assert len(raw) == 50, "明细最多存 50 条，避免文件无限增长"
+
+
+def test_timing_survives_corrupt_file(tmp_path):
+    from app import metrics
+    path = tmp_path / "m.json"
+    path.write_text("{not json")
+    metrics.record_timing(str(path), {"code": "D-1", "download": 2, "total": 2})
+    assert metrics.timing_snapshot(str(path))["phases"]["download"]["count"] == 1

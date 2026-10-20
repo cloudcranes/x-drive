@@ -115,6 +115,7 @@ def metrics_snapshot() -> dict:
 
     data = m.snapshot(METRICS)
     data["pending"] = pending_count()
+    data["timing"] = m.timing_snapshot(METRICS)
     return data
 
 
@@ -217,20 +218,31 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
 
             await pipeline.download(aria, client, source, work, progress=on_progress)
 
+    started = time.monotonic()
+    clock = {"download": 0.0, "organize": 0.0, "upload": 0.0}
+    done_code, done_size = code, 0
     try:
+        phase = time.monotonic()
         asyncio.run(main())
+        clock["download"] = time.monotonic() - phase
         if cancel_requested(job_id):
             raise Cancelled("已停止")
+
         job_update(job_id, stage="organizing")
+        phase = time.monotonic()
         names = " ".join(p.name for p in work.glob("*"))
         folder, files = pipeline.organize(work, code or codes.detect(names) or "")
         size = pipeline.total_size(files)
+        done_code, done_size = folder, size
+        clock["organize"] = time.monotonic() - phase
 
         if DAILY_UPLOAD_GB and size > DAILY_UPLOAD_GB * 1024**3:
             raise RuntimeError(f"单任务 {core.human_size(size)} 超过 DAILY_UPLOAD_GB 限制")
 
         job_update(job_id, stage="uploading", folder=folder, size=size, percent=100.0)
+        phase = time.monotonic()
         link, _ = upload_folder(work, folder)
+        clock["upload"] = time.monotonic() - phase
 
         core.update_state(STATE, {
             folder: {
@@ -243,7 +255,9 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
                 "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
         })
-        job_update(job_id, stage="done", link=link or "", code=folder, size=size)
+        job_update(job_id, stage="done", link=link or "", code=folder, size=size,
+                   timing={k: round(v, 2) for k, v in clock.items()},
+                   throughput=(round(size / clock["upload"] / 1048576, 2) if clock["upload"] else None))
     except Cancelled:
         log.info("任务已停止：%s", job_id)
         job_update(job_id, stage="failed", error="已停止")
@@ -251,9 +265,29 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         log.exception("网页任务失败")
         job_update(job_id, stage="failed", error=str(exc)[:300])
     finally:
+        outcome = "ok" if clock["upload"] else ("download_fail" if not clock["download"] else "upload_fail")
+        record_timing(job_id, done_code, done_size, clock, outcome, started)
         with _jobs_lock:
             CANCEL.pop(job_id, None)
         pipeline.cleanup(work)
+
+
+def record_timing(job_id: str, code: str, size: int, clock: dict, outcome: str, started: float) -> None:
+    """把阶段耗时写进 metrics.json；失败也记，否则只看到成功的样本会失真。"""
+    from . import metrics as m
+
+    try:
+        m.record_timing(METRICS, {
+            "code": code or job_id,
+            "size": size,
+            "outcome": outcome,
+            "download": clock.get("download", 0),
+            "organize": clock.get("organize", 0),
+            "upload": clock.get("upload", 0),
+            "total": time.monotonic() - started,
+        })
+    except Exception as exc:      # 统计失败不能影响任务本身
+        log.warning("记录耗时失败：%s", exc)
 
 
 def peek(magnet: str) -> dict | None:

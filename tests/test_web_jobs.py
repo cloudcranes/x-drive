@@ -179,3 +179,40 @@ def test_unauthorized_keeps_connection_clean(tmp_path, monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_job_records_phase_timing(monkeypatch, tmp_path):
+    """任务结束后要把阶段耗时写进 metrics，否则永远不知道慢在哪一步。"""
+    from app import metrics
+    mpath = tmp_path / "m.json"
+    monkeypatch.setattr(web, "METRICS", str(mpath))
+
+    web.record_timing("j1", "SSIS-123", 100 * 1048576,
+                      {"download": 10.0, "organize": 0.5, "upload": 5.0}, "ok", started=0.0)
+    snap = metrics.timing_snapshot(str(mpath))
+    assert snap["phases"]["download"]["avg"] == 10.0
+    assert snap["phases"]["upload"]["avg"] == 5.0
+    assert snap["upload_mbps"] == 20.0
+
+
+def test_job_timing_failure_does_not_break_job(monkeypatch):
+    """统计写不进去也不能让任务本身失败。"""
+    monkeypatch.setattr(web, "METRICS", "/nonexistent-root-dir/blocked/m.json")
+    web.record_timing("j1", "X-1", 1, {"download": 1.0}, "ok", started=0.0)
+
+
+def test_metrics_api_exposes_timing(server, monkeypatch, tmp_path):
+    import tempfile, os
+    d = tempfile.mkdtemp()
+    monkeypatch.setattr(web, "METRICS", os.path.join(d, "m.json"))
+    monkeypatch.setattr(web, "PENDING_DIR", os.path.join(d, "pending"))
+    web.record_timing("j", "A-1", 50 * 1048576, {"download": 2.0, "upload": 5.0}, "ok", 0.0)
+    base, _ = server
+    host, port = base.removeprefix("http://").split(":")
+    c = http.client.HTTPConnection(host, int(port), timeout=10)
+    c.request("GET", "/api/metrics")
+    r = c.getresponse()
+    data = json.loads(r.read())
+    c.close()
+    assert "timing" in data
+    assert data["timing"]["phases"]["download"]["count"] >= 1
