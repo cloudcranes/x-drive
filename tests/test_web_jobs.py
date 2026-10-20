@@ -149,3 +149,33 @@ def test_clear_finished_jobs_only(server):
     status, data = post(base, "/api/jobs/clear", {})
     assert status == 200
     assert "j-done" not in web.JOBS and "j-run" in web.JOBS
+
+
+def test_unauthorized_keeps_connection_clean(tmp_path, monkeypatch):
+    """鉴权失败也要读掉请求体，否则 keep-alive 复用连接时残留字节会被当成新请求。"""
+    state_file = tmp_path / "state.json"
+    core.save_state(str(state_file), {})
+    monkeypatch.setattr(web, "STATE", str(state_file))
+    monkeypatch.setattr(web, "AUTH", "u:p")
+    monkeypatch.setattr(web, "JOBS", {})
+    httpd = web.serve("127.0.0.1", 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    host, port = "127.0.0.1", httpd.server_address[1]
+    try:
+        c = http.client.HTTPConnection(host, port, timeout=10)
+        for path in ("/api/download", "/api/job/stop"):
+            c.request("POST", path, body=json.dumps({"text": "magnet:?xt=urn:btih:aa", "id": "x"}),
+                      headers={"Content-Type": "application/json"})
+            r = c.getresponse()
+            assert r.status == 401
+            r.read()
+        # 同一个连接继续用：请求必须被正常解析（不是 400 Bad request syntax）
+        c.request("POST", "/api/jobs/clear", body=json.dumps({}),
+                  headers={"Content-Type": "application/json"})
+        r = c.getresponse()
+        assert r.status == 401
+        r.read()
+        c.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

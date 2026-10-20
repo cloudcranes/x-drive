@@ -384,6 +384,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _drain(self) -> None:
+        """读掉请求体：鉴权失败直接返回时不读，残留字节会被当成下一个请求解析，日志里刷 400。"""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > 0:
+                self.rfile.read(min(length, 1 << 16))
+        except (ValueError, OSError):
+            pass
+
     def _authorized(self) -> bool:
         if not AUTH:
             return True
@@ -433,6 +442,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/download":
             if not self._authorized():
+                self._drain()
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
             try:
@@ -483,6 +493,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/job/stop":
             if not self._authorized():
+                self._drain()
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
             try:
@@ -497,6 +508,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/jobs/clear":
             if not self._authorized():
+                self._drain()
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
             with _jobs_lock:
@@ -506,6 +518,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/aria2/remove":
             if not self._authorized():
+                self._drain()
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
             try:
