@@ -39,7 +39,14 @@
     border:1px solid rgba(62,186,244,.4)}
   .brand .mark svg{width:13px;height:13px;stroke:var(--cyan)}
   .brand i{font-style:normal; color:var(--cyan)}
-  .badge{margin-left:auto; display:inline-flex; align-items:center; gap:7px; padding:5px 11px;
+  .refresh{margin-left:auto; width:32px; height:32px; padding:0; display:grid; place-items:center;
+    border-radius:8px; border:1px solid var(--line); background:rgba(13,13,13,.85);
+    color:var(--muted); cursor:pointer; transition:color .16s, border-color .16s, background .16s}
+  .refresh:hover{color:var(--cyan); border-color:rgba(62,186,244,.45); background:rgba(62,186,244,.08)}
+  .refresh svg{width:15px; height:15px}
+  .refresh.spin svg{animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .badge{ display:inline-flex; align-items:center; gap:7px; padding:5px 11px;
     border:1px solid var(--line); border-radius:999px; background:rgba(13,13,13,.85);
     font-family:var(--mono); font-size:11.5px; letter-spacing:.04em; color:var(--muted)}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
@@ -175,6 +182,12 @@
       </span>
       x-<i>drive</i>
     </div>
+    <button class="refresh" id="refresh" type="button" title="立即刷新" aria-label="立即刷新">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>
+      </svg>
+    </button>
     <div class="badge"><span class="dot" id="dot"></span><span id="health">连接中…</span></div>
   </div>
 </header>
@@ -398,35 +411,86 @@ const AUTH_HEADER = (() => {
   try { return "Basic " + btoa(decodeURIComponent(creds)); } catch (e) { return null; }
 })();
 
-async function load() {
-  try {
-    const init = {cache: "no-store"};
-    if (AUTH_HEADER) init.headers = {Authorization: AUTH_HEADER};
-    const r = await fetch(BASE + "/api/tasks", init);
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const d = await r.json();
-    $("dot").className = d.health.parse ? "dot" : "dot off";
-    $("health").textContent = d.health.parse ? "运行中 · parse 在线" : "parse 不可达";
-    $("s-tasks").textContent = d.stats.tasks;
-    $("s-images").textContent = d.stats.images;
-    $("s-videos").textContent = d.stats.videos;
-    $("s-last").textContent = d.stats.last ? fmt(d.stats.last) : "—";
+// 增量渲染：按 id 复用已有卡片，避免轮询把正在播放的视频掐掉、把滚动位置重置
+const mounted = new Map();   // id -> {node, at, sig}
+let inflight = null;
 
-    const feed = $("feed"), slot = $("empty-slot");
-    feed.textContent = ""; slot.textContent = "";
-    if (!d.tasks.length) {
-      slot.append(el("div", "empty", "还没有记录。给机器人发一条带图片或视频的 x 链接试试。"));
-    } else {
-      const frag = document.createDocumentFragment();
-      for (const t of d.tasks) frag.append(card(t));
-      feed.append(frag);
-    }
-    $("updated").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN");
-  } catch (e) {
-    $("dot").className = "dot off";
-    $("health").textContent = "接口异常：" + e.message;
+function signature(t) {
+  return [t.at, t.title, t.files.join("|"), t.link].join("~");
+}
+
+function syncFeed(tasks) {
+  const feed = $("feed"), slot = $("empty-slot");
+  slot.textContent = "";
+  if (!tasks.length) {
+    feed.textContent = "";
+    mounted.clear();
+    slot.append(el("div", "empty", "还没有记录。给机器人发一条带图片或视频的 x 链接试试。"));
+    return;
+  }
+
+  const seen = new Set();
+  let anchor = null;
+  for (const t of tasks) {
+    seen.add(t.id);
+    const sig = signature(t);
+    const cur = mounted.get(t.id);
+    if (cur && cur.sig === sig) { anchor = cur.node; continue; }   // 内容没变，原样保留
+    const node = card(t);
+    if (cur) { cur.node.replaceWith(node); mounted.set(t.id, {node, sig}); }
+    else { mounted.set(t.id, {node, sig}); }
+    anchor = node;
+  }
+
+  // 按顺序重排：只移动位置不对的节点，已就位的元素（含播放中的 video）不重新插入
+  let cursor = feed.firstElementChild;
+  for (const t of tasks) {
+    const node = mounted.get(t.id).node;
+    if (node === cursor) { cursor = cursor.nextElementSibling; }
+    else { feed.insertBefore(node, cursor); }
+  }
+
+  for (const [id, item] of [...mounted]) {
+    if (!seen.has(id)) { item.node.remove(); mounted.delete(id); }
   }
 }
+
+async function load() {
+  if (inflight) return inflight;              // 防止定时器与手动刷新叠在一起
+  inflight = (async () => {
+    try {
+      const init = {cache: "no-store"};
+      if (AUTH_HEADER) init.headers = {Authorization: AUTH_HEADER};
+      const r = await fetch(BASE + "/api/tasks", init);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      $("dot").className = d.health.parse ? "dot" : "dot off";
+      $("health").textContent = d.health.parse
+        ? "运行中 · parse 在线"
+        : "parse 不可达（记录仍可查看）";
+      $("s-tasks").textContent = d.stats.tasks;
+      $("s-images").textContent = d.stats.images;
+      $("s-videos").textContent = d.stats.videos;
+      $("s-last").textContent = d.stats.last ? fmt(d.stats.last) : "—";
+      syncFeed(d.tasks);
+      $("updated").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN");
+      $("refresh").classList.remove("spin");
+    } catch (e) {
+      // 失败时保留现有列表，只提示状态；不再清空页面
+      $("dot").className = "dot off";
+      $("health").textContent = "刷新失败：" + e.message + "（显示的是上次结果）";
+      $("refresh").classList.remove("spin");
+    } finally {
+      inflight = null;
+    }
+  })();
+  return inflight;
+}
+
+$("refresh").addEventListener("click", () => {
+  $("refresh").classList.add("spin");
+  load();
+});
 load();
 setInterval(load, 30000);
 </script>

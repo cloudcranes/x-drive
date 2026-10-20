@@ -34,6 +34,14 @@ def domain_allowed(url: str, allowed: list[str] | tuple[str, ...]) -> bool:
     return any(host == d.lower() or host.endswith("." + d.lower()) for d in allowed)
 
 
+X_HOSTS = ("x.com", "twitter.com", "t.co")
+
+
+def is_x_url(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in X_HOSTS)
+
+
 def tweet_id_from_url(url: str) -> str | None:
     m = TWEET_ID_RE.search(urlsplit(url).path) or TWEET_ID_RE.search(url)
     return m.group(1) if m else None
@@ -88,15 +96,28 @@ def video_cover(data: dict) -> str:
 
 
 def media_entries(data: dict) -> list[tuple[str, str]]:
-    """把解析结果摊平成 [(kind, url)]；kind 为 video 或 image。"""
+    """把解析结果摊平成 [(kind, url)]；kind 为 video 或 image。
+
+    一条推文可能同时有多个视频和图片（图文混排），全部摊平，按 URL 去重。
+    """
     entries: list[tuple[str, str]] = []
-    video = (data.get("video_url") or "").strip()
-    if video:
-        entries.append(("video", video))
+    seen: set[str] = set()
+
+    def add(kind: str, url: str) -> None:
+        url = (url or "").strip()
+        if not url or url in seen:
+            return
+        seen.add(url)
+        entries.append((kind, url))
+
+    add("video", data.get("video_url") or "")
+    for item in data.get("videos") or []:
+        url = item if isinstance(item, str) else ((item or {}).get("url") or "")
+        add("video", url)
     for img in data.get("images") or []:
         url = (img or {}).get("url") or ""
         if url:
-            entries.append(("image", orig_image_url(url)))
+            add("image", orig_image_url(url))
     return entries
 
 

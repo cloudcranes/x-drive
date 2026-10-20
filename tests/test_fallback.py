@@ -91,3 +91,15 @@ def test_fetch_network_error():
 
 def test_fetch_empty_id():
     assert asyncio.run(fallback.fetch(object(), "")) is None
+
+
+def test_multi_video_all_returned():
+    payload = {"tweet": {"media": {
+        "photos": [{"url": "https://pbs.twimg.com/p.jpg"}],
+        "videos": [{"url": "https://video.twimg.com/1.mp4", "thumbnail_url": "https://pbs.twimg.com/t1.jpg"},
+                   {"url": "https://video.twimg.com/2.mp4", "thumbnail_url": "https://pbs.twimg.com/t2.jpg"}],
+    }}}
+    data = fallback.to_parse_shape(payload)
+    assert data["videos"] == ["https://video.twimg.com/1.mp4", "https://video.twimg.com/2.mp4"]
+    assert data["video_url"] == "https://video.twimg.com/1.mp4"
+    assert len(data["images"]) == 1, "有视频时图片也要带上"

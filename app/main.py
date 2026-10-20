@@ -194,10 +194,18 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
         log.warning("主解析器失败：%s，尝试 fxtwitter 兜底", exc)
         data = {}
     entries = core.media_entries(data)
-    if not entries:
-        await edit(status, "⏳ 主解析器无结果，改用备用通道…")
-        data = await fallback.fetch(client, key) or {}
-        entries = core.media_entries(data)
+    # 主解析器拿到视频时会丢图片、多视频只取第一个；fxtwitter 的媒体更完整。
+    # 只要它给出的条目更多就采用它，否则保留主结果。
+    if core.is_x_url(expanded):
+        alt = await fallback.fetch(client, key)
+        if alt:
+            alt_entries = core.media_entries(alt)
+            if len(alt_entries) > len(entries):
+                log.info(
+                    "改用完整媒体集合：%d → %d 项（原结果疑似漏图/漏视频）",
+                    len(entries), len(alt_entries),
+                )
+                data, entries = alt, alt_entries
     if not entries:
         return "❌ 该推文没有可下载的图片或视频（敏感内容或已删除）"
 

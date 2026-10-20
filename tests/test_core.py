@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 
 from app.core import (
+    is_x_url,
     media_filename,
     domain_allowed,
     extract_url,
@@ -105,3 +106,29 @@ def test_receipt():
     assert "没有文件入库" in receipt(None, [], ["下载失败"])
     long_title = "字" * 200
     assert len(receipt(None, ["a.jpg"], [], long_title)) < 300
+
+
+def test_media_entries_mixed_multi_video():
+    data = {
+        "video_url": "https://video.twimg.com/1.mp4",
+        "videos": ["https://video.twimg.com/1.mp4", "https://video.twimg.com/2.mp4"],
+        "images": [{"url": "https://pbs.twimg.com/a.jpg"},
+                   {"url": "https://pbs.twimg.com/b.jpg"}],
+    }
+    kinds = [k for k, _ in media_entries(data)]
+    assert kinds == ["video", "video", "image", "image"], "多视频与图片都要保留"
+    urls = [u for _, u in media_entries(data)]
+    assert len(urls) == len(set(urls)), "同一 URL 只保留一次"
+
+
+def test_media_entries_legacy_single_video():
+    data = {"video_url": "https://video.twimg.com/1.mp4", "images": []}
+    assert media_entries(data) == [("video", "https://video.twimg.com/1.mp4")]
+
+
+def test_is_x_url():
+    assert is_x_url("https://x.com/u/status/1")
+    assert is_x_url("https://mobile.twitter.com/u/status/1")
+    assert is_x_url("https://t.co/abc"), "t.co 短链也算 X"
+    assert not is_x_url("https://douyin.com/x")
+    assert not is_x_url("https://notx.com/u")

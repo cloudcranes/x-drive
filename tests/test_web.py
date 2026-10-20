@@ -207,3 +207,12 @@ def test_thumb_hits_small_variant(server):
     data = json.loads(get(server + "/api/tasks").read())
     img = [m for m in data["tasks"][0]["media"] if m["kind"] == "image"][0]
     assert "name%3Dsmall" in img["thumb"]
+
+
+def test_incremental_render_present():
+    """页面必须按 id 增量渲染，且刷新失败不清空列表。"""
+    html = web.HTML_PATH.read_text(encoding="utf-8")
+    assert "syncFeed" in html, "缺少增量渲染函数"
+    assert "mounted" in html, "缺少节点复用表"
+    assert "显示的是上次结果" in html, "刷新失败时应保留旧列表"
+    assert 'id="refresh"' in html, "缺少手动刷新入口"

@@ -34,14 +34,10 @@ def to_parse_shape(payload: dict) -> dict | None:
         return None
 
     images = [{"url": p.get("url") or "", "live_photo_url": ""} for p in photos if p.get("url")]
-    video_url = ""
-    cover = ""
-    if videos:
-        # 同一条推文可能有多个视频，取第一个做 video_url，其余后续按 images 之外的顺序补
-        video_url = videos[0].get("url") or ""
-        cover = videos[0].get("thumbnail_url") or ""
-    elif images:
-        cover = images[0]["url"]
+    video_list = [v.get("url") for v in videos if v.get("url")]
+    covers = [v.get("thumbnail_url") or "" for v in videos]
+    video_url = video_list[0] if video_list else ""
+    cover = covers[0] if covers else (images[0]["url"] if images else "")
 
     author = tweet.get("author") or {}
     return {
@@ -50,6 +46,8 @@ def to_parse_shape(payload: dict) -> dict | None:
         "title": (tweet.get("text") or "").strip(),
         "music_url": "",
         "images": images,
+        "videos": video_list,          # 多视频全部带回，media_entries 会摊平
+        "video_covers": covers,
         "video_cover": cover if video_url else "",
         "author": {
             "uid": str(author.get("id") or ""),
