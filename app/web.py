@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from . import aria2, codes, core, fetcher, pipeline
+from . import aria2, codes, core, fetcher, pipeline, retry
 
 log = logging.getLogger("x-drive.web")
 
@@ -38,6 +38,12 @@ DRIVE_ROOT = os.getenv("DRIVE_ROOT", "X-Drive").strip().strip("/")
 RCLONE_CONFIG = os.getenv("RCLONE_CONFIG", "/config/rclone/rclone.conf")
 DAILY_UPLOAD_GB = int(os.getenv("DAILY_UPLOAD_GB", "0") or 0)
 ARIA2_SECRET = os.getenv("ARIA2_RPC_SECRET", "").strip()
+# 上传并发与分片大小：默认值来自实测（见 upload_folder 注释），可通过 .env 覆盖
+UPLOAD_TRANSFERS = max(1, int(os.getenv("UPLOAD_TRANSFERS", "4") or 4))
+UPLOAD_CHUNK = os.getenv("UPLOAD_CHUNK", "64M").strip() or "64M"
+# 失败自动重试：次数与首次退避秒数（指数增长，封顶 60s）
+RETRIES = max(0, int(os.getenv("RETRIES", "2") or 2))
+RETRY_BASE_DELAY = float(os.getenv("RETRY_BASE_DELAY", "3") or 3)
 TMP_ROOT = os.getenv("TMP_ROOT", "/downloads")
 
 BIND = os.getenv("WEB_BIND", "0.0.0.0")
@@ -185,12 +191,17 @@ def rclone(*args: str, timeout: float = 7200.0) -> tuple[int, str, str]:
 
 
 def upload_folder(work: Path, folder: str) -> tuple[str | None, int]:
-    """把目录推到 Drive/<番号>，返回 (分享链接, 字节数)。"""
+    """把目录推到 Drive/<番号>，返回 (分享链接, 字节数)。
+
+    transfers/chunk 可调：实测 300MB 单文件上 transfers=4 的中位耗时
+    28s，transfers=2 是 52s（各 3 次，网络抖动大所以看中位数）。
+    """
     target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}"
     rclone("mkdir", target, timeout=120.0)
     rc, _, err = rclone(
         "copy", str(work), target,
-        "--transfers", "2", "--drive-chunk-size", "64M",
+        "--transfers", str(UPLOAD_TRANSFERS),
+        "--drive-chunk-size", UPLOAD_CHUNK,
         "--retries", "2", "--timeout", "30m",
         "--drive-stop-on-upload-limit",
     )
@@ -221,10 +232,29 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
     started = time.monotonic()
     clock = {"download": 0.0, "organize": 0.0, "upload": 0.0}
     done_code, done_size = code, 0
+    policy = retry.RetryPolicy(retries=RETRIES, base_delay=RETRY_BASE_DELAY)
     try:
-        phase = time.monotonic()
-        asyncio.run(main())
-        clock["download"] = time.monotonic() - phase
+        # ── 下载（可重试）：BT 断流、tracker 抖动都很常见，重试往往能续上
+        while True:
+            phase = time.monotonic()
+            try:
+                asyncio.run(main())
+                clock["download"] += time.monotonic() - phase
+                break
+            except Cancelled:
+                raise
+            except Exception as exc:
+                clock["download"] += time.monotonic() - phase
+                if not policy.can_retry(str(exc)):
+                    raise
+                policy.record(str(exc))
+                wait = round(policy.delay(), 1)
+                log.warning("下载失败，%s 秒后重试（第 %d 次）：%s", wait, policy.attempts, exc)
+                job_update(job_id, stage="downloading", retries=policy.attempts,
+                           error=f"{exc}｜{wait}s 后重试", percent=0.0, speed=0)
+                if not retry.backoff_sleep(policy, cancel_check=lambda: cancel_requested(job_id)):
+                    raise Cancelled("已停止")
+
         if cancel_requested(job_id):
             raise Cancelled("已停止")
 
@@ -239,10 +269,29 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         if DAILY_UPLOAD_GB and size > DAILY_UPLOAD_GB * 1024**3:
             raise RuntimeError(f"单任务 {core.human_size(size)} 超过 DAILY_UPLOAD_GB 限制")
 
-        job_update(job_id, stage="uploading", folder=folder, size=size, percent=100.0)
-        phase = time.monotonic()
-        link, _ = upload_folder(work, folder)
-        clock["upload"] = time.monotonic() - phase
+        # ── 上传（可重试）：网络中断、Drive 5xx 都可以再推一次
+        up_policy = retry.RetryPolicy(retries=RETRIES, base_delay=RETRY_BASE_DELAY)
+        while True:
+            job_update(job_id, stage="uploading", folder=folder, size=size, percent=100.0,
+                       retries=policy.attempts + up_policy.attempts)
+            phase = time.monotonic()
+            try:
+                link, _ = upload_folder(work, folder)
+                clock["upload"] += time.monotonic() - phase
+                break
+            except Exception as exc:
+                clock["upload"] += time.monotonic() - phase
+                if not up_policy.can_retry(str(exc)):
+                    raise
+                up_policy.record(str(exc))
+                wait = round(up_policy.delay(), 1)
+                log.warning("上传失败，%s 秒后重试（第 %d 次）：%s", wait, up_policy.attempts, exc)
+                job_update(job_id, stage="uploading", error=f"{exc}｜{wait}s 后重试",
+                           retries=policy.attempts + up_policy.attempts)
+                if not retry.backoff_sleep(up_policy, cancel_check=lambda: cancel_requested(job_id)):
+                    raise Cancelled("已停止")
+
+        policy.history.extend(up_policy.history)
 
         core.update_state(STATE, {
             folder: {
@@ -256,6 +305,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             }
         })
         job_update(job_id, stage="done", link=link or "", code=folder, size=size,
+                   retries=policy.attempts, error="",
                    timing={k: round(v, 2) for k, v in clock.items()},
                    throughput=(round(size / clock["upload"] / 1048576, 2) if clock["upload"] else None))
     except Cancelled:

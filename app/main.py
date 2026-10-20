@@ -25,7 +25,7 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import aria2, codes, core, fetcher, metrics, pipeline, whatslink
+from . import aria2, codes, core, fetcher, metrics, pipeline, retry, whatslink
 
 log = logging.getLogger("x-drive")
 
@@ -53,6 +53,10 @@ class Config:
     aria2_rpc: str = "http://aria2:6800"
     aria2_secret: str = ""
     aria2_poll: float = 5.0
+    upload_transfers: int = 4
+    upload_chunk: str = "64M"
+    retries: int = 2
+    retry_base_delay: float = 3.0
 
     @property
     def max_bytes(self) -> int:
@@ -86,6 +90,10 @@ class Config:
             aria2_rpc=os.getenv("ARIA2_RPC", "http://aria2:6800").strip(),
             aria2_secret=os.getenv("ARIA2_RPC_SECRET", "").strip(),
             aria2_poll=float(os.getenv("ARIA2_POLL", "5") or 5),
+            upload_transfers=max(1, int(os.getenv("UPLOAD_TRANSFERS", "4") or 4)),
+            upload_chunk=os.getenv("UPLOAD_CHUNK", "64M").strip() or "64M",
+            retries=max(0, int(os.getenv("RETRIES", "2") or 2)),
+            retry_base_delay=float(os.getenv("RETRY_BASE_DELAY", "3") or 3),
         )
 
 
@@ -321,6 +329,7 @@ async def run_task(
         work.mkdir(parents=True, exist_ok=True)
         uploaded = False
         clock = {"download": 0.0, "organize": 0.0, "upload": 0.0}
+        retried = {"download": 0, "upload": 0}
         job_size = 0
         job_started = time.monotonic()
         try:
@@ -329,9 +338,18 @@ async def run_task(
                 await _p(f"⏳ 下载 {_i}/{len(sources)} · {percent * 100:.1f}% · {mb:.1f}MB/s")
 
             await progress(f"⏳ 下载 {index}/{len(sources)}…{hint or '（磁力可能较慢）'}")
+
+            async def do_download():
+                await pipeline.download(aria, client, source, work, progress=on_progress)
+
+            async def on_dl_retry(attempt, error, wait):
+                await progress(f"↻ 下载失败，{round(wait)} 秒后重试（第 {attempt} 次）\n{error[:120]}")
+
+            policy = retry.RetryPolicy(retries=cfg.retries, base_delay=cfg.retry_base_delay)
             phase = time.monotonic()
-            await pipeline.download(aria, client, source, work, progress=on_progress)
+            await retry.run_with_retry(do_download, policy, on_retry=on_dl_retry)
             clock["download"] = time.monotonic() - phase
+            retried["download"] = policy.attempts
 
             phase = time.monotonic()
             found = fetcher.media_files(work)
@@ -348,20 +366,30 @@ async def run_task(
 
             target = f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
             await progress(f"⏳ 上传 {folder}（{core.human_size(total)}）…")
+
+            async def do_upload():
+                await rclone(cfg, "mkdir", target, timeout=120.0)
+                rc, _, err = await rclone(
+                    cfg, "copy", str(work), target,
+                    "--transfers", str(cfg.upload_transfers),
+                    "--drive-chunk-size", cfg.upload_chunk,
+                    "--retries", "2", "--timeout", "30m",
+                    "--drive-stop-on-upload-limit",
+                    timeout=7200.0,
+                )
+                if rc != 0:
+                    if "uploadLimitExceeded" in err or "quota" in err.lower():
+                        raise RuntimeError("Drive 上传配额已用完，明日再试")
+                    raise RuntimeError(f"rclone 上传失败：{err.strip()[:300]}")
+
+            async def on_up_retry(attempt, error, wait):
+                await progress(f"↻ 上传失败，{round(wait)} 秒后重试（第 {attempt} 次）\n{error[:120]}")
+
+            up_policy = retry.RetryPolicy(retries=cfg.retries, base_delay=cfg.retry_base_delay)
             phase = time.monotonic()
-            rc, _, err = await rclone(cfg, "mkdir", target, timeout=120.0)
-            rc, _, err = await rclone(
-                cfg, "copy", str(work), target,
-                "--transfers", "2", "--drive-chunk-size", "64M",
-                "--retries", "2", "--timeout", "30m",
-                "--drive-stop-on-upload-limit",
-                timeout=7200.0,
-            )
-            if rc != 0:
-                if "uploadLimitExceeded" in err or "quota" in err.lower():
-                    raise RuntimeError("Drive 上传配额已用完，明日再试")
-                raise RuntimeError(f"rclone 上传失败：{err.strip()[:300]}")
+            await retry.run_with_retry(do_upload, up_policy, on_retry=on_up_retry)
             clock["upload"] = time.monotonic() - phase
+            retried["upload"] = up_policy.attempts
             add_usage(cfg, total)
 
             link = await folder_link(cfg, target)
@@ -389,6 +417,7 @@ async def run_task(
                 "code": key,
                 "size": job_size,
                 "outcome": "ok" if uploaded else "fail",
+                "retries": retried["download"] + retried["upload"],
                 "download": clock["download"],
                 "organize": clock["organize"],
                 "upload": clock["upload"],

@@ -1,12 +1,13 @@
 """网页后台的下载任务接口：提交、进度、鉴权。"""
 import base64
+import contextlib
 import http.client
 import json
 import threading
 
 import pytest
 
-from app import core, web
+from app import core, pipeline, web
 
 
 @pytest.fixture
@@ -216,3 +217,108 @@ def test_metrics_api_exposes_timing(server, monkeypatch, tmp_path):
     c.close()
     assert "timing" in data
     assert data["timing"]["phases"]["download"]["count"] >= 1
+
+
+# ---------------------------------------------------------------- 失败自动重试
+
+@contextlib.contextmanager
+def run_job_env(monkeypatch, tmp_path, *, download_fails=0, upload_fails=0, fatal=""):
+    """把 run_web_job 的外部依赖全部替换掉，只测重试编排逻辑。"""
+    work = tmp_path / "work"
+    (work / "sub").mkdir(parents=True)
+    (work / "sub" / "SSIS-1.mp4").write_bytes(b"x" * (2 << 20))
+
+    calls = {"download": 0, "upload": 0, "sleep": 0}
+
+    monkeypatch.setattr(web, "TMP_ROOT", str(tmp_path))
+    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(web, "METRICS", str(tmp_path / "m.json"))
+    monkeypatch.setattr(web, "JOBS", {})
+    monkeypatch.setattr(web, "CANCEL", {})
+    monkeypatch.setattr(web, "RETRIES", 2)
+    monkeypatch.setattr(web, "RETRY_BASE_DELAY", 0)
+    monkeypatch.setattr(pipeline, "job_dir", lambda root, key: work)
+
+    async def fake_download(aria, client, source, dest, progress=None):
+        calls["download"] += 1
+        if calls["download"] <= download_fails:
+            raise RuntimeError(fatal or "连接超时")
+
+    async def fake_client(*a, **kw):
+        return None
+
+    monkeypatch.setattr(pipeline, "download", fake_download)
+
+    class FakeAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(web.pipeline, "cleanup", lambda p: None)
+
+    def fake_upload(path, folder):
+        calls["upload"] += 1
+        if calls["upload"] <= upload_fails:
+            raise RuntimeError(fatal or "rclone 上传失败：connection reset")
+        return "https://drive.google.com/x", 0
+
+    monkeypatch.setattr(web, "upload_folder", fake_upload)
+    # 退避不真等
+    monkeypatch.setattr(web.retry, "backoff_sleep",
+                        lambda policy, cancel_check=None, sleep=None: calls.__setitem__(
+                            "sleep", calls["sleep"] + 1) or True)
+    yield calls, work
+
+
+def test_download_retries_then_succeeds(monkeypatch, tmp_path):
+    with run_job_env(monkeypatch, tmp_path, download_fails=2) as (calls, _):
+        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
+    assert calls["download"] == 3, "失败 2 次后第 3 次应成功"
+    assert web.JOBS["j1"]["stage"] == "done"
+    assert web.JOBS["j1"]["retries"] == 2
+
+
+def test_download_gives_up_after_limit(monkeypatch, tmp_path):
+    with run_job_env(monkeypatch, tmp_path, download_fails=99) as (calls, _):
+        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
+    assert calls["download"] == 3, "RETRIES=2 表示总共 3 次尝试"
+    assert web.JOBS["j1"]["stage"] == "failed"
+
+
+def test_fatal_download_error_is_not_retried(monkeypatch, tmp_path):
+    with run_job_env(monkeypatch, tmp_path, download_fails=99,
+                     fatal="下载完成但没有找到视频文件") as (calls, _):
+        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
+    assert calls["download"] == 1, "决定性错误不该重试"
+    assert "没有找到视频文件" in web.JOBS["j1"]["error"]
+
+
+def test_upload_retries_then_succeeds(monkeypatch, tmp_path):
+    with run_job_env(monkeypatch, tmp_path, upload_fails=1) as (calls, _):
+        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
+    assert calls["upload"] == 2
+    assert web.JOBS["j1"]["stage"] == "done"
+
+
+def test_quota_error_on_upload_is_not_retried(monkeypatch, tmp_path):
+    with run_job_env(monkeypatch, tmp_path, upload_fails=99,
+                     fatal="rclone 上传失败：uploadLimitExceeded") as (calls, _):
+        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
+    assert calls["upload"] == 1, "配额用完重试没有意义"
+    assert web.JOBS["j1"]["stage"] == "failed"
+
+
+def test_cancel_interrupts_retry_wait(monkeypatch, tmp_path):
+    """重试等待期间点停止，必须立刻收尾而不是等满退避时间。"""
+    with run_job_env(monkeypatch, tmp_path, download_fails=99) as (calls, _):
+        monkeypatch.setattr(web.retry, "backoff_sleep",
+                            lambda policy, cancel_check=None, sleep=None: False)
+        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
+    assert calls["download"] == 1
+    assert web.JOBS["j1"]["error"] == "已停止"
