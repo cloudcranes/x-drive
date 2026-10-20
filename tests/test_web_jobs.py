@@ -99,3 +99,53 @@ def test_aria2_tasks_survives_rpc_failure(monkeypatch):
     monkeypatch.setattr(web, "ARIA2_RPC", "http://127.0.0.1:1")
     data = web.aria_tasks()
     assert "error" in data and data["active"] == []
+
+
+def test_duplicate_archived_code_rejected(server, monkeypatch):
+    """已归档的番号默认挡下，避免重复占配额；勾掉去重可强制提交。"""
+    base, started = server
+    core.save_state(web.STATE, {"SSIS-123": {"code": "SSIS-123", "files": ["a.mp4"], "size": 1,
+                                             "at": "2026-10-20T00:00:00"}})
+    status, data = post(base, "/api/download", {"text": "SSIS-123 magnet:?xt=urn:btih:aa"})
+    assert status == 409 and data["duplicate"] == "archived"
+    assert not started, "被挡下的不应该起任务"
+
+    status, data = post(base, "/api/download",
+                        {"text": "SSIS-123 magnet:?xt=urn:btih:aa", "dedupe": False})
+    assert status == 200 and data["ok"] is True and len(started) == 1
+
+
+def test_duplicate_active_code_rejected(server):
+    base, started = server
+    web.job_update("jx", stage="downloading", code="ABP-888", percent=10.0)
+    status, data = post(base, "/api/download", {"text": "ABP-888 magnet:?xt=urn:btih:bb"})
+    assert status == 409 and data["duplicate"] == "active"
+    assert not started
+
+
+def test_stop_job_marks_cancel(server):
+    base, _ = server
+    web.job_update("jy", stage="downloading", code="X-1", percent=5.0)
+    host, port = base.removeprefix("http://").split(":")
+    c = http.client.HTTPConnection(host, int(port), timeout=10)
+    c.request("POST", "/api/job/stop", body=json.dumps({"id": "jy"}),
+              headers={"Content-Type": "application/json"})
+    r = c.getresponse(); body = json.loads(r.read()); c.close()
+    assert r.status == 200 and body["ok"] is True
+    assert web.cancel_requested("jy") is True
+    assert web.cancel_requested("nope") is False
+
+
+def test_stop_unknown_job_404(server):
+    base, _ = server
+    status, data = post(base, "/api/job/stop", {"id": "ghost"})
+    assert status == 404 and data["ok"] is False
+
+
+def test_clear_finished_jobs_only(server):
+    base, _ = server
+    web.job_update("j-done", stage="done")
+    web.job_update("j-run", stage="downloading", percent=50.0)
+    status, data = post(base, "/api/jobs/clear", {})
+    assert status == 200
+    assert "j-done" not in web.JOBS and "j-run" in web.JOBS

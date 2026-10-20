@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from . import aria2, codes, core, pipeline
+from . import aria2, codes, core, fetcher, pipeline
 
 log = logging.getLogger("x-drive.web")
 
@@ -136,6 +136,44 @@ def jobs_snapshot() -> list[dict]:
     return sorted(items, key=lambda j: j["at"], reverse=True)[:20]
 
 
+def active_codes() -> set[str]:
+    """正在跑的番号（排队/下载/整理/上传），用于提交前去重。"""
+    with _jobs_lock:
+        return {
+            (j.get("code") or "").upper()
+            for j in JOBS.values()
+            if j.get("stage") in ("queued", "downloading", "organizing", "uploading") and j.get("code")
+        }
+
+
+def archived_codes() -> set[str]:
+    try:
+        return {str(k).upper() for k in core.load_state(STATE)}
+    except Exception:
+        return set()
+
+
+CANCEL: dict[str, threading.Event] = {}
+
+
+def request_cancel(job_id: str) -> bool:
+    """标记任务取消；下载线程在下一个进度回调里抛异常收尾。"""
+    with _jobs_lock:
+        if job_id not in JOBS:
+            return False
+    CANCEL.setdefault(job_id, threading.Event()).set()
+    return True
+
+
+def cancel_requested(job_id: str) -> bool:
+    event = CANCEL.get(job_id)
+    return bool(event and event.is_set())
+
+
+class Cancelled(RuntimeError):
+    """用户主动停止任务。"""
+
+
 def rclone(*args: str, timeout: float = 7200.0) -> tuple[int, str, str]:
     cmd = ["rclone", "--config", RCLONE_CONFIG, *args]
     try:
@@ -173,12 +211,16 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             job_update(job_id, stage="downloading", percent=0.0, speed=0)
 
             async def on_progress(percent, speed, status):
+                if cancel_requested(job_id):
+                    raise Cancelled("已停止")
                 job_update(job_id, percent=round(percent * 100, 1), speed=speed or 0)
 
             await pipeline.download(aria, client, source, work, progress=on_progress)
 
     try:
         asyncio.run(main())
+        if cancel_requested(job_id):
+            raise Cancelled("已停止")
         job_update(job_id, stage="organizing")
         names = " ".join(p.name for p in work.glob("*"))
         folder, files = pipeline.organize(work, code or codes.detect(names) or "")
@@ -202,10 +244,15 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         }
         core.save_state(STATE, state)
         job_update(job_id, stage="done", link=link or "", code=folder, size=size)
+    except Cancelled:
+        log.info("任务已停止：%s", job_id)
+        job_update(job_id, stage="failed", error="已停止")
     except Exception as exc:
         log.exception("网页任务失败")
         job_update(job_id, stage="failed", error=str(exc)[:300])
     finally:
+        with _jobs_lock:
+            CANCEL.pop(job_id, None)
         pipeline.cleanup(work)
 
 
@@ -250,6 +297,27 @@ def aria_tasks() -> dict:
         return {"error": str(exc)[:200], "active": [], "waiting": [], "stopped": [], "stat": {}}
 
 
+def series_of(code: str) -> str:
+    """系列名 = 番号去掉最后一段数字（SSIS-123 → SSIS，FC2-PPV-4422110 → FC2-PPV）。"""
+    parts = [p for p in (code or "").split("-") if p]
+    if len(parts) >= 2 and parts[-1].isdigit():
+        return "-".join(parts[:-1])
+    return parts[0] if parts else "其他"
+
+
+def kind_of(files: list[str]) -> str:
+    """卡片/筛选用的一句话文件构成：视频 2 · 图片 1 / 视频 / 图片 3。"""
+    videos = sum(1 for f in files if Path(f).suffix.lower() in fetcher.VIDEO_EXT)
+    images = len(files) - videos
+    if videos and images:
+        return f"视频 {videos} · 图片 {images}"
+    if videos:
+        return "视频" if videos == 1 else f"视频 {videos}"
+    if images:
+        return "图片" if images == 1 else f"图片 {images}"
+    return "空目录"
+
+
 def collect() -> dict:
     """把 state 摊成看板要的列表：每条 = 一个番号。"""
     state = core.load_state(STATE)
@@ -257,29 +325,40 @@ def collect() -> dict:
     for key, item in state.items():
         files = item.get("files") or []
         size = int(item.get("size") or 0)
+        code = item.get("code") or key
+        at = item.get("at") or ""
+        kind = kind_of(files)
         items.append(
             {
                 "id": key,
-                "code": item.get("code") or key,
+                "code": code,
+                "series": series_of(code),
                 "link": item.get("link") or "",
                 "path": item.get("path") or "",
-                "at": item.get("at") or "",
+                "at": at,
+                "month": at[:7],
                 "files": files,
                 "count": len(files),
                 "size": size,
                 "size_text": core.human_size(size),
+                "kind": kind,
+                "cat": "video" if kind.startswith("视频") else "image",
                 "source": item.get("source") or "",
+                "is_magnet": (item.get("source") or "").lower().startswith("magnet:"),
             }
         )
     items.sort(key=lambda t: t["at"] or "", reverse=True)
     total = sum(i["size"] for i in items)
+    videos = sum(i["size"] for i in items if i["cat"] == "video")
     return {
         "tasks": items,
         "stats": {
             "tasks": len(items),
             "files": sum(i["count"] for i in items),
             "size": total,
-            "size_text": core.human_size(total) if total else "0MB",
+            "size_text": core.human_size(total),
+            "size_video_text": core.human_size(videos),
+            "series": len({i["series"] for i in items}),
             "last": items[0]["at"] if items else "",
         },
         "health": {"parse": True},
@@ -368,6 +447,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "需要一个磁力或直链"}, 400)
                 return
             code = codes.detect(text) or ""
+            # 先去重：命中的话不必再花几秒查 whatslink
+            dedupe = payload.get("dedupe", True)
+            if code and dedupe:
+                key = codes.safe_folder(code).upper()
+                if key in active_codes():
+                    self._json({"ok": False, "code": code, "error": f"{code} 正在下载，等它跑完再提交", "duplicate": "active"}, 409)
+                    return
+                if key in archived_codes():
+                    self._json({"ok": False, "code": code, "error": f"{code} 已经归档过了，勾掉「去重」可强制重下", "duplicate": "archived"}, 409)
+                    return
             preview = None
             for src in sources:
                 if src.lower().startswith("magnet:"):
@@ -377,11 +466,43 @@ class Handler(BaseHTTPRequestHandler):
                         if guessed:
                             code = guessed
                     break
+            if code and dedupe:
+                # 番号是查完磁力才认出来的，再挡一次
+                key = codes.safe_folder(code).upper()
+                if key in active_codes():
+                    self._json({"ok": False, "code": code, "error": f"{code} 正在下载，等它跑完再提交", "duplicate": "active"}, 409)
+                    return
+                if key in archived_codes():
+                    self._json({"ok": False, "code": code, "error": f"{code} 已经归档过了，勾掉「去重」可强制重下", "duplicate": "archived"}, 409)
+                    return
             ids = [start_job(src, code, preview if len(sources) == 1 else None) for src in sources]
             self._json({
                 "ok": True, "jobs": ids, "code": code,
                 "count": len(ids), "preview": preview,
             })
+            return
+        if path == "/api/job/stop":
+            if not self._authorized():
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                job_id = (json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}).get("id", "")
+            except (ValueError, json.JSONDecodeError):
+                job_id = ""
+            if not job_id or not request_cancel(job_id):
+                self._json({"ok": False, "error": "任务不存在"}, 404)
+                return
+            self._json({"ok": True})
+            return
+        if path == "/api/jobs/clear":
+            if not self._authorized():
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            with _jobs_lock:
+                for job_id in [k for k, v in JOBS.items() if v.get("stage") in ("done", "failed")]:
+                    JOBS.pop(job_id, None)
+            self._json({"ok": True})
             return
         if path == "/api/aria2/remove":
             if not self._authorized():

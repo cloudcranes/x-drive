@@ -209,3 +209,43 @@ def test_health_exposes_counts_only(server):
     d = json.loads(get(server + "/api/health").read())
     assert d["tasks"] >= 1 and d["files"] >= 1
     assert "title" not in json.dumps(d), "健康接口不应泄露内容"
+
+
+def test_tasks_expose_layout_fields(server):
+    """卡片排版依赖 series / kind / cat / month，缺了前端就只能显示一坨文字。"""
+    data = json.loads(get(server + "/api/tasks").read())
+    first = data["tasks"][0]
+    assert first["series"] == "SSIS"
+    assert first["month"] == "2026-10"
+    assert first["kind"] == "视频" and first["cat"] == "video"
+    multi = next(t for t in data["tasks"] if t["code"] == "ABCD-456")
+    assert multi["kind"] == "视频 2" and multi["cat"] == "video"
+
+
+def test_stats_include_series_count(server):
+    data = json.loads(get(server + "/api/tasks").read())
+    assert data["stats"]["series"] == 2          # SSIS / ABCD
+    assert data["stats"]["size_video_text"] == "2.49GB"
+
+
+def test_series_and_kind_helpers():
+    assert web.series_of("SSIS-123") == "SSIS"
+    assert web.series_of("FC2-PPV-4422110") == "FC2-PPV"
+    assert web.series_of("") == "其他"
+    assert web.kind_of(["a.mp4", "b.mkv"]) == "视频 2"
+    assert web.kind_of(["a.mp4", "b.jpg"]) == "视频 1 · 图片 1"
+    assert web.kind_of(["b.jpg"]) == "图片"
+    assert web.kind_of([]) == "空目录"
+
+
+def test_webui_layout_structure():
+    """排版重构的关键结构：侧栏 + 工具条 + 网格 + 队列侧栏，缺一个版面就塌。"""
+    html = web.HTML_PATH.read_text(encoding="utf-8")
+    for hook in ('id="side"', 'id="nav-series"', 'id="nav-month"', 'id="activefilters"',
+                 'id="kindseg"', 'id="sortsel"', 'id="queue"', 'class="shell"',
+                 'id="s-series"', 'id="dl-dedupe"'):
+        assert hook in html, f"缺少 {hook}"
+    assert "grid-template-columns:repeat(auto-fill" in html, "卡片应使用 auto-fill 网格"
+    assert "column-count" not in html, "瀑布流应被网格取代"
+    # 搜索必须能忽略分隔符（SSIS123 → SSIS-123）
+    assert "strip(hay).includes" in html
