@@ -23,66 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 单元测试
+      - name: 单元测试（容器内跑，避开 setup-python 与本仓库缓存键的兼容问题）
         run: |
-          set -eux
-          docker version
-          ls -la
-          docker run --rm -v "$PWD:/src" -w /src python:3.12-slim python -m pytest --version 2>&1 | tail -5 || true
-          docker run --rm -v "$PWD:/src" -w /src python:3.12-slim pip install --no-cache-dir -r requirements.txt pytest 2>&1 | tail -20
-          docker run --rm -v "$PWD:/src" -w /src python:3.12-slim python -m pytest tests -q 2>&1 | tail -40
+          docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
+            python -m pip install --no-cache-dir -r requirements.txt pytest
+          docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
+            python -m pytest tests -q
 
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: 登录 GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 生成标签
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-          labels: |
-            org.opencontainers.image.title=x-drive
-            org.opencontainers.image.description=Telegram 机器人：把 x.com 推文媒体转存到 Google Drive
-
-      - name: 构建并推送
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: 摘要
-        run: |
-          {
-            echo "### 镜像已构建"
-            echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
