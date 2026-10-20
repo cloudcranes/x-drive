@@ -25,7 +25,7 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import codes, core, fetcher, metrics
+from . import aria2, codes, core, fetcher, metrics
 
 log = logging.getLogger("x-drive")
 
@@ -50,6 +50,9 @@ class Config:
     metrics_path: str = "/data/metrics.json"
     daily_upload_gb: int = 0
     magnet_timeout: float = 7200.0
+    aria2_rpc: str = "http://aria2:6800"
+    aria2_secret: str = ""
+    aria2_poll: float = 5.0
 
     @property
     def max_bytes(self) -> int:
@@ -80,6 +83,9 @@ class Config:
             metrics_path=os.getenv("METRICS_PATH", "/data/metrics.json"),
             daily_upload_gb=int(os.getenv("DAILY_UPLOAD_GB", "0") or 0),
             magnet_timeout=float(os.getenv("MAGNET_TIMEOUT", "7200") or 7200),
+            aria2_rpc=os.getenv("ARIA2_RPC", "http://aria2:6800").strip(),
+            aria2_secret=os.getenv("ARIA2_RPC_SECRET", "").strip(),
+            aria2_poll=float(os.getenv("ARIA2_POLL", "5") or 5),
         )
 
 
@@ -272,6 +278,7 @@ async def run_task(
     chat_id: int | None = None,
 ) -> str:
     """番号 → 下载（直链/磁力）→ 归一化文件名 → 按番号上传 Drive。"""
+    aria = aria2.Aria2(cfg.aria2_rpc, cfg.aria2_secret, cfg.aria2_poll, cfg.magnet_timeout)
     sources = fetcher.sources(text)
     if not sources:
         return (
@@ -298,7 +305,15 @@ async def run_task(
         try:
             await progress(f"⏳ 下载 {index}/{len(sources)}…（磁力可能较慢）")
             if fetcher.is_magnet(source):
-                await fetcher.download_magnet(source, work, timeout=cfg.magnet_timeout)
+                async def bt_progress(percent, speed, status, _p=progress, _i=index):
+                    mb = speed / 1048576 if speed else 0
+                    await _p(
+                        f"⏳ 磁力 {_i}/{len(sources)} · {percent * 100:.1f}% · {mb:.1f}MB/s"
+                    )
+
+                await fetcher.download_magnet(
+                    aria, client, source, work, progress=bt_progress
+                )
             else:
                 await fetcher.download_http(client, source, work, cfg.max_bytes)
             fetcher.flatten(work)
@@ -795,7 +810,15 @@ async def self_check(cfg: Config) -> bool:
             print(f"telegram token: 校验失败 {exc}")
             ok = False
 
-    for binary in ("aria2c", "rclone"):
+    try:
+        async with httpx.AsyncClient() as client:
+            ver = await aria2.Aria2(cfg.aria2_rpc, cfg.aria2_secret).call(client, "getVersion")
+        print(f"aria2 rpc: OK {cfg.aria2_rpc} v{ver.get('version')}")
+    except Exception as exc:
+        print(f"aria2 rpc: 不可用 {cfg.aria2_rpc} ({exc})")
+        ok = False
+
+    for binary in ("rclone",):
         found = shutil.which(binary)
         print(f"{binary}: {found or '未安装'}")
         ok &= bool(found)

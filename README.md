@@ -18,7 +18,7 @@ Drive: X-Drive/SSIS-123/SSIS-123.mp4
    - 支持 `ABC-123`、`FC2-PPV-1234567`、`HEYZO-1234`
    - 自动跳过 `1080p`、`x264`、`WEB-DL` 这类干扰项
    - 识别不到就放 `unclassified-<时间戳>` 目录
-3. 下载：磁力走 `aria2c`（下完不做种），直链走 httpx 流式并限制大小
+3. 下载：磁力交给 `p3terx/aria2-pro` 容器（JSON-RPC 下发任务、轮询进度），直链走 httpx 流式
 4. 整理：BT 常见的多层目录摊平，单文件重命名为 `<番号>.<ext>`，多文件加 `-1 -2` 前缀
 5. 上传：`rclone copy` 到 `X-Drive/<番号>/`，超过 `DAILY_UPLOAD_GB` 直接拒收
 6. 同一番号已存在时返回旧链接，不重复下载（`/retry` 可强制重下）
@@ -49,7 +49,15 @@ docker compose pull && docker compose up -d
 docker compose exec bot python -m app.main --check
 ```
 
-镜像由 GitHub Actions 构建推送到 `ghcr.io/cloudcranes/x-drive`，内含 `aria2c`、`ffmpeg`、`rclone`。
+镜像由 GitHub Actions 构建推送到 `ghcr.io/cloudcranes/x-drive`，内含 `rclone`。
+
+磁力下载由单独的 `aria2` 服务负责（[p3terx/aria2-pro](https://p3terx.com/archives/docker-aria2-pro.html)）：
+bot 只通过 JSON-RPC 下发任务，两边共用 `./downloads` 卷。要点：
+
+- `ARIA2_RPC_SECRET` 必须设置，否则容器拒绝连接
+- `LISTEN_PORT=6888` 需要在防火墙/路由器放行 TCP+UDP，否则 BT 只能被动连接，速度很慢
+- `aria2-config/` 挂 `/config`，容器自己维护配置与 tracker 列表（`UPDATE_TRACKERS=true`）
+- 想用 WebUI 观测下载进度，可另起 AriaNg 连 `http://<host>:6800/jsonrpc`
 不想用远端镜像就删掉 `.env` 里的 `BOT_IMAGE`，改用本机 `docker compose up -d --build`。
 
 ## 配置

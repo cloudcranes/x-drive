@@ -48,7 +48,7 @@ def stub(monkeypatch, tmp_path):
     async def fake_link(cfg, target):
         return "https://drive/folder/" + target.rsplit("/", 1)[-1]
 
-    async def fake_magnet(magnet, dest_dir, timeout=0):
+    async def fake_magnet(aria, client, magnet, dest_dir, progress=None):
         await fake_http(None, magnet, dest_dir, 1 << 30)
 
     monkeypatch.setattr(fetcher, "download_http", fake_http)
@@ -96,7 +96,7 @@ def test_unknown_code_falls_back_to_unclassified(tmp_path, stub, monkeypatch):
         (dest_dir / "video_only.mp4").write_bytes(b"x" * (2 << 20))
     monkeypatch.setattr(fetcher, "download_http", fake_http)
 
-    async def fake_magnet(magnet, dest_dir, timeout=0):
+    async def fake_magnet(aria, client, magnet, dest_dir, progress=None):
         await fake_http(None, magnet, dest_dir, 1 << 30)
     monkeypatch.setattr(fetcher, "download_magnet", fake_magnet)
 
@@ -127,7 +127,7 @@ def test_failure_keeps_pending(tmp_path, stub, monkeypatch):
         raise RuntimeError("下载中断")
 
     monkeypatch.setattr(fetcher, "download_http", boom)
-    async def boom_magnet(magnet, dest_dir, timeout=0):
+    async def boom_magnet(aria, client, magnet, dest_dir, progress=None):
         raise RuntimeError("下载中断")
     monkeypatch.setattr(fetcher, "download_magnet", boom_magnet)
     reply, _, cfg, _ = run(tmp_path, {}, "SSIS-123 magnet:?xt=urn:btih:aa")
@@ -143,7 +143,7 @@ def test_quota_blocks_upload(tmp_path, stub, monkeypatch):
         (dest_dir / "SSIS-123.mp4").write_bytes(b"x" * (2 << 20))
     monkeypatch.setattr(fetcher, "download_http", fake_http)
 
-    async def fake_magnet(magnet, dest_dir, timeout=0):
+    async def fake_magnet(aria, client, magnet, dest_dir, progress=None):
         await fake_http(None, magnet, dest_dir, 1 << 30)
     monkeypatch.setattr(fetcher, "download_magnet", fake_magnet)
 

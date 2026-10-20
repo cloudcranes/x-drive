@@ -1,4 +1,30 @@
 services:
+  # 参考 p3terx.com/archives/docker-aria2-pro.html：常驻 BT 下载器，通过 RPC 下发任务
+  aria2:
+    image: p3terx/aria2-pro:latest
+    restart: unless-stopped
+    init: true
+    environment:
+      PUID: "${PUID:-0}"
+      PGID: "${PGID:-0}"
+      UMASK_SET: "022"
+      RPC_SECRET: ${ARIA2_RPC_SECRET:?在 .env 里设置 ARIA2_RPC_SECRET}
+      RPC_PORT: "6800"
+      LISTEN_PORT: "6888"
+      DISK_CACHE: "${ARIA2_DISK_CACHE:-256M}"
+      # 自动更新 tracker 列表，BT 连接数更多
+      UPDATE_TRACKERS: "true"
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./aria2-config:/config
+      - ./downloads:/downloads
+    healthcheck:
+      test: ["CMD-SHELL", "aria2c --version >/dev/null && (nc -z 127.0.0.1 6800 || exit 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
   bot:
     image: ${BOT_IMAGE:-ghcr.io/cloudcranes/x-drive:latest}
     build: .
@@ -6,6 +32,11 @@ services:
     init: true
     stop_grace_period: 60s
     env_file: .env
+    environment:
+      ARIA2_RPC: "http://aria2:6800"
+    depends_on:
+      aria2:
+        condition: service_started
     volumes:
       - ${RCLONE_CONFIG_HOST:?在 .env 里设置 RCLONE_CONFIG_HOST 指向 rclone.conf}:/config/rclone/rclone.conf:ro
       - ./data:/data

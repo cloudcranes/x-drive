@@ -4,9 +4,7 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
-import re
 import shutil
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -63,36 +61,20 @@ async def download_http(
     return dest
 
 
-async def download_magnet(magnet: str, dest_dir: Path, timeout: float = 7200.0) -> None:
-    """调 aria2c 拉磁力，等到做种停止或超时。"""
-    if shutil.which("aria2c") is None:
-        raise RuntimeError("镜像里没有 aria2c，无法处理磁力链接")
+async def download_magnet(
+    aria, client, magnet: str, dest_dir: Path, progress=None
+) -> None:
+    """把磁力提交给 aria2-pro 容器的 RPC，轮询到完成。
+
+    aria2-pro 与 bot 共用同一个 downloads 卷，所以只要给它一个容器内路径即可。
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "aria2c",
-        "--dir", str(dest_dir),
-        "--seed-time=0",              # 下完不做种，直接退出
-        "--file-allocation=none",
-        "--bt-stop-timeout=180",      # 无进度 3 分钟退出
-        "--summary-interval=30",
-        "--console-log-level=warn",
-        "--allow-overwrite=true",
-        "--auto-file-renaming=false",
-        magnet,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-    )
+    gid = await aria.add_magnet(client, magnet, str(dest_dir))
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        raise RuntimeError(f"磁力下载超时（{int(timeout)}s）")
-    text = out.decode(errors="replace")
-    if proc.returncode not in (0, 7):     # 7 = 有文件未完成
-        raise RuntimeError(f"aria2c 退出码 {proc.returncode}：{text.strip()[-300:]}")
-    log.info("磁力下载结束：%s", text.strip().splitlines()[-1] if text.strip() else "ok")
+        status = await aria.wait(client, gid, progress=progress)
+        log.info("磁力下载完成 gid=%s 完成 %s 字节", gid, status.get("completedLength"))
+    finally:
+        await aria.shutdown(client, gid)
 
 
 def media_files(directory: Path, min_size: int = 1 << 20) -> list[Path]:
