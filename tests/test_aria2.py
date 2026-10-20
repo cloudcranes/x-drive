@@ -86,3 +86,96 @@ def test_wait_timeout():
     c = FakeClient([{"result": {"status": "active", "totalLength": "100", "completedLength": "1"}}])
     with pytest.raises(RuntimeError, match="超时"):
         asyncio.run(aria2.Aria2("http://x", poll=0, timeout=0.01).wait(c, "g"))
+
+
+def test_wait_follows_metadata_to_real_task():
+    """BT 任务在 aria2 里会被拆成「元数据 gid → 真实下载 gid」。
+
+    只盯第一个 gid 会看到它立刻 complete（此时一个字节媒体都还没下），
+    上层据此就去整理目录，结果什么都找不到。必须顺着 followedBy 追下去。
+    """
+    aria = aria2.Aria2("http://x", "s", poll=0, timeout=5)
+    order = []
+
+    async def call(client, method, *args):
+        assert method == "tellStatus"
+        gid = args[0]
+        order.append(gid)
+        if gid == "meta0":
+            return {"status": "complete", "totalLength": "0", "completedLength": "0",
+                    "followedBy": ["real1"]}
+        return {"status": "complete", "totalLength": "1000", "completedLength": "1000",
+                "downloadSpeed": "0",
+                "files": [{"path": "/d/a.mp4", "completedLength": "1000",
+                           "length": "1000", "selected": "true"}]}
+
+    aria.call = call
+    status = asyncio.run(aria.wait(None, "meta0"))
+    assert "real1" in order, "必须跟踪 followedBy 指向的真实任务"
+    assert status["status"] == "complete"
+    assert int(status["completedLength"]) == 1000
+
+
+def test_wait_rejects_complete_but_short():
+    """aria2 说 complete 但字节数不满（文件被删/被换），不能当成功。"""
+    aria = aria2.Aria2("http://x", "s", poll=0, timeout=5)
+
+    async def call(client, method, *args):
+        return {"status": "complete", "totalLength": "1000", "completedLength": "10",
+                "downloadSpeed": "0"}
+
+    aria.call = call
+    with pytest.raises(aria2.Incomplete):
+        asyncio.run(aria.wait(None, "g1"))
+
+
+def test_wait_progress_reaches_real_task():
+    """进度回调要能反映真实任务的百分比，而不是元数据阶段的 0%。"""
+    aria = aria2.Aria2("http://x", "s", poll=0, timeout=5)
+    states = []
+
+    async def call(client, method, *args):
+        gid = args[0]
+        if gid == "meta0":
+            return {"status": "complete", "totalLength": "0", "completedLength": "0",
+                    "followedBy": ["real1"]}
+        return {"status": "complete", "totalLength": "1000", "completedLength": "1000",
+                "downloadSpeed": "0"}
+
+    async def progress(percent, speed, status):
+        states.append(round(percent, 2))
+
+    aria.call = call
+    asyncio.run(aria.wait(None, "meta0", progress=progress))
+    assert max(states) == 1.0, f"应看到真实任务 100%，实际 {states}"
+
+
+def test_abort_pauses_instead_of_deleting_record():
+    """失败收尾必须「停下来但保留记录」，删记录会让 aria2 继续往被删的目录里写。"""
+    calls = []
+
+    class C:
+        async def post(self, url, json=None, timeout=None):
+            calls.append((json["method"], json["params"]))
+            if json["method"] == "aria2.tellStatus":
+                return FakeResp({"result": {"status": "active", "followedBy": ["child1"]}})
+            return FakeResp({"result": "OK"})
+
+    aria = aria2.Aria2("http://x", "s")
+    asyncio.run(aria.abort(C(), "g1"))
+
+    methods = [m for m, _ in calls]
+    assert "aria2.forcePause" in methods
+    assert "aria2.forceRemove" not in methods
+    assert "aria2.removeDownloadResult" not in methods, "不能删记录"
+    paused = {p[-1] for m, p in calls if m == "aria2.forcePause"}
+    assert paused == {"g1", "child1"}, f"父任务和 followedBy 子任务都要停：{paused}"
+
+
+def test_abort_survives_missing_gid():
+    class C:
+        async def post(self, url, json=None, timeout=None):
+            return FakeResp({"error": {"code": 1, "message": "GID g1 is not found"}})
+
+    aria = aria2.Aria2("http://x", "s")
+    asyncio.run(aria.abort(C(), "g1"))     # 不应抛异常打断收尾

@@ -176,3 +176,27 @@ def test_extract_urls_dedup():
     text = "SSIS-123 magnet:?xt=urn:btih:aa https://a.com/b.mp4 magnet:?xt=urn:btih:aa"
     got = extract_urls(text)
     assert len(got) == 2 and got[0].startswith("magnet:")
+
+
+def test_organize_reports_what_is_actually_in_the_dir(tmp_path):
+    """找不到视频时要把目录内容带进错误里，否则线上只看到一句无从排查的提示。"""
+    from app import pipeline
+    work = tmp_path / "job"
+    work.mkdir()
+    (work / "广告.txt").write_text("x")
+    (work / "小样本.mp4").write_bytes(b"0" * 100)      # 小于 1MB，被当作广告丢弃
+
+    with pytest.raises(RuntimeError) as exc:
+        pipeline.organize(work, "SSIS-123")
+    msg = str(exc.value)
+    assert "没有找到视频文件" in msg
+    assert "广告.txt" in msg, f"错误信息应列出目录内容：{msg}"
+
+
+def test_pipeline_cleanup_removes_tree(tmp_path):
+    from app import pipeline
+    work = tmp_path / "job"
+    (work / "sub").mkdir(parents=True)
+    (work / "sub" / "a.mp4").write_bytes(b"x")
+    pipeline.cleanup(work)
+    assert not work.exists()

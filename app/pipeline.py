@@ -39,12 +39,32 @@ async def download(
     await fetcher.download_rpc(aria, client, source, work, progress=progress)
 
 
+def listing(work: Path, limit: int = 8) -> str:
+    """目录里到底有什么：报错时带上，否则只看到「找不到视频文件」无从排查。"""
+    try:
+        items = sorted(work.rglob("*"))[:limit]
+    except OSError:
+        return "（无法读取目录）"
+    if not items:
+        return "（目录为空）"
+    bits = []
+    for p in items:
+        try:
+            if p.is_dir():
+                bits.append(f"{p.relative_to(work)}/")
+            else:
+                bits.append(f"{p.relative_to(work)} ({p.stat().st_size // 1024}KB)")
+        except OSError:
+            bits.append(f"{p.name} (?)")
+    return "、".join(bits)
+
+
 def organize(work: Path, code: str) -> tuple[str, list[Path]]:
     """摊平目录 + 按番号重命名，返回 (目录名, 文件列表)。"""
     fetcher.flatten(work)
     files = fetcher.media_files(work)
     if not files:
-        raise RuntimeError("下载完成但没有找到视频文件")
+        raise RuntimeError(f"下载完成但没有找到视频文件：{listing(work)}")
 
     folder = codes.safe_folder(code) if code else ""
     if not folder or len(folder) < 3:

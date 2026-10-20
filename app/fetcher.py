@@ -73,11 +73,19 @@ async def download_rpc(
         gid = await aria.add_magnet(client, source, str(dest_dir))
     else:
         gid = await aria.add_uri(client, source, str(dest_dir))
+    ok = False
     try:
         status = await aria.wait(client, gid, progress=progress)
+        ok = True
         log.info("下载完成 gid=%s 完成 %s 字节", gid, status.get("completedLength"))
     finally:
-        await aria.shutdown(client, gid)
+        # 失败/被取消时不能删掉 aria2 的记录：任务可能还在往磁盘写，
+        # 上层紧接着会清理目录，文件被 unlink 后 aria2 会继续写进「已删除」的
+        # inode，既占磁盘又永远看不到文件。停下并保留记录，方便排查。
+        if ok:
+            await aria.shutdown(client, gid)
+        else:
+            await aria.abort(client, gid)
 
 
 def media_files(directory: Path, min_size: int = 1 << 20) -> list[Path]:
