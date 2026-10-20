@@ -319,6 +319,7 @@ async def run_task(
         work = pipeline.job_dir(cfg.tmp_root, key)
         pipeline.cleanup(work)
         work.mkdir(parents=True, exist_ok=True)
+        uploaded = False
         try:
             async def on_progress(percent, speed, status, _p=progress, _i=index):
                 mb = (speed or 0) / 1048576
@@ -362,7 +363,8 @@ async def run_task(
                 "source": source[:300],
                 "at": datetime.now().isoformat(timespec="seconds"),
             }
-            core.save_state(cfg.state_path, state)
+            core.update_state(cfg.state_path, {folder: state[folder]})
+            uploaded = True
             clear_pending(cfg, folder)
             results.append(
                 f"✅ {folder} · {core.human_size(total)}" + (f"\n📁 {link}" if link else "")
@@ -372,8 +374,13 @@ async def run_task(
             failures.append(f"{source[:40]}…: {str(exc)[:160]}")
             mark_pending(cfg, key, url=source, stage="failed", chat_id=chat_id)
         finally:
-            if not failures:
+            # 只看「这一个任务」是否成功：之前用累计的 failures 判断，
+            # 前面失败过一次，后面成功任务的目录就再也不会被清，磁盘一路涨。
+            # 失败时保留目录，方便 /retry 续传，但整体有容量上限。
+            if uploaded:
                 pipeline.cleanup(work)
+            else:
+                pipeline.trim_failed(cfg.tmp_root, keep=work)
 
     parts = results + [f"⚠️ {len(failures)} 项失败：" + "；".join(failures)] if failures else results
     return "\n".join(parts) or "❌ 没有任何结果"

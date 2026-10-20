@@ -232,17 +232,17 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         job_update(job_id, stage="uploading", folder=folder, size=size, percent=100.0)
         link, _ = upload_folder(work, folder)
 
-        state = core.load_state(STATE)
-        state[folder] = {
-            "code": folder,
-            "path": f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}",
-            "link": link or "",
-            "files": [f.name for f in files],
-            "size": size,
-            "source": source[:300],
-            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-        core.save_state(STATE, state)
+        core.update_state(STATE, {
+            folder: {
+                "code": folder,
+                "path": f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}",
+                "link": link or "",
+                "files": [f.name for f in files],
+                "size": size,
+                "source": source[:300],
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+        })
         job_update(job_id, stage="done", link=link or "", code=folder, size=size)
     except Cancelled:
         log.info("任务已停止：%s", job_id)

@@ -220,3 +220,64 @@ def test_organize_drops_ads_and_keeps_only_videos(tmp_path):
     assert names == ["MIMK-288-1.mp4", "MIMK-288-2.mp4"]
     left = sorted(p.name for p in work.rglob("*") if p.is_file())
     assert left == ["MIMK-288-1.mp4", "MIMK-288-2.mp4"], f"广告文件必须删掉：{left}"
+
+
+def test_bot_cleanup_is_per_source_not_global():
+    """旧逻辑用「累计 failures」决定是否删目录：前面失败过一次，
+    后面成功任务的下载目录就永远留在磁盘上（4.6G 级别的泄漏）。"""
+    import inspect
+    from app import main as bot
+    src = inspect.getsource(bot.run_task)
+    assert "if not failures:" not in src, (
+        "清理判断不能看累计的 failures，必须看当前这个任务自己是否成功")
+
+
+def test_update_state_merges_not_overwrites(tmp_path):
+    """bot 与 web 同时归档时必须合并，而不是后写的整份覆盖掉先写的。"""
+    from app import core
+    path = str(tmp_path / "state.json")
+    core.save_state(path, {"SSIS-001": {"code": "SSIS-001"}})
+    core.update_state(path, {"ABP-002": {"code": "ABP-002"}})
+    state = core.load_state(path)
+    assert set(state) == {"SSIS-001", "ABP-002"}, "旧记录被覆盖了"
+
+
+def test_concurrent_updates_do_not_lose_entries(tmp_path):
+    """20 个线程同时写不同番号，最终必须一条不少。"""
+    import threading
+    from app import core
+    path = str(tmp_path / "state.json")
+    core.save_state(path, {})
+    errors = []
+
+    def worker(n: int) -> None:
+        try:
+            for i in range(10):
+                core.update_state(path, {f"CODE-{n}-{i}": {"code": f"CODE-{n}-{i}"}})
+        except Exception as exc:            # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+    state = core.load_state(path)
+    assert len(state) == 200, f"丢了 {200 - len(state)} 条"
+
+
+def test_trim_failed_caps_disk_usage(tmp_path):
+    """失败目录先留着续传，但总容量要封顶，从最旧的删。"""
+    from app import pipeline
+    root = tmp_path / "dl"
+    for name in ("old", "mid", "new"):
+        d = root / name
+        d.mkdir(parents=True)
+        (d / "big.mp4").write_bytes(b"x" * (2 << 20))     # 每个 2MB
+
+    removed = pipeline.trim_failed(str(root), keep=root / "new", limit_bytes=4 << 20)
+    assert "old" in removed
+    assert (root / "new").exists(), "当前任务的目录不能删"
+    assert (root / "mid").exists()

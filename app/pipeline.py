@@ -118,3 +118,42 @@ def total_size(files: list[Path]) -> int:
 
 def cleanup(work: Path) -> None:
     shutil.rmtree(work, ignore_errors=True)
+
+
+def dir_size(path: Path) -> int:
+    total = 0
+    try:
+        for p in path.rglob("*"):
+            try:
+                if p.is_file():
+                    total += p.stat().st_size
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return total
+
+
+def trim_failed(root: str, keep: Path, limit_bytes: int = 20 * 1024**3) -> list[str]:
+    """失败任务的目录先留着以便续传，但整体不能无限涨。
+
+    超出 limit_bytes 时，从最旧的开始删（keep 指定的当前任务永不删）。
+    """
+    base = Path(root)
+    try:
+        dirs = [p for p in base.iterdir() if p.is_dir() and p.resolve() != keep.resolve()]
+    except OSError:
+        return []
+    dirs.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0)
+
+    def total() -> int:
+        return sum(dir_size(p) for p in base.iterdir() if p.is_dir()) if base.exists() else 0
+
+    removed: list[str] = []
+    while dirs and total() > limit_bytes:
+        victim = dirs.pop(0)
+        size = dir_size(victim)
+        log.info("清理旧的失败任务目录 %s（%.1fGB）", victim.name, size / 1024**3)
+        shutil.rmtree(victim, ignore_errors=True)
+        removed.append(victim.name)
+    return removed
