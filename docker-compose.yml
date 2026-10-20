@@ -15,6 +15,10 @@ services:
       # 自动更新 tracker 列表，BT 连接数更多
       UPDATE_TRACKERS: "true"
       TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      # BT 监听端口：必须在防火墙/路由器同时放行 TCP 与 UDP，否则只能被动连
+      - "${LISTEN_PORT:-6888}:6888"
+      - "${LISTEN_PORT:-6888}:6888/udp"
     volumes:
       - ./aria2-config:/config
       - ./downloads:/downloads
@@ -66,3 +70,16 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+
+  # aria2 的 Web 管理界面（AriaNg），连 aria2 的 RPC
+  ariang:
+    image: p3terx/ariang:latest
+    restart: unless-stopped
+    environment:
+      # RPC 地址与密钥，AriaNg 会预填到设置里
+      ARIA2_RPC: "http://aria2:6800/jsonrpc"
+      ARIA2_RPC_SECRET: ${ARIA2_RPC_SECRET}
+    ports:
+      - "${ARIANG_PORT:-6880}:6880"
+    depends_on:
+      - aria2
