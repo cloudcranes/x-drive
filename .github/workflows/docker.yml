@@ -26,8 +26,9 @@ jobs:
       # 用容器跑测试，绕开 setup-python 在本仓库偶发的失败
       - name: 单元测试
         run: |
+          set -eux
           docker run --rm -v "$PWD:/src" -w /src python:3.12-slim \
-            sh -c "pip install --quiet --no-cache-dir -r requirements.txt pytest && python -m pytest tests -q"
+            sh -c "pip install --no-cache-dir -r requirements.txt pytest && python -m pytest tests -q"
 
   build:
     needs: test
