@@ -90,22 +90,24 @@
   .card:hover .title{color:#fff}
   .card:hover{border-color:rgba(62,186,244,.4); transform:translateY(-3px);
     box-shadow:0 18px 34px -20px rgba(0,0,0,.95), 0 0 24px -12px rgba(62,186,244,.5)}
-  .card-media{position:relative; background:#080808; line-height:0; overflow:hidden}
-  .card-media > img{width:100%; height:auto; max-height:620px; display:block; object-fit:cover}
-  .card-media .ph{width:100%; aspect-ratio:4/5; max-height:520px; display:grid; place-items:center;
+  .card-media{position:relative; background:#080808; line-height:0; overflow:hidden;
+    aspect-ratio:4/3}
+  .card-media > img{width:100%; height:100%; display:block; object-fit:cover; object-position:center}
+  .card-media .ph{width:100%; height:100%; display:grid; place-items:center;
     color:#2a2f36; font-family:var(--mono); font-size:11px; background:#0a0a0a}
   /* 多图宫格：2 图左右分栏，3 图左大右两小，4 图四宫格 */
-  .grid{display:grid; gap:2px; background:#0a0a0a}
-  .grid.n2{grid-template-columns:1fr 1fr; aspect-ratio:16/10}
-  .grid.n3{grid-template-columns:1.35fr 1fr; grid-template-rows:1fr 1fr; aspect-ratio:4/3}
-  .grid.n4{grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; aspect-ratio:1}
+  .grid{display:grid; gap:2px; background:#0a0a0a; height:100%}
+  .grid.n2{grid-template-columns:1fr 1fr}
+  .grid.n3{grid-template-columns:1.35fr 1fr; grid-template-rows:1fr 1fr}
+  .grid.n4{grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr}
   .grid .cell{position:relative; overflow:hidden; min-height:0}
   .grid.n3 .cell:first-child{grid-row:span 2}
   .grid img{width:100%; height:100%; object-fit:cover; display:block}
   .grid .ph{aspect-ratio:auto; height:100%}
   /* 视频播放器 */
-  .vwrap{position:relative; background:#080808; line-height:0; aspect-ratio:3/4; max-height:520px; overflow:hidden}
+  .vwrap{position:relative; background:#080808; line-height:0; aspect-ratio:4/3; overflow:hidden}
   .vwrap video{width:100%; height:100%; object-fit:contain; display:block; background:#000}
+  .vwrap .poster{object-fit:cover}
   .vwrap .poster{position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block}
   .vwrap.playing .poster{display:none}
   .vwrap.compact{aspect-ratio:auto; height:100%}
@@ -244,6 +246,15 @@ function videoPlayer(item, compact) {
   video.loop = false;
   video.style.opacity = "0";
   let loaded = false;
+  let preloaded = false;
+
+  if (!item.thumb && item.play) {
+    // 没有封面（旧数据）时用视频首帧当缩略图：只拉 metadata，浏览器会显示第一帧
+    video.preload = "metadata";
+    video.src = abs(item.play);
+    loaded = true;
+    preloaded = true;
+  }
 
   if (item.thumb) {
     const poster = new Image();
@@ -266,6 +277,7 @@ function videoPlayer(item, compact) {
     wrap.classList.add("playing");
     btn.style.display = "none";
     if (!loaded && item.play) { video.src = abs(item.play); loaded = true; }
+    if (preloaded) { video.preload = "auto"; }
     video.style.opacity = "1";
     video.play().catch(() => {
       video.muted = true;
@@ -273,7 +285,13 @@ function videoPlayer(item, compact) {
     });
   };
   btn.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); showVideo(); });
-  video.addEventListener("loadeddata", () => { if (wrap.classList.contains("playing")) video.style.opacity = "1"; });
+  video.addEventListener("loadeddata", () => {
+    if (preloaded && !wrap.classList.contains("playing")) {
+      video.style.opacity = "1";           // 用首帧当封面
+      btn.style.display = "grid";
+    }
+    if (wrap.classList.contains("playing")) video.style.opacity = "1";
+  });
   let triedRaw = false;
   const errName = () => {
     const code = video.error && video.error.code;
@@ -281,6 +299,7 @@ function videoPlayer(item, compact) {
   };
   video.addEventListener("error", () => {
     if (!loaded) return;                     // 还没尝试加载，不算失败
+    if (video.error && video.error.code === 1) return;   // aborted：浏览器主动取消，不算失败
     // 第一次失败先退回直连 twimg 原片
     if (!triedRaw && item.raw && item.raw !== video.currentSrc) {
       triedRaw = true;

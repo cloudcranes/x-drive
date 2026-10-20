@@ -195,3 +195,15 @@ def test_url_credentials_warning_absent():
     html = (web.HTML_PATH).read_text(encoding="utf-8")
     assert "AUTH_HEADER" in html
     assert "includes credentials" in html or "Request cannot be constructed" in html
+
+
+def test_small_thumb_downgrades_orig():
+    assert web.small_thumb("https://pbs.twimg.com/media/a.png?name=orig") == "https://pbs.twimg.com/media/a.png?name=small"
+    assert web.small_thumb("https://pbs.twimg.com/media/a.png?name=small") == "https://pbs.twimg.com/media/a.png?name=small"
+    assert web.small_thumb("https://video.twimg.com/a.mp4") == "https://video.twimg.com/a.mp4"
+
+
+def test_thumb_hits_small_variant(server):
+    data = json.loads(get(server + "/api/tasks").read())
+    img = [m for m in data["tasks"][0]["media"] if m["kind"] == "image"][0]
+    assert "name%3Dsmall" in img["thumb"]

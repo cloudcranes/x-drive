@@ -16,7 +16,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 
 from . import core
 
@@ -66,11 +66,27 @@ def tweet_info(source: str, tweet_id: str) -> tuple[str, str]:
     return "", (source or "")
 
 
+SMALL_NAMES = {"orig", "large", "medium", "4096x4096"}
+
+
+def small_thumb(url: str) -> str:
+    """pbs.twimg.com 图片改用小尺寸变体（?name=small），缩略图不需要原图。"""
+    parts = urlsplit(url)
+    if "pbs.twimg.com" not in (parts.hostname or ""):
+        return url
+    query = parse_qs(parts.query)
+    if query.get("name", [""])[0] not in SMALL_NAMES:
+        return url
+    query["name"] = ["small"]
+    query_string = "&".join(f"{k}={v[0]}" for k, v in query.items())
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query_string, ""))
+
+
 def thumb_url(kind: str, original: str, tweet_id: str, name: str) -> str:
     """同源缩略图地址，避免浏览器直连 pbs.twimg.com。"""
     query = "&".join(
         f"{key}={quote(str(value), safe='')}"
-        for key, value in (("u", original), ("k", kind), ("t", tweet_id), ("f", name))
+        for key, value in (("u", small_thumb(original)), ("k", kind), ("t", tweet_id), ("f", name))
     )
     return f"/thumb?{query}"
 
