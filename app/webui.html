@@ -63,6 +63,16 @@
   .panel textarea:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
   .panel-actions{display:flex; align-items:center; gap:10px; margin-top:10px}
   .panel .hint{font-family:var(--mono); font-size:11.5px; color:var(--dim)}
+  .preview{margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
+    display:flex; gap:14px; align-items:flex-start}
+  .preview[hidden]{display:none}
+  .preview .meta{flex:1; min-width:0}
+  .preview .meta b{display:block; font-size:13.5px; font-weight:700; margin-bottom:4px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .preview .meta span{font-family:var(--mono); font-size:11.5px; color:var(--dim)}
+  .shots{display:flex; gap:6px; overflow:hidden}
+  .shots img{width:96px; height:54px; object-fit:cover; border-radius:6px;
+    border:1px solid var(--line); background:#0a0a0a}
   .jobs{max-width:1440px; margin:16px auto 0; padding:0 26px; display:flex; flex-direction:column; gap:8px}
   .jobs:empty{display:none}
   .job{display:flex; align-items:center; gap:12px; padding:10px 14px; border:1px solid var(--line);
@@ -295,9 +305,11 @@
     <textarea id="dl-text" rows="3" placeholder="magnet:?xt=urn:btih:..."></textarea>
     <div class="panel-actions">
       <button class="chipbtn primary" id="dl-submit" type="button">开始下载</button>
+      <button class="chipbtn" id="dl-peek" type="button">预览信息</button>
       <button class="chipbtn" id="dl-cancel" type="button">取消</button>
       <span class="hint" id="dl-hint"></span>
     </div>
+    <div class="preview" id="dl-preview" hidden></div>
   </section>
 
   <section class="jobs" id="jobs"></section>
@@ -590,6 +602,53 @@ $("new-task").addEventListener("click", () => {
 });
 $("dl-cancel").addEventListener("click", () => { $("panel").hidden = true; $("dl-hint").textContent = ""; });
 
+function showPreview(info) {
+  const box = $("dl-preview");
+  if (!info) { box.hidden = true; return; }
+  box.textContent = "";
+  const meta = el("div", "meta");
+  meta.append(el("b", null, info.name || "未命名"));
+  const size = info.size ? (info.size / 1073741824 >= 1
+    ? (info.size / 1073741824).toFixed(2) + "GB"
+    : (info.size / 1048576).toFixed(0) + "MB") : "—";
+  meta.append(el("span", null, [size, info.count ? info.count + " 个文件" : "", info.file_type].filter(Boolean).join(" · ")));
+  box.append(meta);
+  const shots = el("div", "shots");
+  for (const src of (info.screenshots || []).slice(0, 4)) {
+    const img = new Image();
+    img.loading = "lazy";
+    img.referrerPolicy = "no-referrer";
+    img.src = BASE + "/proxy?u=" + encodeURIComponent(src);
+    shots.append(img);
+  }
+  if (shots.childElementCount) box.append(shots);
+  box.hidden = false;
+}
+
+$("dl-peek").addEventListener("click", async () => {
+  const text = $("dl-text").value.trim();
+  const magnet = (text.match(/magnet:\?[^\s"']+/) || [""])[0];
+  if (!magnet) { $("dl-hint").textContent = "先粘贴磁力链接"; return; }
+  $("dl-peek").disabled = true;
+  $("dl-hint").textContent = "查询中…";
+  try {
+    const init = {cache: "no-store"};
+    if (AUTH_HEADER) init.headers = {Authorization: AUTH_HEADER};
+    const r = await fetch(BASE + "/api/peek?magnet=" + encodeURIComponent(magnet), init);
+    const d = await r.json();
+    if (r.ok && d.info) {
+      showPreview(d.info);
+      $("dl-hint").textContent = "已获取磁力信息";
+    } else {
+      $("dl-hint").textContent = "查不到信息（磁力可能无人做种或格式不完整）";
+    }
+  } catch (e) {
+    $("dl-hint").textContent = "查询失败：" + e.message;
+  } finally {
+    $("dl-peek").disabled = false;
+  }
+});
+
 $("dl-submit").addEventListener("click", async () => {
   const text = $("dl-text").value.trim();
   if (!text) { $("dl-hint").textContent = "先粘贴磁力或直链"; return; }
@@ -604,6 +663,7 @@ $("dl-submit").addEventListener("click", async () => {
     const d = await r.json();
     if (r.ok && d.ok) {
       $("dl-hint").textContent = `已提交 ${d.count} 个任务` + (d.code ? ` · 番号 ${d.code}` : "");
+      if (d.preview) showPreview(d.preview);
       $("dl-text").value = "";
       loadJobs();
     } else {
@@ -637,7 +697,7 @@ async function loadJobs() {
       bar.append(fill);
       node.append(bar);
       const speed = j.speed ? (j.speed / 1048576).toFixed(1) + "MB/s" : "";
-      const label = j.code || (j.source || "").slice(0, 42);
+      const label = j.code || j.name || (j.source || "").slice(0, 42);
       node.append(el("span", "txt", [label, speed, j.error].filter(Boolean).join(" · ")));
       if (j.link) {
         const a = el("a", null, "Drive ↗");

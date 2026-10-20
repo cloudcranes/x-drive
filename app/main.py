@@ -25,7 +25,7 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import aria2, codes, core, fetcher, metrics, pipeline
+from . import aria2, codes, core, fetcher, metrics, pipeline, whatslink
 
 log = logging.getLogger("x-drive")
 
@@ -300,6 +300,22 @@ async def run_task(
             clear_pending(cfg, key)
             continue
 
+        info = await pipeline.probe(client, source) if fetcher.is_magnet(source) else None
+        hint = ""
+        if info:
+            hint = "\n" + whatslink.describe(info)
+            if not code:
+                guessed = whatslink.guess_code(info)
+                if guessed:
+                    code = key = guessed
+                    hint += f"\n（从文件名识别到番号 {guessed}）"
+            if info.get("size") and quota_exceeded(cfg, int(info["size"])):
+                failures.append(
+                    f"{source[:30]}…: 体积 {core.human_size(info['size'])} 超过今日剩余配额"
+                )
+                mark_pending(cfg, key, url=source, stage="quota", chat_id=chat_id)
+                continue
+
         work = pipeline.job_dir(cfg.tmp_root, key)
         pipeline.cleanup(work)
         work.mkdir(parents=True, exist_ok=True)
@@ -308,7 +324,7 @@ async def run_task(
                 mb = (speed or 0) / 1048576
                 await _p(f"⏳ 下载 {_i}/{len(sources)} · {percent * 100:.1f}% · {mb:.1f}MB/s")
 
-            await progress(f"⏳ 下载 {index}/{len(sources)}…（磁力可能较慢）")
+            await progress(f"⏳ 下载 {index}/{len(sources)}…{hint or '（磁力可能较慢）'}")
             await pipeline.download(aria, client, source, work, progress=on_progress)
 
             final_code = code or codes.detect(fetcher.media_files(work)[0].name if fetcher.media_files(work) else "")

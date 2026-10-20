@@ -9,7 +9,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from . import aria2, codes, core, fetcher
+from . import aria2, codes, core, fetcher, whatslink
 
 log = logging.getLogger("x-drive.pipeline")
 
@@ -22,6 +22,11 @@ def job_dir(tmp_root: str, key: str) -> Path:
     """每个任务独立目录，键只保留字母数字。"""
     safe = "".join(ch for ch in key if ch.isalnum()) or "job"
     return Path(tmp_root) / safe
+
+
+async def probe(client, source: str) -> dict:
+    """提交前查元信息（只有磁力会查，直链直接跳过）。"""
+    return await whatslink.lookup(client, source)
 
 
 async def download(

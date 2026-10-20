@@ -14,6 +14,8 @@ Drive: X-Drive/SSIS-123/SSIS-123.mp4
 ## 工作方式
 
 1. 从消息里抽出磁力/直链（可混在文字里；一条消息多个链接会逐个处理）
+   - 磁力会先经 whatslink.info 查元信息：文件名、体积、文件数、封面截图
+   - 拿到体积后先判配额，超了直接拒绝，不会白下一晚
 2. 识别番号：优先取消息里写的 `SSIS-123`，其次从文件名推断
    - 支持 `ABC-123`、`FC2-PPV-1234567`、`HEYZO-1234`
    - 自动跳过 `1080p`、`x264`、`WEB-DL` 这类干扰项
@@ -57,7 +59,9 @@ bot 只通过 JSON-RPC 下发任务，两边共用 `./downloads` 卷。要点：
 - `ARIA2_RPC_SECRET` 必须设置，否则容器拒绝连接
 - `LISTEN_PORT=6888` 需要在防火墙/路由器放行 TCP+UDP，否则 BT 只能被动连接，速度很慢
 - `aria2-config/` 挂 `/config`，容器自己维护配置与 tracker 列表（`UPDATE_TRACKERS=true`）
-- **下载管理已集成进看板**（`http://<host>:8080`）：右上「+ 新建下载」粘贴磁力/直链即可提交，页面显示实时进度、速度与 Drive 链接；不需要单独的 AriaNg
+- **下载管理已集成进看板**（`http://<host>:8080`）：右上「+ 新建下载」粘贴磁力/直链即可提交
+- 点「预览信息」会先用 [whatslink.info](https://whatslink.info) 查文件名、体积、文件数与封面截图，确认无误再提交
+- 提交后页面显示实时进度、速度与 Drive 链接；不需要单独的 AriaNg
 不想用远端镜像就删掉 `.env` 里的 `BOT_IMAGE`，改用本机 `docker compose up -d --build`。
 
 ## 配置
@@ -118,5 +122,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 - `app/main.py`：TG 编排、去重、配额、待办补跑
 - `app/web.py` + `app/webui.html`：零依赖看板
 - `app/metrics.py`：结果分类计数
+- `app/whatslink.py`：磁力元信息查询（文件名/体积/截图），失败带重试
+- `app/pipeline.py`：下载 → 整理 → 命名，bot 与 web 共用同一套逻辑
 
 共 31 个测试，`python -m pytest tests -q` 约 7 秒跑完。

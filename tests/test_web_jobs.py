@@ -18,7 +18,10 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "TMP_ROOT", str(tmp_path / "dl"))
     monkeypatch.setattr(web, "JOBS", {})
     started = []
-    monkeypatch.setattr(web, "start_job", lambda src, code: started.append((src, code)) or "j1")
+    monkeypatch.setattr(web, "start_job",
+                        lambda src, code, info=None: started.append((src, code)) or "j1")
+    monkeypatch.setattr(web, "peek", lambda magnet: {"name": "SSIS-123", "size": 100,
+                                                     "count": 1, "screenshots": []})
     httpd = web.serve("127.0.0.1", 0)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}", started
@@ -67,7 +70,7 @@ def test_download_requires_auth(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "STATE", str(state_file))
     monkeypatch.setattr(web, "AUTH", "u:p")
     monkeypatch.setattr(web, "JOBS", {})
-    monkeypatch.setattr(web, "start_job", lambda src, code: "j1")
+    monkeypatch.setattr(web, "start_job", lambda src, code, info=None: "j1")
     httpd = web.serve("127.0.0.1", 0)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"

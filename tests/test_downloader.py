@@ -26,6 +26,14 @@ class Msg:
     async def edit_text(self, t): self.text = t
 
 
+@pytest.fixture(autouse=True)
+def no_whatslink(monkeypatch):
+    """单测不联网：元信息查询直接返回 None。"""
+    async def none(client, source):
+        return None
+    monkeypatch.setattr(pipeline, "probe", none)
+
+
 @pytest.fixture
 def stub(monkeypatch, tmp_path):
     """把下载与 rclone 都换成假的：写一个 2MB 的假视频。"""

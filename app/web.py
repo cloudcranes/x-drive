@@ -21,7 +21,7 @@ import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
@@ -209,9 +209,30 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         pipeline.cleanup(work)
 
 
-def start_job(source: str, code: str) -> str:
+def peek(magnet: str) -> dict | None:
+    """同步查磁力元信息（网页预览用）。"""
+    from . import whatslink
+
+    async def main():
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            return await whatslink.lookup(client, magnet)
+
+    try:
+        info = asyncio.run(main())
+    except Exception as exc:
+        log.warning("whatslink 预览失败：%s", exc)
+        return None
+    return info
+
+
+def start_job(source: str, code: str, info: dict | None = None) -> str:
     job_id = f"j{int(time.time() * 1000) % 10**10}"
     job_update(job_id, source=source[:300], code=code, stage="queued", percent=0.0, speed=0)
+    if info:
+        job_update(
+            job_id, name=info.get("name") or "", total=info.get("size") or 0,
+            screenshots=info.get("screenshots") or [],
+        )
     threading.Thread(target=run_web_job, args=(job_id, source, code), daemon=True).start()
     return job_id
 
@@ -347,8 +368,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "需要一个磁力或直链"}, 400)
                 return
             code = codes.detect(text) or ""
-            ids = [start_job(src, code) for src in sources]
-            self._json({"ok": True, "jobs": ids, "code": code, "count": len(ids)})
+            preview = None
+            for src in sources:
+                if src.lower().startswith("magnet:"):
+                    preview = peek(src)
+                    if preview and not code:
+                        guessed = codes.detect(preview.get("name") or "")
+                        if guessed:
+                            code = guessed
+                    break
+            ids = [start_job(src, code, preview if len(sources) == 1 else None) for src in sources]
+            self._json({
+                "ok": True, "jobs": ids, "code": code,
+                "count": len(ids), "preview": preview,
+            })
             return
         if path == "/api/aria2/remove":
             if not self._authorized():
@@ -414,6 +447,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/metrics":
             self._json(metrics_snapshot())
             return
+        if path == "/proxy":
+            self._proxy_image(parse_qs(parts.query))
+            return
+        if path == "/api/peek":
+            magnet = parse_qs(parts.query).get("magnet", [""])[0]
+            if not magnet.lower().startswith("magnet:"):
+                self._json({"ok": False, "error": "需要一个磁力链接"}, 400)
+                return
+            info = peek(magnet)
+            self._json({"ok": bool(info), "info": info}, 200 if info else 502)
+            return
         if path == "/api/jobs":
             self._json({"jobs": jobs_snapshot()})
             return
@@ -421,6 +465,28 @@ class Handler(BaseHTTPRequestHandler):
             self._json(aria_tasks())
             return
         self._send(404, b"not found", "text/plain; charset=utf-8")
+
+    def _proxy_image(self, query: dict) -> None:
+        """同源转发 whatslink 的截图，避免浏览器直连第三方域名。"""
+        url = (query.get("u") or [""])[0]
+        host = (urlsplit(url).hostname or "").lower()
+        if not url or host not in ("whatslink.info", "www.whatslink.info"):
+            self._send(400, b"bad proxy url", "text/plain; charset=utf-8")
+            return
+        req_headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://whatslink.info/"}
+        for attempt in range(3):          # 上游偶发 500，重试两次基本就稳
+            try:
+                req = urllib.request.Request(url, headers=req_headers)
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    data = resp.read(4 * 1024 * 1024)
+                    ctype = resp.headers.get("Content-Type") or "image/jpeg"
+                self._send(200, data, ctype, {"Cache-Control": "public, max-age=86400"})
+                return
+            except Exception as exc:
+                if attempt == 2:
+                    self._send(502, f"proxy failed: {exc}".encode(), "text/plain; charset=utf-8")
+                else:
+                    time.sleep(0.4 * (attempt + 1))
 
     def _json(self, payload: dict, code: int = 200, extra: dict | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()
