@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>x-drive · 推文媒体转存 Drive</title>
+<title>x-drive · 番号归档</title>
 <link rel="icon" href="data:,">
 <style>
   :root{
@@ -113,11 +113,17 @@
   .card:hover .title{color:#fff}
   .card:hover{border-color:rgba(62,186,244,.4); transform:translateY(-3px);
     box-shadow:0 18px 34px -20px rgba(0,0,0,.95), 0 0 24px -12px rgba(62,186,244,.5)}
-  .card-media{position:relative; background:#080808; line-height:0; overflow:hidden;
-    aspect-ratio:4/3}
-  .card-media > img{width:100%; height:100%; display:block; object-fit:cover; object-position:center}
-  .card-media .ph{width:100%; height:100%; display:grid; place-items:center;
-    color:#2a2f36; font-family:var(--mono); font-size:11px; background:#0a0a0a}
+  .card-media{position:relative; overflow:hidden; aspect-ratio:16/10;
+    background:
+      radial-gradient(420px 200px at 88% -20%, rgba(62,186,244,.16), transparent 70%),
+      linear-gradient(135deg, rgba(26,26,26,.9), rgba(10,10,10,.95))}
+  .codebox{position:absolute; inset:0; display:flex; flex-direction:column; justify-content:center;
+    align-items:center; gap:10px; padding:18px; text-align:center}
+  .code{font-family:var(--mono); font-size:clamp(18px, 2.4vw, 30px); font-weight:800;
+    letter-spacing:-.01em; line-height:1.15; word-break:break-all; color:var(--text);
+    text-shadow:0 0 22px rgba(62,186,244,.28)}
+
+
   /* 多图宫格：2 图左右分栏，3 图左大右两小，4 图四宫格 */
   .grid{display:grid; gap:2px; background:#0a0a0a; height:100%}
   .grid.n2{grid-template-columns:1fr 1fr}
@@ -187,6 +193,7 @@
   /* 灯箱 */
   .lightbox{position:fixed; inset:0; z-index:50; background:rgba(0,0,0,.92);
     display:grid; place-items:center; backdrop-filter:blur(6px)}
+  .lightbox[hidden]{display:none !important}
   .lb-stage{max-width:min(92vw,1200px); max-height:86vh; display:grid; place-items:center}
   .lb-stage img,.lb-stage video{max-width:100%; max-height:86vh; border-radius:10px;
     box-shadow:0 30px 80px -30px rgba(0,0,0,.9)}
@@ -199,7 +206,7 @@
   .lb-nav[hidden]{visibility:hidden}
   .lb-count{position:absolute; bottom:20px; left:50%; transform:translateX(-50%);
     font-family:var(--mono); font-size:12px; color:var(--muted)}
-  .card-media{cursor:zoom-in}
+  .card-media{cursor:pointer}
 
   @media(prefers-reduced-motion:reduce){h1{animation:none} .card{transition:none}}
 </style>
@@ -216,10 +223,10 @@
       x-<i>drive</i>
     </div>
     <div class="search">
-      <input id="q" type="search" placeholder="搜索标题 / 作者 / @handle   ( / )" autocomplete="off">
+      <input id="q" type="search" placeholder="搜索番号 / 来源   ( / )" autocomplete="off">
       <button class="chipbtn" id="f-all" data-filter="all" type="button">全部</button>
-      <button class="chipbtn" id="f-img" data-filter="image" type="button">图片</button>
-      <button class="chipbtn" id="f-vid" data-filter="video" type="button">视频</button>
+      <button class="chipbtn" data-filter="single" type="button">单文件</button>
+      <button class="chipbtn" data-filter="multi" type="button">多文件</button>
     </div>
     <button class="refresh" id="refresh" type="button" title="立即刷新" aria-label="立即刷新">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -248,14 +255,14 @@
 
 <main>
   <section class="hero">
-    <div class="eyebrow">Archive Stream</div>
-    <h1>推文媒体归档</h1>
-    <p class="desc">发给 Telegram 机器人的每条 x.com 链接，图片与视频都会落到 Google Drive，这里按时间倒序铺开。</p>
+    <div class="eyebrow">Number Archive</div>
+    <h1>番号归档库</h1>
+    <p class="desc">发给机器人的磁力或直链会按番号建目录上传到 Google Drive，这里按归档时间倒序排列。</p>
     <div class="capsule">
-      <div class="metric"><b id="s-tasks">0</b><span>归档推文</span></div>
-      <div class="metric"><b id="s-images">0</b><span>图片</span></div>
-      <div class="metric"><b id="s-videos">0</b><span>视频</span></div>
-      <div class="metric"><b id="s-last">—</b><span>最近入库</span></div>
+      <div class="metric"><b id="s-tasks">0</b><span>已归档番号</span></div>
+      <div class="metric"><b id="s-images">0</b><span>文件数</span></div>
+      <div class="metric"><b id="s-videos">0</b><span>总容量</span></div>
+      <div class="metric"><b id="s-last">—</b><span>最近归档</span></div>
     </div>
   </section>
 
@@ -284,188 +291,45 @@ const el = (tag, cls, text) => {
 };
 const initial = s => (s || "?").trim().charAt(0).toUpperCase() || "?";
 
-/** 单个媒体 → <img>，代理失败回退直连原图，再失败显示占位 */
-function mediaImg(item, alt) {
-  const img = new Image();
-  img.loading = "lazy";
-  img.decoding = "async";
-  img.alt = alt || "";
-  img.referrerPolicy = "no-referrer";
-  let fallback = item.raw || "";
-  img.classList.add("ready");                 // 未加载时也可见，避免淡入变量导致空白
-  img.addEventListener("load", () => img.classList.add("ready"), {once: true});
-  img.addEventListener("error", () => {
-    if (fallback) { const f = fallback; fallback = ""; img.src = f; return; }
-    const ph = el("div", "ph", "预览不可用");
-    img.replaceWith(ph);
-  }, {once: true});
-  img.src = abs(item.thumb || item.raw || "");
-  return img;
-}
-
-/** 视频：先显示封面 + 播放按钮，点击就地播放（同源 /video 代理，支持拖动） */
-function videoPlayer(item, compact) {
-  const wrap = el("div", "vwrap" + (compact ? " compact" : ""));
-  const video = document.createElement("video");
-  video.preload = "none";          // 点击后才加载，避免首屏并发请求被中断触发 error
-  video.playsInline = true;
-  video.controls = true;
-  video.muted = true;
-  video.loop = false;
-  video.style.opacity = "0";
-  let loaded = false;
-  let preloaded = false;
-
-  if (!item.thumb && item.play) {
-    // 没有封面（旧数据）时用视频首帧当缩略图：只拉 metadata，浏览器会显示第一帧
-    video.preload = "metadata";
-    video.src = abs(item.play);
-    loaded = true;
-    preloaded = true;
-  }
-
-  if (item.thumb) {
-    const poster = new Image();
-    poster.loading = "lazy";
-    poster.className = "poster";
-    poster.referrerPolicy = "no-referrer";
-    poster.alt = "";
-    poster.addEventListener("load", () => poster.classList.add("ready"), {once: true});
-    poster.src = abs(item.thumb);
-    wrap.append(poster);
-  }
-
-  const btn = el("button", "playbtn", "▶");
-  btn.type = "button";
-  btn.setAttribute("aria-label", "播放视频");
-  wrap.append(btn);
-  wrap.append(video);
-
-  const showVideo = () => {
-    wrap.classList.add("playing");
-    btn.style.display = "none";
-    if (!loaded && item.play) { video.src = abs(item.play); loaded = true; }
-    if (preloaded) { video.preload = "auto"; }
-    video.style.opacity = "1";
-    video.play().catch(() => {
-      video.muted = true;
-      video.play().catch(() => {});
-    });
-  };
-  btn.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); showVideo(); });
-  video.addEventListener("loadeddata", () => {
-    if (preloaded && !wrap.classList.contains("playing")) {
-      video.style.opacity = "1";           // 用首帧当封面
-      btn.style.display = "grid";
-    }
-    if (wrap.classList.contains("playing")) video.style.opacity = "1";
-  });
-  let triedRaw = false;
-  const errName = () => {
-    const code = video.error && video.error.code;
-    return {1: "aborted", 2: "network", 3: "decode", 4: "unsupported"}[code] || ("err" + (code || "?"));
-  };
-  video.addEventListener("error", () => {
-    if (!loaded) return;                     // 还没尝试加载，不算失败
-    if (video.error && video.error.code === 1) return;   // aborted：浏览器主动取消，不算失败
-    // 第一次失败先退回直连 twimg 原片
-    if (!triedRaw && item.raw && item.raw !== video.currentSrc) {
-      triedRaw = true;
-      video.src = abs(item.raw);
-      video.play().catch(() => {});
-      return;
-    }
-    wrap.classList.remove("playing");
-    video.style.opacity = "0";
-    btn.style.display = "";
-    btn.textContent = "无法预览（" + errName() + "）· 打开原推";
-    btn.classList.add("bad");
-    btn.onclick = e => { e.preventDefault(); e.stopPropagation(); window.open(item.raw || "#", "_blank"); };
-  });
-  return wrap;
-}
-
-/** 一条推文 → 一张瀑布流卡片；多图时铺宫格，否则单图封面 */
+/** 一条归档 = 一张番号卡片 */
 function card(t) {
   const node = el("article", "card");
   const media = el("div", "card-media");
-  const items = (t.media || []).filter(m => m.thumb || m.raw);
-  const cover = items[0];
-
-  if (cover) {
-    if (items.length === 1 && cover.kind === "video") {
-      media.append(videoPlayer(cover));
-    } else if (items.length === 1) {
-      media.append(mediaImg(cover, t.title || t.id));
-    } else {
-      const grid = el("div", "grid n" + Math.min(items.length, 4));
-      for (const item of items.slice(0, 4)) {
-        const cell = el("div", "cell");
-        if (item.kind === "video") {
-          cell.append(videoPlayer(item, true));
-        } else {
-          cell.append(mediaImg(item, t.title || t.id));
-        }
-        grid.append(cell);
-      }
-      media.append(grid);
-    }
-  } else {
-    media.append(el("div", "ph", "无预览"));
-  }
-
-  const badges = el("div", "badge-media");
-  if (t.images) badges.append(el("span", "chip img", t.images + " 图"));
-  if (t.videos) badges.append(el("span", "chip vid", t.videos + " 视频"));
-  if (badges.childElementCount) media.append(badges);
-  if (items.length > 4) media.append(el("span", "more", "+" + (items.length - 4)));
-  else if (items.length === 1 && cover.kind === "video") media.append(el("span", "more", "▶ 视频"));
+  const box = el("div", "codebox");
+  box.append(el("span", "code", t.code));
+  const chips = el("div", "badge-media");
+  chips.append(el("span", "chip img", t.count + " 文件"));
+  chips.append(el("span", "chip vid", t.size_text));
+  box.append(chips);
+  media.append(box);
   node.append(media);
 
-  media.addEventListener("click", e => {
-    const items = (t.media || []).filter(m => m.thumb || m.raw || m.play);
-    if (!items.length) return;
-    // 点到播放控件时不打开灯箱
-    if (e.target.closest("video, .playbtn, a")) return;
-    openLightbox(items, 0, t.title || "");
-  });
-
   const body = el("div", "card-body");
-  const who = el("div", "who");
-  who.append(el("span", "avatar", initial(t.author)));
-  who.append(el("span", "name", t.author || "未知作者"));
-  if (t.handle) who.append(el("span", "handle", "@" + t.handle));
-  body.append(who);
-
-  const title = (t.title || "").replace(/https?:\/\/t\.co\/\S+/g, "").trim();
-  if (title) body.append(el("p", "title", title));
-
   const meta = el("div", "meta");
   meta.append(el("span", null, fmt(t.at)));
   meta.append(el("span", "sp"));
-  if (t.url) {
-    const src = el("a", null, "原推 →");
-    src.href = t.url; src.target = "_blank"; src.rel = "noopener";
-    meta.append(src);
-  }
   if (t.link) {
     const drv = el("a", null, "Drive ↗");
-    drv.href = t.link; drv.target = "_blank"; drv.rel = "noopener";
+    drv.href = t.link;
+    drv.target = "_blank";
+    drv.rel = "noopener";
     meta.append(drv);
+  } else {
+    meta.append(el("span", null, "未取到链接"));
   }
   body.append(meta);
   node.append(body);
+
+  node.addEventListener("click", e => {
+    if (e.target.closest("a")) return;
+    if (t.link) window.open(t.link, "_blank", "noopener");
+  });
   return node;
 }
 
-// 若通过 http://user:pass@host 打开，浏览器会把凭据留在 location 里，
-// 此时 fetch("/api/...") 会抛 "Request cannot be constructed from a URL that includes credentials"。
-// 这里把凭据取出来手动放到 Authorization 头，并把地址栏里的凭据抹掉。
-// 绝对地址前缀：即使地址栏里带 user:pass，用 origin + 相对路径构造请求也不会触发
-// “Request cannot be constructed from a URL that includes credentials”
+// 若通过 http://user:pass@host 打开，浏览器会把凭据留在 location，
+// 直接 fetch 相对地址会抛 "URL that includes credentials"。这里取出凭据并抹掉地址栏。
 const BASE = location.origin;
-const abs = p => (p && p.charAt(0) === "/") ? BASE + p : (p || "");
-
 const AUTH_HEADER = (() => {
   const m = location.href.match(/^(https?:\/\/)([^/@]+)@/);
   if (!m) return null;
@@ -479,23 +343,22 @@ const view = {q: "", kind: "all", author: "", month: ""};
 const allTasks = new Map();     // id -> task（供过滤时复用）
 
 function matches(t) {
-  if (view.kind === "image" && !t.images) return false;
-  if (view.kind === "video" && !t.videos) return false;
-  if (view.author && (t.handle || t.author || "未知作者") !== view.author) return false;
-  if (view.month && (t.at || "").slice(0, 7) !== view.month) return false;
+  if (view.kind === "single" && t.count !== 1) return false;
+  if (view.kind === "multi" && t.count < 2) return false;
+  if (view.author && (t.code || "").split("-")[0] !== view.author) return false;
   const q = view.q.trim().toLowerCase();
   if (!q) return true;
-  return [t.title, t.author, t.handle, t.source].some(v => (v || "").toLowerCase().includes(q));
+  return [t.code, t.source, t.path].some(v => (v || "").toLowerCase().includes(q));
 }
 
 function renderGroups() {
   const box = $("groups");
   box.textContent = "";
-  const byAuthor = new Map();
+  const byPrefix = new Map();
   const byMonth = new Map();
   for (const t of allTasks.values()) {
-    const who = t.handle || t.author || "未知作者";
-    byAuthor.set(who, (byAuthor.get(who) || 0) + 1);
+    const prefix = (t.code || "").split("-")[0] || "其他";
+    byPrefix.set(prefix, (byPrefix.get(prefix) || 0) + 1);
     const month = (t.at || "").slice(0, 7);
     if (month) byMonth.set(month, (byMonth.get(month) || 0) + 1);
   }
@@ -514,8 +377,8 @@ function renderGroups() {
     }
     return frag;
   };
-  box.append(make("作者", [...byAuthor.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8), "author"));
-  if (byAuthor.size) box.append(el("span", "sep"));
+  box.append(make("系列", [...byPrefix.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8), "author"));
+  if (byPrefix.size) box.append(el("span", "sep"));
   box.append(make("月份", [...byMonth.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 6), "month"));
   box.onclick = e => {
     const btn = e.target.closest("button[data-group]");
@@ -655,12 +518,10 @@ async function load() {
       if (!r.ok) throw new Error("HTTP " + r.status);
       const d = await r.json();
       $("dot").className = d.health.parse ? "dot" : "dot off";
-      $("health").textContent = d.health.parse
-        ? "运行中 · parse 在线"
-        : "parse 不可达（记录仍可查看）";
+      $("health").textContent = `运行中 · ${d.stats.tasks} 个番号`;
       $("s-tasks").textContent = d.stats.tasks;
-      $("s-images").textContent = d.stats.images;
-      $("s-videos").textContent = d.stats.videos;
+      $("s-images").textContent = d.stats.files;
+      $("s-videos").textContent = d.stats.size_text || "0MB";
       $("s-last").textContent = d.stats.last ? fmt(d.stats.last) : "—";
       allTasks.clear();
       for (const t of d.tasks) allTasks.set(t.id, t);

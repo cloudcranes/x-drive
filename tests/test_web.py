@@ -18,34 +18,28 @@ def server(tmp_path, monkeypatch):
     core.save_state(
         str(state_file),
         {
-            "123": {
-                "path": "gdrive:X-Drive/Elon_Musk/2026-10/123",
+            "SSIS-123": {
+                "code": "SSIS-123",
+                "path": "gdrive:X-Drive/SSIS-123",
                 "link": "https://drive.google.com/drive/folders/AAA",
-                "files": ["Elon_Musk_2026-10-19_01.jpg", "Elon_Musk_2026-10-19_02.mp4"],
-                "orig": {
-                    "Elon_Musk_2026-10-19_01.jpg": "https://pbs.twimg.com/media/aaa.jpg?name=orig",
-                    "Elon_Musk_2026-10-19_02.mp4": "https://video.twimg.com/v/1.mp4",
-                },
-                "title": "hello <b>world</b>",
-                "author": "Elon Musk",
-                "source": "https://x.com/u/status/123",
-                "at": "2026-10-19T12:00:00",
+                "files": ["SSIS-123.mp4"],
+                "size": 2 * 1024**3,
+                "source": "magnet:?xt=urn:btih:aa",
+                "at": "2026-10-20T12:00:00",
             },
-            "456": {
-                "path": "gdrive:X-Drive/a/2026-10/456",
+            "ABCD-456": {
+                "code": "ABCD-456",
+                "path": "gdrive:X-Drive/ABCD-456",
                 "link": "",
-                "files": ["a_2026-10-18_01.png"],
-                "title": "",
-                "author": "",
-                "source": "https://x.com/u/status/456",
-                "at": "2026-10-18T10:00:00",
+                "files": ["ABCD-456-1.mp4", "ABCD-456-2.mp4"],
+                "size": 500 * 1024**2,
+                "source": "https://a.com/b.mp4",
+                "at": "2026-10-19T10:00:00",
             },
         },
     )
     monkeypatch.setattr(web, "STATE", str(state_file))
-    monkeypatch.setattr(web, "PARSE", "http://127.0.0.1:9")
     monkeypatch.setattr(web, "AUTH", "")
-    web._health.update(at=0.0, parse=False)
     httpd = web.serve("127.0.0.1", 0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -67,82 +61,22 @@ def test_index_serves_html(server):
 
 def test_api_tasks(server):
     data = json.loads(get(server + "/api/tasks").read())
-    assert data["stats"] == {"tasks": 2, "images": 2, "videos": 1, "last": "2026-10-19T12:00:00"}
-    assert data["tasks"][0]["id"] == "123"
-    assert data["tasks"][0]["images"] == 1 and data["tasks"][0]["videos"] == 1
+    assert data["stats"]["tasks"] == 2
+    assert data["stats"]["files"] == 3
+    assert data["stats"]["size_text"] == "2.49GB"
     first = data["tasks"][0]
-    assert first["handle"] == "u" and first["url"] == "https://x.com/u/status/123"
-    media = first["media"]
-    assert [m["kind"] for m in media] == ["image", "video"]
-    assert media[0]["thumb"].startswith("/thumb?") and "pbs.twimg.com" in media[0]["thumb"]
-    assert data["tasks"][1]["link"] == ""
-    assert data["health"]["parse"] is False
-
-
-def test_thumb_rejects_foreign_host(server):
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        get(server + "/thumb?u=" + urllib.parse.quote("https://evil.example.com/a.jpg", safe=""))
-    assert exc.value.code == 400
+    assert first["code"] == "SSIS-123"
+    assert first["size_text"] == "2.00GB"
+    assert first["count"] == 1 and first["link"].startswith("https://drive")
+    second = data["tasks"][1]
+    assert second["code"] == "ABCD-456" and second["size_text"] == "500MB"
+    assert "media" not in first, "下载器模式不再有媒体缩略图字段"
 
 
 def test_video_rejects_foreign_host(server):
     with pytest.raises(urllib.error.HTTPError) as exc:
-        get(server + "/video?u=" + urllib.parse.quote("https://evil.example.com/a.mp4", safe=""))
-    assert exc.value.code == 400
-
-
-def test_video_item_has_play_url(server):
-    data = json.loads(get(server + "/api/tasks").read())
-    video = [m for m in data["tasks"][0]["media"] if m["kind"] == "video"][0]
-    assert video["play"].startswith("/video?") and "video.twimg.com" in video["play"]
-    # 视频直链不是图片，不能塞进 <img>
-    assert video["thumb"] == ""
-    assert video["raw"].endswith(".mp4")
-
-
-def test_video_proxy_streams_and_passes_range(server, monkeypatch):
-    """代理应透传 Range 并流式转发，不能把整个文件读进内存。"""
-    calls = {}
-
-    class FakeUpstream:
-        status = 206
-        headers = {"Content-Type": "video/mp4", "Content-Length": "8",
-                   "Content-Range": "bytes 0-7/1000"}
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def read(self, n: int = -1):
-            if calls.get("done"):
-                return b""
-            calls["done"] = True
-            return b"01234567"
-
-    def fake_urlopen(req, timeout=None):
-        calls["range"] = req.headers.get("Range")
-        calls["referer"] = req.headers.get("Referer")
-        return FakeUpstream()
-
-    monkeypatch.setattr(web.urllib.request, "urlopen", fake_urlopen)
-    # 用 http.client：monkeypatch 改的是同一个 urllib.request 模块，不能再用它发测试请求
-    base = server.removeprefix("http://")
-    host, port = base.split(":")
-    conn = http.client.HTTPConnection(host, int(port), timeout=10)
-    path = "/video?u=" + urllib.parse.quote("https://video.twimg.com/a.mp4", safe="")
-    conn.request("GET", path, headers={"Range": "bytes=0-7"})
-    resp = conn.getresponse()
-    body = resp.read()
-    assert resp.status == 206
-    assert resp.getheader("Content-Range") == "bytes 0-7/1000"
-    assert resp.getheader("Accept-Ranges") == "bytes"
-    assert body == b"01234567"
-    conn.close()
-    assert calls["range"] == "bytes=0-7"
-    assert calls["referer"] == "https://x.com/"
-
-
-def test_thumb_requires_url(server):
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        get(server + "/thumb")
-    assert exc.value.code == 400
+        get(server + "/video?u=https://evil.example.com/a.mp4")
+    assert exc.value.code == 404, "代理已下线"
 
 
 def test_api_health(server):
@@ -202,18 +136,6 @@ def test_url_credentials_warning_absent():
     assert "includes credentials" in html or "Request cannot be constructed" in html
 
 
-def test_small_thumb_downgrades_orig():
-    assert web.small_thumb("https://pbs.twimg.com/media/a.png?name=orig") == "https://pbs.twimg.com/media/a.png?name=small"
-    assert web.small_thumb("https://pbs.twimg.com/media/a.png?name=small") == "https://pbs.twimg.com/media/a.png?name=small"
-    assert web.small_thumb("https://video.twimg.com/a.mp4") == "https://video.twimg.com/a.mp4"
-
-
-def test_thumb_hits_small_variant(server):
-    data = json.loads(get(server + "/api/tasks").read())
-    img = [m for m in data["tasks"][0]["media"] if m["kind"] == "image"][0]
-    assert "name%3Dsmall" in img["thumb"]
-
-
 def test_incremental_render_present():
     """页面必须按 id 增量渲染，且刷新失败不清空列表。"""
     html = web.HTML_PATH.read_text(encoding="utf-8")
@@ -231,7 +153,7 @@ def test_metrics_endpoint(server, monkeypatch):
     monkeypatch.setattr(web, "PENDING_DIR", os.path.join(d, "pending"))
     data = json.loads(get(server + "/api/metrics").read())
     assert data["attempts"] == 0 and data["pending"] == 0
-    assert "parse" in data
+    assert "success_rate" in data
 
 
 def test_health_reflects_state_readability(server, monkeypatch):
@@ -240,12 +162,6 @@ def test_health_reflects_state_readability(server, monkeypatch):
     open(bad, "w").write("{not json")
     monkeypatch.setattr(web, "STATE", bad)
     assert json.loads(get(server + "/api/health").read())["ok"] is False
-
-
-def test_thumb_orig_variant(server):
-    assert web.small_thumb("https://pbs.twimg.com/media/a.png?name=orig", "orig").endswith("name=orig")
-    assert "name%3Dorig" in web.thumb_url("image", "https://pbs.twimg.com/media/a.png?name=orig",
-                                          "1", "a.png", "orig")
 
 
 def test_login_sets_cookie_and_grants_access(server, monkeypatch):

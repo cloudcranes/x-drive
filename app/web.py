@@ -17,7 +17,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from . import core
 
@@ -26,21 +26,16 @@ log = logging.getLogger("x-drive.web")
 STATE = os.getenv("STATE_PATH", "/data/state.json")
 METRICS = os.getenv("METRICS_PATH", "/data/metrics.json")
 PENDING_DIR = os.getenv("PENDING_DIR", "/data/pending")
-PARSE = os.getenv("PARSE_BASE_URL", "http://parse:8000").rstrip("/")
 BIND = os.getenv("WEB_BIND", "0.0.0.0")
 PORT = int(os.getenv("WEB_PORT", "8080"))
 AUTH = os.getenv("WEB_AUTH", "").strip()
 HTML_PATH = Path(__file__).with_name("webui.html")
 LOGIN_PATH = Path(__file__).with_name("login.html")
 
-STATUS_RE = re.compile(
-    r"^https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/([^/]+)/status(?:es)?/(\d+)"
-)
 THUMB_MAX = 6 * 1024 * 1024
 
 SESSION_COOKIE = "xd_session"
 SESSION_TTL = 7 * 24 * 3600
-_health = {"at": 0.0, "parse": False}
 
 
 def make_session(ttl: int = SESSION_TTL) -> str:
@@ -66,74 +61,6 @@ def check_credentials(given: str) -> bool:
     return hmac.compare_digest(user, want_user) and hmac.compare_digest(password, want_password)
 
 
-def bytes_range_header() -> str:
-    return "bytes"
-
-
-def parse_online(ttl: float = 15.0) -> bool:
-    if time.time() - _health["at"] < ttl:
-        return bool(_health["parse"])
-    ok = False
-    try:
-        with urllib.request.urlopen(f"{PARSE}/", timeout=3) as resp:
-            ok = resp.status == 200
-    except Exception:  # 展示页不该因探测失败而报错
-        ok = False
-    _health.update(at=time.time(), parse=ok)
-    return ok
-
-
-def tweet_info(source: str, tweet_id: str) -> tuple[str, str]:
-    """从原始链接解析 (作者账号, 推文地址)；解析不出来就用 id 兜底。"""
-    match = STATUS_RE.match(source or "")
-    if match:
-        handle, tid = match.group(1), match.group(2)
-        return handle, f"https://x.com/{handle}/status/{tid}"
-    if tweet_id:
-        return "", f"https://x.com/i/status/{tweet_id}"
-    return "", (source or "")
-
-
-SMALL_NAMES = {"orig", "large", "medium", "4096x4096"}
-
-
-def small_thumb(url: str, size: str = "small") -> str:
-    """pbs.twimg.com 图片换尺寸变体：缩略图用 small，灯箱要原图时传 orig。"""
-    parts = urlsplit(url)
-    if "pbs.twimg.com" not in (parts.hostname or ""):
-        return url
-    query = parse_qs(parts.query)
-    current = query.get("name", [""])[0]
-    if size == "orig":
-        if current == "" and not query:
-            return url          # 没有 name 参数时本身就是原图
-        query["name"] = ["orig"]
-    else:
-        if current not in SMALL_NAMES:
-            return url
-        query["name"] = ["small"]
-    query_string = "&".join(f"{k}={v[0]}" for k, v in query.items())
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, query_string, ""))
-
-
-def thumb_url(kind: str, original: str, tweet_id: str, name: str, size: str = "small") -> str:
-    """同源缩略图地址，避免浏览器直连 pbs.twimg.com。"""
-    query = "&".join(
-        f"{key}={quote(str(value), safe='')}"
-        for key, value in (("u", small_thumb(original, size)), ("k", kind), ("t", tweet_id), ("f", name))
-    )
-    return f"/thumb?{query}"
-
-
-def video_url(original: str, tweet_id: str, name: str) -> str:
-    """同源视频地址，走 /video 代理（支持 Range）。"""
-    query = "&".join(
-        f"{key}={quote(str(value), safe='')}"
-        for key, value in (("u", original), ("t", tweet_id), ("f", name))
-    )
-    return f"/video?{query}"
-
-
 def pending_count() -> int:
     try:
         return len([p for p in Path(PENDING_DIR).glob("*.json")])
@@ -146,18 +73,14 @@ def state_readable() -> bool:
         json.loads(Path(STATE).read_text(encoding="utf-8"))
         return True
     except FileNotFoundError:
-        return True          # 还没有任何入库记录，属于正常
+        return True          # 还没有任何归档，属于正常
     except (OSError, json.JSONDecodeError):
         return False
 
 
 def health() -> dict:
-    """容器 healthcheck 用：真正的存活判断，而不是恒 true。
-
-    顺带给登录页提供三个只读计数（不含标题、链接等内容）。
-    """
+    """容器 healthcheck：state 可解析 + 待办数量 + 归档计数（不含具体内容）。"""
     ok_state = state_readable()
-    ok_parse = parse_online()
     counts = {"tasks": 0, "files": 0}
     try:
         state = core.load_state(STATE)
@@ -168,7 +91,6 @@ def health() -> dict:
     return {
         "ok": ok_state,
         "state_readable": ok_state,
-        "parse": ok_parse,
         "pending": pending_count(),
         **counts,
         "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -180,65 +102,42 @@ def metrics_snapshot() -> dict:
 
     data = m.snapshot(METRICS)
     data["pending"] = pending_count()
-    data["parse"] = parse_online()
     return data
 
 
 def collect() -> dict:
+    """把 state 摊成看板要的列表：每条 = 一个番号。"""
     state = core.load_state(STATE)
-    tasks = []
+    items = []
     for key, item in state.items():
         files = item.get("files") or []
-        images, videos = core.split_counts(files)
-        source = item.get("source") or ""
-        handle, url = tweet_info(source, key)
-        media = []
-        for name in sorted(files):
-            ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            kind = "image" if ext in core.IMAGE_EXTS else ("video" if ext in core.VIDEO_EXTS else None)
-            if not kind:
-                continue
-            original = (item.get("orig") or {}).get(name) or ""
-            poster = original
-            if kind == "video" and not re.search(r"\.(png|jpe?g|webp|gif)(\?|$)", original, re.I):
-                # 旧数据里存的是视频直链：不能当 <img>，但仍可作为播放源
-                poster = ""
-            media.append(
-                {
-                    "kind": kind,
-                    "name": name,
-                    "thumb": thumb_url(kind, poster, key, name) if poster else "",
-                    "raw": original,
-                    "full": (thumb_url(kind, poster, key, name, "orig") if (poster and kind == "image") else ""),
-                    "play": video_url(original, key, name) if (kind == "video" and original) else "",
-                }
-            )
-        tasks.append(
+        size = int(item.get("size") or 0)
+        items.append(
             {
                 "id": key,
-                "title": item.get("title") or "",
-                "author": item.get("author") or "",
-                "handle": handle,
-                "url": url,
+                "code": item.get("code") or key,
                 "link": item.get("link") or "",
                 "path": item.get("path") or "",
                 "at": item.get("at") or "",
                 "files": files,
-                "images": images,
-                "videos": videos,
-                "media": media,
+                "count": len(files),
+                "size": size,
+                "size_text": core.human_size(size),
+                "source": item.get("source") or "",
             }
         )
-    tasks.sort(key=lambda t: t["at"] or "", reverse=True)
+    items.sort(key=lambda t: t["at"] or "", reverse=True)
+    total = sum(i["size"] for i in items)
     return {
-        "tasks": tasks,
+        "tasks": items,
         "stats": {
-            "tasks": len(tasks),
-            "images": sum(t["images"] for t in tasks),
-            "videos": sum(t["videos"] for t in tasks),
-            "last": tasks[0]["at"] if tasks else "",
+            "tasks": len(items),
+            "files": sum(i["count"] for i in items),
+            "size": total,
+            "size_text": core.human_size(total) if total else "0MB",
+            "last": items[0]["at"] if items else "",
         },
-        "health": {"parse": parse_online()},
+        "health": {"parse": True},
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
 
@@ -348,100 +247,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/metrics":
             self._json(metrics_snapshot())
             return
-        if path == "/thumb":
-            self._thumb(parse_qs(parts.query))
-            return
-        if path == "/video":
-            self._video(parse_qs(parts.query))
-            return
         self._send(404, b"not found", "text/plain; charset=utf-8")
-
-    def _thumb(self, query: dict) -> None:
-        """同源代理缩略图：只放行 twimg 域名，避免开放代理被滥用。"""
-        url = (query.get("u") or [""])[0]
-        size = (query.get("s") or ["small"])[0]
-        if size == "orig":
-            url = small_thumb(url, "orig")
-        host = (urlsplit(url).hostname or "").lower()
-        if not url or not (host == "twimg.com" or host.endswith(".twimg.com")):
-            self._send(400, b"bad thumb url", "text/plain; charset=utf-8")
-            return
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"
-                    ),
-                    "Referer": "https://x.com/",
-                    "Accept": "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = resp.read(THUMB_MAX)
-                ctype = resp.headers.get("Content-Type") or "image/jpeg"
-            self._send(200, data, ctype, {"Cache-Control": "public, max-age=86400"})
-        except Exception as exc:  # 单张缩略图失败不该拖垮页面
-            self._send(502, f"thumb failed: {exc}".encode(), "text/plain; charset=utf-8")
-
-    def _video(self, query: dict) -> None:
-        """同源视频代理：流式转发并透传 Range，供 <video> 边下边播与拖动。"""
-        url = (query.get("u") or [""])[0]
-        host = (urlsplit(url).hostname or "").lower()
-        if not url or not (host == "twimg.com" or host.endswith(".twimg.com")):
-            self._send(400, b"bad video url", "text/plain; charset=utf-8")
-            return
-
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"
-            ),
-            "Referer": "https://x.com/",
-            "Accept": "*/*",
-        }
-        rng = self.headers.get("Range")
-        if rng:
-            headers["Range"] = rng
-        head_only = self.command == "HEAD"
-
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            upstream = urllib.request.urlopen(req, timeout=30)
-        except Exception as exc:
-            self._send(502, f"video failed: {exc}".encode(), "text/plain; charset=utf-8")
-            return
-
-        with upstream:
-            upstream_status = getattr(upstream, "status", 200) or 200
-            status = upstream_status if upstream_status in (200, 206) else 200
-            ctype = upstream.headers.get("Content-Type") or "video/mp4"
-            length = upstream.headers.get("Content-Length")
-            content_range = upstream.headers.get("Content-Range")
-
-            self.send_response(status)
-            self.send_header("Content-Type", ctype)
-            if length:
-                self.send_header("Content-Length", length)
-            self.send_header("Accept-Ranges", "bytes")
-            self.send_header("Cache-Control", "public, max-age=3600")
-            if content_range:
-                self.send_header("Content-Range", content_range)
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.close_connection = True
-            if head_only:
-                return
-            # 分块转发，避免一次性读入内存、也避免大文件首包延迟
-            try:
-                while True:
-                    chunk = upstream.read(65536)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
-                return  # 浏览器 seek 时会主动断开旧请求
 
     def _json(self, payload: dict, code: int = 200, extra: dict | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()

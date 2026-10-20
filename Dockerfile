@@ -13,11 +13,12 @@ RUN set -eux; \
     rm -rf /tmp/rclone.zip /tmp/rclone-*; \
     apt-get purge -y unzip; \
     apt-get autoremove -y; \
-    apt-get install -y --no-install-recommends ffmpeg; \
+    apt-get install -y --no-install-recommends ffmpeg aria2; \
     rm -rf /var/lib/apt/lists/*; \
     rclone version | head -1; \
     ffmpeg -version | head -1; \
-    ffprobe -version | head -1
+    ffprobe -version | head -1; \
+    aria2c --version | head -1
 
 WORKDIR /app
 

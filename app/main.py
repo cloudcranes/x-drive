@@ -25,7 +25,7 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import core, fallback, media, metrics
+from . import codes, core, fetcher, metrics
 
 log = logging.getLogger("x-drive")
 
@@ -46,10 +46,10 @@ class Config:
     state_path: str
     tmp_root: str
     rclone_config: str
-    transcode: str = "auto"
     pending_dir: str = "/data/pending"
     metrics_path: str = "/data/metrics.json"
     daily_upload_gb: int = 0
+    magnet_timeout: float = 7200.0
 
     @property
     def max_bytes(self) -> int:
@@ -76,10 +76,10 @@ class Config:
             state_path=os.getenv("STATE_PATH", "/data/state.json"),
             tmp_root=os.getenv("TMP_ROOT", "/downloads"),
             rclone_config=os.getenv("RCLONE_CONFIG", "/config/rclone/rclone.conf"),
-            transcode=(os.getenv("VIDEO_TRANSCODE", "auto").strip().lower() or "auto"),
             pending_dir=os.getenv("PENDING_DIR", "/data/pending"),
             metrics_path=os.getenv("METRICS_PATH", "/data/metrics.json"),
             daily_upload_gb=int(os.getenv("DAILY_UPLOAD_GB", "0") or 0),
+            magnet_timeout=float(os.getenv("MAGNET_TIMEOUT", "7200") or 7200),
         )
 
 
@@ -266,176 +266,111 @@ async def run_task(
     cfg: Config,
     client: httpx.AsyncClient,
     state: dict,
-    url: str,
+    text: str,
     progress,
     force: bool = False,
     chat_id: int | None = None,
 ) -> str:
-    """解析 → 下载 → 转码 → 上传。progress(text) 用来更新外部消息，便于重启补跑时复用。
+    """番号 → 下载（直链/磁力）→ 归一化文件名 → 按番号上传 Drive。"""
+    sources = fetcher.sources(text)
+    if not sources:
+        return (
+            "❌ 没找到可以下载的链接。\n发磁力或直链给我，例如：\n"
+            "`magnet:?xt=urn:btih:...`\n`https://example.com/SSIS-123.mp4`"
+        )
 
-    幂等：无论正常流程还是重启补跑，先看 state。只要目标目录里确实有文件就不再重复上传，
-    这样「上传成功但进程在写 state 前被杀」也不会产生第二份。
-    """
-    expanded = await expand_short(client, url)
-    key = cache_key(expanded)
-    hit = state.get(key) or {}
-    if hit.get("link"):
-        rc, out, _ = await rclone(cfg, "lsf", hit["path"], timeout=120.0)
-        if rc == 0 and out.strip():
-            clear_pending(cfg, key)
-            if force:
-                # /retry：不该把已完成的再传一遍；只有存在失败项时才继续
-                if not hit.get("failures"):
-                    await progress("♻️ 该推文已完整入库，无需重试")
-                    return core.receipt(hit["link"], hit.get("files", []), [], hit.get("title", ""))
-            else:
-                await progress("♻️ 此前已存过，复用链接")
-                return core.receipt(hit["link"], hit.get("files", []), [], hit.get("title", ""))
-
-    mark_pending(cfg, key, url=expanded, stage="parsing", chat_id=chat_id)
-    if force:
-        # 强制重跑会重新解析，先清掉历史失败项，避免「已成功仍被判为 partial」
-        hit.pop("failures", None)
-    await progress("⏳ 解析媒体…")
-    try:
-        data = await parse_link(client, cfg, expanded)
-    except Exception as exc:
-        # 敏感推文 syndication 返回 TweetTombstone，parse-video-py 会报「没有找到视频或图片」
-        log.warning("主解析器失败：%s，尝试 fxtwitter 兜底", exc)
-        data = {}
-    entries = core.media_entries(data)
-    # 主解析器拿到视频时会丢图片、多视频只取第一个；fxtwitter 的媒体更完整。
-    # 只要它给出的条目更多就采用它，否则保留主结果。
-    if core.is_x_url(expanded):
-        alt = await fallback.fetch(client, key)
-        if alt:
-            alt_entries = core.media_entries(alt)
-            if len(alt_entries) > len(entries):
-                log.info(
-                    "改用完整媒体集合：%d → %d 项（原结果疑似漏图/漏视频）",
-                    len(entries), len(alt_entries),
-                )
-                data, entries = alt, alt_entries
-    if not entries:
-        return "❌ 该推文没有可下载的图片或视频（敏感内容或已删除）"
-
-    author = data.get("author") or {}
-    title = (data.get("title") or "").strip()
-    stamp = datetime.now()
-    target = core.target_dir(
-        cfg.remote, cfg.drive_root, key, author.get("uid") or "", author.get("name") or "", stamp
-    )
-    tmp = Path(cfg.tmp_root) / safe_dir_name(key)
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True, exist_ok=True)
-
-    saved: list[str] = []
-    origins: dict[str, str] = {}
+    code = codes.detect(text) or ""
+    results: list[str] = []
     failures: list[str] = []
-    link: str | None = None
-    try:
-        for index, (kind, media_url) in enumerate(entries, start=1):
-            if ".m3u8" in media_url.lower():
-                failures.append(f"{index}.HLS 流不转码")
-                continue
-            name = core.media_filename(
-                author.get("name") or "", stamp, index, core.guess_ext(media_url, kind)
-            )
-            try:
-                await download(client, media_url, tmp / name, cfg.max_bytes)
-                saved.append(name)
-                if kind == "video":
-                    # 视频本身不能当 <img> 用，缩略图用封面图
-                    origins[name] = core.video_cover(data)
-                else:
-                    origins[name] = core.orig_image_url(media_url)
-                if kind == "video":
-                    await progress("⏳ 转码兼容 Main profile…")
-                    changed, info = await media.make_compatible(tmp / name, cfg.transcode)
-                    if changed:
-                        log.info("已转码 %s（原 profile %s）", name, info or "?")
-                    elif info and info.lower() not in media.OK_PROFILES:
-                        log.warning("转码未生效 %s：%s", name, info)
-                await progress(f"⏳ 下载 {len(saved)}/{len(entries)}")
-            except Exception as exc:  # 单个媒体失败不中断整条推文
-                failures.append(f"{name}: {str(exc)[:80]}")
 
-        if saved:
-            (tmp / "meta.json").write_text(
-                json.dumps(
-                    {
-                        "source": expanded,
-                        "tweet_id": key,
-                        "title": title,
-                        "author": author,
-                        "files": saved,
-                        "saved_at": datetime.now().isoformat(timespec="seconds"),
-                    },
-                    ensure_ascii=False,
-                    indent=1,
-                ),
-                encoding="utf-8",
-            )
-            incoming = sum(f.stat().st_size for f in tmp.iterdir() if f.is_file())
-            if quota_exceeded(cfg, incoming):
-                used = today_bytes(cfg) / 1024**3
-                mark_pending(cfg, key, url=expanded, stage="quota", chat_id=chat_id)
-                return (
-                    "⛔ 今日上传量已达上限：已传 "
-                    f"{used:.1f}GB，本次 {incoming / 1024**3:.1f}GB，超出 {cfg.daily_upload_gb}GB/日 限制。"
-                    "文件已保留在 /downloads，可用 /retry 明天补传。"
+    for index, source in enumerate(sources, start=1):
+        mark_pending(cfg, code or f"job{index}", url=source, stage="downloading", chat_id=chat_id)
+        # 同一番号已在库里：除非 force，否则不重复下
+        known = state.get(code) if code else None
+        if known and known.get("link") and not force:
+            results.append(f"♻️ {code} 已存在：{known['link']}")
+            clear_pending(cfg, code)
+            continue
+
+        work = Path(cfg.tmp_root) / safe_dir_name(code or f"job{index}")
+        shutil.rmtree(work, ignore_errors=True)
+        work.mkdir(parents=True, exist_ok=True)
+        try:
+            await progress(f"⏳ 下载 {index}/{len(sources)}…（磁力可能较慢）")
+            if fetcher.is_magnet(source):
+                await fetcher.download_magnet(source, work, timeout=cfg.magnet_timeout)
+            else:
+                await fetcher.download_http(client, source, work, cfg.max_bytes)
+            fetcher.flatten(work)
+
+            files = fetcher.media_files(work)
+            if not files:
+                raise RuntimeError("下载完成但没有找到视频文件")
+
+            # 番号优先取消息里的，其次从文件名推断；都没有就用时间戳目录
+            final_code = code or codes.detect(files[0].name) or ""
+            folder = codes.safe_folder(final_code) if final_code else ""
+            if not folder or len(folder) < 3:
+                folder = f"unclassified-{datetime.now():%Y%m%d-%H%M%S}"
+
+            # 单文件重命名为 <番号>.<ext>；多文件保留原名加序号前缀
+            if len(files) == 1:
+                target_name = f"{folder}{files[0].suffix.lower()}"
+                files[0].rename(work / target_name)
+                files = [work / target_name]
+            else:
+                for i, f in enumerate(files, start=1):
+                    f.rename(work / f"{folder}-{i}{f.suffix.lower()}")
+                files = fetcher.media_files(work)
+
+            total = sum(f.stat().st_size for f in files)
+            if quota_exceeded(cfg, total):
+                raise RuntimeError(
+                    f"今日上传量已达 {cfg.daily_upload_gb}GB 上限，文件留在 /downloads 可明天 /retry"
                 )
-            mark_pending(cfg, key, url=expanded, stage="uploading", chat_id=chat_id)
-            await progress("⏳ 上传 Drive…")
+
+            target = f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
+            await progress(f"⏳ 上传 {folder}（{total / 1073741824:.2f}GB）…")
             rc, _, err = await rclone(cfg, "mkdir", target, timeout=120.0)
             rc, _, err = await rclone(
-                cfg,
-                "copy",
-                str(tmp),
-                target,
-                "--transfers",
-                "4",
-                "--drive-chunk-size",
-                "64M",
-                "--retries",
-                "2",
-                "--timeout",
-                "10m",
+                cfg, "copy", str(work), target,
+                "--transfers", "2", "--drive-chunk-size", "64M",
+                "--retries", "2", "--timeout", "30m",
                 "--drive-stop-on-upload-limit",
-                timeout=3600.0,
+                timeout=7200.0,
             )
             if rc != 0:
                 if "uploadLimitExceeded" in err or "quota" in err.lower():
-                    raise RuntimeError("Google Drive 上传配额已用完，明日再试（已保留待办）")
+                    raise RuntimeError("Drive 上传配额已用完，明日再试")
                 raise RuntimeError(f"rclone 上传失败：{err.strip()[:300]}")
-            add_usage(cfg, incoming)
+            add_usage(cfg, total)
+
             link = await folder_link(cfg, target)
-            state[key] = {
+            state[folder] = {
+                "code": folder,
                 "path": target,
                 "link": link,
-                "files": saved,
-                "orig": origins,
-                "title": title,
-                "author": author.get("name") or "",
-                "source": expanded,
-                "failures": failures,
+                "files": [f.name for f in files],
+                "size": total,
+                "source": source[:300],
                 "at": datetime.now().isoformat(timespec="seconds"),
             }
             core.save_state(cfg.state_path, state)
-            clear_pending(cfg, key)
-        if failures:
-            # 部分成功也要留待办，方便 /retry 补抓
-            mark_pending(cfg, key, url=expanded, stage="partial", chat_id=chat_id, failures=failures)
-        else:
-            clear_pending(cfg, key)     # 全部成功：确保不留任何待办
-        return core.receipt(link, saved, failures, title)
-    except Exception:
-        # 失败保留临时文件与待办，重启后可补跑；成功路径在下面清理
-        mark_pending(cfg, key, url=expanded, stage="failed", chat_id=chat_id)
-        raise
-    finally:
-        if not failures and link:
-            shutil.rmtree(tmp, ignore_errors=True)
+            clear_pending(cfg, folder)
+            results.append(
+                f"✅ {folder} · {total / 1073741824:.2f}GB"
+                + (f"\n📁 {link}" if link else "")
+            )
+        except Exception as exc:  # 单条链接失败不影响其他
+            log.exception("下载失败 %s", source[:80])
+            failures.append(f"{source[:40]}…: {str(exc)[:160]}")
+            mark_pending(cfg, code or f"job{index}", url=source, stage="failed", chat_id=chat_id)
+        finally:
+            if not failures:
+                shutil.rmtree(work, ignore_errors=True)
+
+    parts = results + [f"⚠️ {len(failures)} 项失败：" + "；".join(failures)] if failures else results
+    return "\n".join(parts) or "❌ 没有任何结果"
 
 
 async def edit(message: Message, text: str) -> None:
@@ -473,30 +408,54 @@ async def on_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     state: dict = ctx.application.bot_data["state"]
     pending: dict = ctx.application.bot_data["pending"]
 
-    url = pick_url(ctx.args or [], "")
-    if not url and message.reply_to_message:
-        url = core.extract_url(
-            message.reply_to_message.text or message.reply_to_message.caption or ""
-        )
-    if not url:
+    text = " ".join(ctx.args or "")
+    if not fetcher.sources(text) and message.reply_to_message:
+        text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    if not fetcher.sources(text):
         latest = sorted(pending.values(), key=lambda p: p.get("ts", 0), reverse=True)
         if not latest:
-            await message.reply_text("没有待重试的任务。用法：`/retry <链接>` 或回复一条含链接的消息")
+            await message.reply_text("没有待重试的任务。用法：`/retry <磁力或直链>`，或回复一条含链接的消息")
             return
-        url = latest[0].get("url") or ""
-    if not url or not core.domain_allowed(url, cfg.domains):
-        await message.reply_text("⛔ 需要一条 x.com 链接")
+        text = latest[0].get("url") or ""
+    if not fetcher.sources(text):
+        await message.reply_text("⛔ 需要磁力链接或直链")
         return
 
     status = await message.reply_text("⏳ 重试中…")
     sem: asyncio.Semaphore = ctx.application.bot_data["sem"]
     async with sem:
         try:
-            text = await deliver(ctx, url, status, force=True)
+            reply = await deliver(ctx, text, status, force=True)
         except Exception as exc:
-            log.exception("重试失败: %s", url)
-            text = f"❌ 重试失败：{str(exc)[:400]}（可用 /retry 再试）"
-    await edit(status, text)
+            log.exception("重试失败")
+            reply = f"❌ 重试失败：{str(exc)[:400]}（可用 /retry 再试）"
+    await edit(status, reply)
+
+
+async def on_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """列出已归档的番号与 Drive 链接。"""
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if user.id not in cfg.allowed:
+        return
+    state: dict = ctx.application.bot_data["state"]
+    if not state:
+        await message.reply_text("还没有归档记录。")
+        return
+    rows = sorted(state.values(), key=lambda r: r.get("at", ""), reverse=True)[:20]
+    lines = [f"📚 已归档 {len(state)} 个番号（最近 20 个）"]
+    for r in rows:
+        size = r.get("size") or 0
+        lines.append(
+            f"· {r.get('code') or '?'}　{size / 1073741824:.2f}GB" if size
+            else f"· {r.get('code') or '?'}"
+        )
+        if r.get("link"):
+            lines.append(f"  {r['link']}")
+    text = "\n".join(lines)
+    await message.reply_text(text[:3500])
 
 
 async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -543,9 +502,178 @@ async def on_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if message:
         await message.reply_text(
             "用法：\n"
-            "• 直接发 x.com 链接 → 自动存 Drive\n"
-            "• `/retry <链接>` 或回复消息 → 重试上次没入库的部分\n"
-            "• `/del <推文ID>` → 查看将删除的目录，加 `--yes` 执行\n"
+            "• 发磁力或直链（可带番号，如 `SSIS-123 magnet:?xt=...`）→ 下载后按番号存 Drive\n"
+            "• 没写番号时从文件名里识别，识别不到归到「未分类-时间」\n"
+            "• `/retry` 或 `/retry <磁力>` → 重试失败的任务\n"
+            "• `/list` → 查看已归档的番号\n"
+            "• `/del <番号>` → 查看将删除的目录，加 `--yes` 执行\n"
+            "• `/help` → 本说明"
+        )
+
+
+async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    text = (message.text or message.caption or "") if message else ""
+    if not message or not text or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if not fresh_update(update):
+        log.info("跳过过期消息 %s", message.message_id)
+        return
+    if user.id not in cfg.allowed:
+        await message.reply_text(
+            f"⛔ 未授权。你的 user id：{user.id}，把它加进 ALLOWED_USER_IDS 后重启。"
+        )
+        return
+    if not fetcher.sources(text):
+        return
+
+    code = codes.detect(text)
+    status = await message.reply_text(
+        f"⏳ 已收到{'　番号 ' + code if code else '下载任务'}…"
+    )
+    sem: asyncio.Semaphore = ctx.application.bot_data["sem"]
+    try:
+        async with sem:
+            try:
+                reply = await deliver(ctx, text, status)
+            except Exception as exc:
+                log.exception("下载失败")
+                reply = f"❌ {str(exc)[:400]}"
+    except asyncio.CancelledError:
+        await edit(status, "⚠️ 服务重启，任务已记录，重启后自动补跑")
+        raise
+    await edit(status, reply)
+
+
+def pick_url(args: list[str], text: str) -> str | None:
+    """命令参数里找链接；没有就用回复的那条消息。"""
+    for token in args:
+        if token.startswith("http"):
+            return token
+    found = core.extract_url(text or "")
+    return found
+
+
+def mentioned_key(args: list[str]) -> str | None:
+    for token in args:
+        digits = re.sub(r"\D", "", token)
+        if len(digits) >= 10:
+            return digits
+    return None
+
+
+async def on_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """补抓上次没入库的媒体；带链接时对该推文重跑，否则用最后一条待办。"""
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if user.id not in cfg.allowed:
+        return
+    state: dict = ctx.application.bot_data["state"]
+    pending: dict = ctx.application.bot_data["pending"]
+
+    text = " ".join(ctx.args or "")
+    if not fetcher.sources(text) and message.reply_to_message:
+        text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    if not fetcher.sources(text):
+        latest = sorted(pending.values(), key=lambda p: p.get("ts", 0), reverse=True)
+        if not latest:
+            await message.reply_text("没有待重试的任务。用法：`/retry <磁力或直链>`，或回复一条含链接的消息")
+            return
+        text = latest[0].get("url") or ""
+    if not fetcher.sources(text):
+        await message.reply_text("⛔ 需要磁力链接或直链")
+        return
+
+    status = await message.reply_text("⏳ 重试中…")
+    sem: asyncio.Semaphore = ctx.application.bot_data["sem"]
+    async with sem:
+        try:
+            reply = await deliver(ctx, text, status, force=True)
+        except Exception as exc:
+            log.exception("重试失败")
+            reply = f"❌ 重试失败：{str(exc)[:400]}（可用 /retry 再试）"
+    await edit(status, reply)
+
+
+async def on_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """列出已归档的番号与 Drive 链接。"""
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if user.id not in cfg.allowed:
+        return
+    state: dict = ctx.application.bot_data["state"]
+    if not state:
+        await message.reply_text("还没有归档记录。")
+        return
+    rows = sorted(state.values(), key=lambda r: r.get("at", ""), reverse=True)[:20]
+    lines = [f"📚 已归档 {len(state)} 个番号（最近 20 个）"]
+    for r in rows:
+        size = r.get("size") or 0
+        lines.append(
+            f"· {r.get('code') or '?'}　{size / 1073741824:.2f}GB" if size
+            else f"· {r.get('code') or '?'}"
+        )
+        if r.get("link"):
+            lines.append(f"  {r['link']}")
+    text = "\n".join(lines)
+    await message.reply_text(text[:3500])
+
+
+async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """删除某条推文的整目录：/del <tweet_id|链接>。必须带 --yes 确认。"""
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if user.id not in cfg.allowed:
+        return
+    args = ctx.args or []
+    key = mentioned_key(args) or (core.tweet_id_from_url(args[0]) if args else None)
+    if not key:
+        await message.reply_text("用法：`/del <推文ID>`，确认执行加 `--yes`")
+        return
+    state: dict = ctx.application.bot_data["state"]
+    record = state.get(key)
+    if not record:
+        await message.reply_text(f"未找到 {key} 的记录")
+        return
+    if "--yes" not in args:
+        await message.reply_text(
+            f"将删除：\n{record.get('path')}\n\n确认请发送 `/del {key} --yes`"
+        )
+        return
+
+    target = record.get("path") or ""
+    root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
+    if not target.startswith(root + "/") or ".." in target:
+        await message.reply_text("⛔ 路径校验未通过，已拒绝删除")
+        return
+    rc, _, err = await rclone(cfg, "purge", target, timeout=600.0)
+    if rc != 0:
+        await message.reply_text(f"❌ 删除失败：{err.strip()[:300]}")
+        return
+    state.pop(key, None)
+    core.save_state(cfg.state_path, state)
+    clear_pending(cfg, key)
+    await message.reply_text(f"🗑 已删除 {key}（文件在 Drive 回收站，可恢复）")
+
+
+async def on_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if message:
+        await message.reply_text(
+            "用法：\n"
+            "• 发磁力或直链（可带番号，如 `SSIS-123 magnet:?xt=...`）→ 下载后按番号存 Drive\n"
+            "• 没写番号时从文件名里识别，识别不到归到「未分类-时间」\n"
+            "• `/retry` 或 `/retry <磁力>` → 重试失败的任务\n"
+            "• `/list` → 查看已归档的番号\n"
+            "• `/del <番号>` → 查看将删除的目录，加 `--yes` 执行\n"
             "• `/help` → 本说明"
         )
 
@@ -567,9 +695,6 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     url = core.extract_url(text)
     if not url:
-        return
-    if not core.domain_allowed(url, cfg.domains):
-        await message.reply_text("⛔ 只支持：" + " / ".join(cfg.domains))
         return
 
     status = await message.reply_text("⏳ 解析中…")
@@ -616,7 +741,7 @@ async def bootstrap(application: Application) -> None:
 
 
 async def resume_pending(application: Application) -> None:
-    """启动时补跑上次没完成/部分完成的推文，并把结果发回原会话。"""
+    """启动时补跑上次没完成/失败的下载任务，并把结果发回原会话。"""
     cfg: Config = application.bot_data["cfg"]
     pending: dict = application.bot_data["pending"]
     if not pending:
@@ -660,23 +785,6 @@ async def resume_pending(application: Application) -> None:
 async def self_check(cfg: Config) -> bool:
     ok = True
     async with httpx.AsyncClient() as client:
-        # 1. parse 服务存活 + 解析接口真的可用（打 / 只能证明进程在）
-        try:
-            resp = await client.get(
-                f"{cfg.parse_base}/video/share/url/parse",
-                params={"url": "https://x.com/i/status/20"},
-                timeout=40.0,
-            )
-            body = resp.json()
-            # 404/解析失败都算服务活着，只有连不上或 5xx 才算挂
-            alive = resp.status_code < 500 and isinstance(body, dict) and "code" in body
-            print(f"parse 解析接口: HTTP {resp.status_code} code={body.get('code')} {'OK' if alive else '异常'}")
-            ok &= alive
-        except Exception as exc:
-            print(f"parse 服务 {cfg.parse_base}: 不可达 {exc}")
-            ok = False
-
-        # 2. Telegram token 是否有效
         try:
             me = await client.get(f"https://api.telegram.org/bot{cfg.token}/getMe", timeout=15.0)
             info = me.json()
@@ -687,7 +795,11 @@ async def self_check(cfg: Config) -> bool:
             print(f"telegram token: 校验失败 {exc}")
             ok = False
 
-    # 3. Drive 可读 + 可写（写权限只有真写一次才能确认）
+    for binary in ("aria2c", "rclone"):
+        found = shutil.which(binary)
+        print(f"{binary}: {found or '未安装'}")
+        ok &= bool(found)
+
     root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
     rc, _, err = await rclone(cfg, "lsd", root, timeout=90.0)
     if rc != 0:
@@ -695,7 +807,6 @@ async def self_check(cfg: Config) -> bool:
     print(f"rclone {cfg.remote}: {'OK' if rc == 0 else err.strip()[:300]}")
     ok &= rc == 0
     if rc == 0:
-        # 用 mkdir + rmdir 验证写权限（rclone copyto 不支持 stdin）
         rc2, _, err2 = await rclone(cfg, "mkdir", f"{root}/_healthcheck", timeout=90.0)
         print(f"Drive 写权限: {'OK' if rc2 == 0 else err2.strip()[:200]}")
         if rc2 == 0:
@@ -751,6 +862,7 @@ def main() -> None:
         MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, on_message)
     )
     app.add_handler(CommandHandler("retry", on_retry))
+    app.add_handler(CommandHandler("list", on_list))
     app.add_handler(CommandHandler("del", on_delete))
     app.add_handler(CommandHandler(["help", "start"], on_help))
     log.info(

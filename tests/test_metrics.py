@@ -62,7 +62,7 @@ def test_usage_quota(tmp_path):
         token="x", allowed={1}, parse_base="http://p", domains=["x.com"],
         remote="gdrive", drive_root="X", max_mb=10, concurrency=1,
         state_path=str(tmp_path / "s.json"), tmp_root=str(tmp_path / "dl"),
-        rclone_config="/dev/null", transcode="off",
+        rclone_config="/dev/null",
         pending_dir=str(tmp_path / "data" / "pending"), daily_upload_gb=1,
     )
     assert main.today_bytes(cfg) == 0
@@ -79,7 +79,7 @@ def test_usage_resets_next_day(tmp_path):
         token="x", allowed={1}, parse_base="http://p", domains=["x.com"],
         remote="gdrive", drive_root="X", max_mb=10, concurrency=1,
         state_path=str(tmp_path / "s.json"), tmp_root=str(tmp_path / "dl"),
-        rclone_config="/dev/null", transcode="off",
+        rclone_config="/dev/null",
         pending_dir=str(tmp_path / "data" / "pending"), daily_upload_gb=1,
     )
     path = main.usage_file(cfg)
