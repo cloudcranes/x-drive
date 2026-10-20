@@ -46,11 +46,13 @@ services:
       - ./data:/data
       - ./downloads:/downloads
     healthcheck:
+      # 自检要访问 Telegram + aria2 + Google Drive，Drive 慢的时候整体能到 30s 上下，
+      # 所以超时给到 120s，避免正常运行时被反复判成 unhealthy。
       test: ["CMD", "python", "-m", "app.main", "--check"]
-      interval: 120s
-      timeout: 60s
+      interval: 180s
+      timeout: 120s
       retries: 3
-      start_period: 60s
+      start_period: 90s
 
   web:
     image: ${BOT_IMAGE:-ghcr.io/cloudcranes/x-drive:latest}
