@@ -87,7 +87,29 @@ def organize(work: Path, code: str) -> tuple[str, list[Path]]:
                 f.rename(target)
             renamed.append(target)
         files = renamed
+    prune(work, files)
     return folder, files
+
+
+def prune(work: Path, keep: list[Path]) -> list[Path]:
+    """删掉归档目录里的非视频文件（BT 种子常夹带 .url/.txt 广告和样本）。
+
+    上传走 `rclone copy work`，如果不清掉，广告文件会跟着传到 Drive 的番号目录里。
+    """
+    keep_set = {p.resolve() for p in keep}
+    removed = []
+    for path in sorted(work.rglob("*"), key=lambda p: -len(p.parts)):
+        try:
+            if path.is_file() and path.resolve() not in keep_set:
+                path.unlink(missing_ok=True)
+                removed.append(path.name)
+            elif path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
+        except OSError:
+            pass
+    if removed:
+        log.info("清掉 %d 个非视频文件：%s", len(removed), "、".join(removed[:5]))
+    return keep
 
 
 def total_size(files: list[Path]) -> int:

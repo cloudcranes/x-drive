@@ -200,3 +200,23 @@ def test_pipeline_cleanup_removes_tree(tmp_path):
     (work / "sub" / "a.mp4").write_bytes(b"x")
     pipeline.cleanup(work)
     assert not work.exists()
+
+
+def test_organize_drops_ads_and_keeps_only_videos(tmp_path):
+    """BT 种子夹带的 .url 广告、小样本不能跟着传到 Drive。"""
+    from app import pipeline
+    work = tmp_path / "job"
+    sub = work / "mimk-288ch"
+    sub.mkdir(parents=True)
+    (sub / "big.mp4").write_bytes(b"1" * (2 << 20))       # 2MB 视频
+    (sub / "extra.mp4").write_bytes(b"2" * (2 << 20))
+    (sub / "2026 官网.url").write_text("http://ad")
+    (sub / "推荐.txt").write_text("ad")
+    (sub / "sample.mp4").write_bytes(b"x" * 1024)          # 太小，视为样本
+
+    folder, files = pipeline.organize(work, "MIMK-288")
+    assert folder == "MIMK-288"
+    names = sorted(p.name for p in files)
+    assert names == ["MIMK-288-1.mp4", "MIMK-288-2.mp4"]
+    left = sorted(p.name for p in work.rglob("*") if p.is_file())
+    assert left == ["MIMK-288-1.mp4", "MIMK-288-2.mp4"], f"广告文件必须删掉：{left}"
