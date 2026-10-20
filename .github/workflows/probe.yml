@@ -1,0 +1,16 @@
+name: probe
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker version
+      - run: echo "docker ok"
+      - run: ls -la
+      - run: docker run --rm hello-world
