@@ -173,12 +173,17 @@
 
 <script>
 const $ = id => document.getElementById(id);
+const BASE = location.origin;
 const form = $("form"), u = $("u"), p = $("p"), err = $("err"), go = $("go"), goText = $("goText");
 
 function fail(msg){ err.textContent = msg; err.classList.remove("show"); void err.offsetWidth; err.classList.add("show"); }
 function reset(t){ go.disabled = false; goText.textContent = t; }
 
 $("toggle").addEventListener("click", () => { p.type = p.type === "password" ? "text" : "password"; });
+p.addEventListener("keyup", e => {
+  if (e.getModifierState && e.getModifierState("CapsLock")) fail("大写锁定已开启");
+  else if (err.textContent === "大写锁定已开启") err.classList.remove("show");
+});
 
 form.addEventListener("submit", async e => {
   e.preventDefault();
@@ -186,17 +191,39 @@ form.addEventListener("submit", async e => {
   if (!u.value.trim() || !p.value) return fail("请输入账号和密码");
   go.disabled = true; goText.textContent = "验证中…";
   try {
-    const res = await fetch("/api/tasks", {cache: "no-store",
-      headers: {Authorization: "Basic " + btoa(unescape(encodeURIComponent(u.value + ":" + p.value)))}});
-    if (res.ok) { goText.textContent = "登录成功"; location.replace("/"); return; }
+    const res = await fetch("/api/login", {
+      method: "POST",
+      cache: "no-store",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({user: u.value.trim(), password: p.value})
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      goText.textContent = "登录成功";
+      location.replace("/");
+      return;
+    }
     reset("进入控制台");
-    if (res.status === 401) { fail("账号或密码不正确"); p.select(); }
+    if (res.status === 401) { fail(data.error || "账号或密码不正确"); p.select(); }
     else fail("服务返回 " + res.status + "，请稍后重试");
   } catch (e2) {
     reset("进入控制台");
     fail("无法连接服务：" + e2.message);
   }
 });
+// 未登录也能读的统计（只给计数，不含内容）
+(async () => {
+  try {
+    const r = await fetch(BASE + "/api/health", {cache: "no-store"});
+    if (!r.ok) return;
+    const d = await r.json();
+    $("m-state").textContent = d.parse ? "在线" : "离线";
+    $("m-state").style.color = d.parse ? "" : "var(--violet)";
+    if (typeof d.tasks === "number") $("m-arch").textContent = d.tasks;
+    if (typeof d.files === "number") $("m-file").textContent = d.files;
+  } catch (e) { /* 统计失败不影响登录 */ }
+})();
+
 u.focus();
 </script>
 </body>

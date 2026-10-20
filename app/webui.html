@@ -86,6 +86,11 @@
   .metric span{font-size:11px; color:var(--dim); letter-spacing:.05em}
 
   /* 瀑布流：CSS columns，卡片 break-inside:avoid 保证不被拆断 */
+  .groups{max-width:1440px; margin:0 auto; padding:0 26px; display:flex; flex-wrap:wrap;
+    gap:8px; align-items:center}
+  .groups .lbl{font-family:var(--mono); font-size:10.5px; color:var(--dim); letter-spacing:.08em;
+    text-transform:uppercase; margin-right:4px}
+  .groups .sep{width:1px; height:18px; background:var(--line); margin:0 6px}
   .feed{max-width:1440px; margin:0 auto; padding:28px 26px 72px; column-gap:var(--gap); column-count:4}
   @media(max-width:1320px){.feed{column-count:3}}
   @media(max-width:960px){.feed{column-count:2} :root{--gap:16px}}
@@ -223,6 +228,13 @@
       </svg>
     </button>
     <div class="badge"><span class="dot" id="dot"></span><span id="health">连接中…</span></div>
+    <button class="refresh" id="logout" type="button" title="退出登录" aria-label="退出登录" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/>
+        <path d="M21 12H9"/>
+      </svg>
+    </button>
   </div>
 </header>
 
@@ -247,6 +259,7 @@
     </div>
   </section>
 
+  <section class="groups" id="groups"></section>
   <section class="feed" id="feed"></section>
   <div id="empty-slot"></div>
   <footer>
@@ -462,15 +475,56 @@ const AUTH_HEADER = (() => {
 })();
 
 // 搜索与筛选状态
-const view = {q: "", kind: "all"};
+const view = {q: "", kind: "all", author: "", month: ""};
 const allTasks = new Map();     // id -> task（供过滤时复用）
 
 function matches(t) {
   if (view.kind === "image" && !t.images) return false;
   if (view.kind === "video" && !t.videos) return false;
+  if (view.author && (t.handle || t.author || "未知作者") !== view.author) return false;
+  if (view.month && (t.at || "").slice(0, 7) !== view.month) return false;
   const q = view.q.trim().toLowerCase();
   if (!q) return true;
   return [t.title, t.author, t.handle, t.source].some(v => (v || "").toLowerCase().includes(q));
+}
+
+function renderGroups() {
+  const box = $("groups");
+  box.textContent = "";
+  const byAuthor = new Map();
+  const byMonth = new Map();
+  for (const t of allTasks.values()) {
+    const who = t.handle || t.author || "未知作者";
+    byAuthor.set(who, (byAuthor.get(who) || 0) + 1);
+    const month = (t.at || "").slice(0, 7);
+    if (month) byMonth.set(month, (byMonth.get(month) || 0) + 1);
+  }
+  const make = (label, entries, kind) => {
+    const frag = document.createDocumentFragment();
+    if (!entries.length) return frag;
+    frag.append(el("span", "lbl", label));
+    for (const [key, count] of entries) {
+      const b = el("button", "chipbtn", kind === "month" ? key : `${key} ${count}`);
+      b.type = "button";
+      b.dataset.group = kind;
+      b.dataset.key = key;
+      if (kind === "author" && view.author === key) b.classList.add("on");
+      if (kind === "month" && view.month === key) b.classList.add("on");
+      frag.append(b);
+    }
+    return frag;
+  };
+  box.append(make("作者", [...byAuthor.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8), "author"));
+  if (byAuthor.size) box.append(el("span", "sep"));
+  box.append(make("月份", [...byMonth.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 6), "month"));
+  box.onclick = e => {
+    const btn = e.target.closest("button[data-group]");
+    if (!btn) return;
+    if (btn.dataset.group === "author") view.author = view.author === btn.dataset.key ? "" : btn.dataset.key;
+    else view.month = view.month === btn.dataset.key ? "" : btn.dataset.key;
+    renderGroups();
+    applyFilter();
+  };
 }
 
 function applyFilter() {
@@ -610,6 +664,7 @@ async function load() {
       $("s-last").textContent = d.stats.last ? fmt(d.stats.last) : "—";
       allTasks.clear();
       for (const t of d.tasks) allTasks.set(t.id, t);
+      renderGroups();
       applyFilter();
       $("updated").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN");
       $("refresh").classList.remove("spin");
@@ -625,12 +680,26 @@ async function load() {
   return inflight;
 }
 
+$("logout").addEventListener("click", async () => {
+  try { await fetch(BASE + "/api/logout", {method: "POST", cache: "no-store"}); } catch (e) {}
+  location.replace("/");
+});
+
 $("refresh").addEventListener("click", () => {
   $("refresh").classList.add("spin");
   load();
 });
 load();
 setInterval(load, 30000);
+
+// 有会话时展示退出入口；401 说明会话过期，直接回登录页
+fetch(BASE + "/api/session", {cache: "no-store"})
+  .then(r => r.ok ? r.json() : null)
+  .then(d => {
+    if (!d) { location.replace("/"); return; }
+    $("logout").hidden = !d.auth;
+  })
+  .catch(() => {});
 </script>
 </body>
 </html>

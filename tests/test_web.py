@@ -165,9 +165,14 @@ def test_basic_auth(server, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as exc:
         get(server + "/api/tasks")
     assert exc.value.code == 401
-    assert exc.value.headers["WWW-Authenticate"].startswith("Basic")
-    # 401 返回可读的登录页而不是纯文本
-    page = exc.value.read().decode()
+    assert exc.value.headers["WWW-Authenticate"] is None, "不再触发浏览器原生认证框"
+    # 接口未认证返回 401 JSON；页面返回登录页（200，避免浏览器弹原生框）
+    body = json.loads(exc.value.read())
+    assert body["ok"] is False and body["login"] == "/"
+
+    page_resp = get(server + "/")
+    assert page_resp.status == 200
+    page = page_resp.read().decode()
     assert "x-drive 控制台" in page and 'id="u"' in page and 'id="p"' in page
 
     token = base64.b64encode(b"u:p").decode()
@@ -241,3 +246,50 @@ def test_thumb_orig_variant(server):
     assert web.small_thumb("https://pbs.twimg.com/media/a.png?name=orig", "orig").endswith("name=orig")
     assert "name%3Dorig" in web.thumb_url("image", "https://pbs.twimg.com/media/a.png?name=orig",
                                           "1", "a.png", "orig")
+
+
+def test_login_sets_cookie_and_grants_access(server, monkeypatch):
+    monkeypatch.setattr(web, "AUTH", "u:p")
+    base = server.removeprefix("http://")
+    host, port = base.split(":")
+
+    def post(path, body):
+        c = http.client.HTTPConnection(host, int(port), timeout=10)
+        c.request("POST", path, body=json.dumps(body), headers={"Content-Type": "application/json"})
+        r = c.getresponse()
+        data, cookie = r.read(), r.getheader("Set-Cookie")
+        c.close()
+        return r.status, cookie, data
+
+    def get(path, cookie=None):
+        c = http.client.HTTPConnection(host, int(port), timeout=10)
+        c.request("GET", path, headers={"Cookie": cookie} if cookie else {})
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        return r.status, data
+
+    st, cookie, _ = post("/api/login", {"user": "u", "password": "p"})
+    assert st == 200 and cookie and "HttpOnly" in cookie
+    assert get("/api/tasks")[0] == 401
+    assert get("/api/tasks", cookie.split(";")[0])[0] == 200
+
+    st_bad, _, body = post("/api/login", {"user": "u", "password": "x"})
+    assert st_bad == 401 and json.loads(body)["ok"] is False
+
+    st_out, cookie_out, _ = post("/api/logout", {})
+    assert st_out == 200 and "Max-Age=0" in cookie_out
+
+
+def test_session_signature_rejects_forgery(monkeypatch):
+    monkeypatch.setattr(web, "AUTH", "u:p")
+    token = web.make_session()
+    assert web.session_ok(token)
+    assert not web.session_ok(token[:-1] + ("0" if token[-1] != "0" else "1"))
+    assert not web.session_ok("1.deadbeef"), "过期时间必须校验"
+
+
+def test_health_exposes_counts_only(server):
+    d = json.loads(get(server + "/api/health").read())
+    assert d["tasks"] >= 1 and d["files"] >= 1
+    assert "title" not in json.dumps(d), "健康接口不应泄露内容"

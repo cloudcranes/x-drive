@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -37,7 +38,32 @@ STATUS_RE = re.compile(
 )
 THUMB_MAX = 6 * 1024 * 1024
 
+SESSION_COOKIE = "xd_session"
+SESSION_TTL = 7 * 24 * 3600
 _health = {"at": 0.0, "parse": False}
+
+
+def make_session(ttl: int = SESSION_TTL) -> str:
+    """登录成功后下发的签名串：过期时间 + HMAC(密钥=WEB_AUTH)。"""
+    exp = int(time.time()) + ttl
+    mac = hmac.new(AUTH.encode(), str(exp).encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{exp}.{mac}"
+
+
+def session_ok(value: str) -> bool:
+    if not AUTH or not value:
+        return False
+    exp, _, mac = value.partition(".")
+    if not exp.isdigit() or int(exp) < time.time():
+        return False
+    expect = hmac.new(AUTH.encode(), exp.encode(), hashlib.sha256).hexdigest()[:32]
+    return hmac.compare_digest(mac, expect)
+
+
+def check_credentials(given: str) -> bool:
+    user, _, password = given.partition(":")
+    want_user, _, want_password = AUTH.partition(":")
+    return hmac.compare_digest(user, want_user) and hmac.compare_digest(password, want_password)
 
 
 def bytes_range_header() -> str:
@@ -126,14 +152,25 @@ def state_readable() -> bool:
 
 
 def health() -> dict:
-    """容器 healthcheck 用：真正的存活判断，而不是恒 true。"""
+    """容器 healthcheck 用：真正的存活判断，而不是恒 true。
+
+    顺带给登录页提供三个只读计数（不含标题、链接等内容）。
+    """
     ok_state = state_readable()
     ok_parse = parse_online()
+    counts = {"tasks": 0, "files": 0}
+    try:
+        state = core.load_state(STATE)
+        counts["tasks"] = len(state)
+        counts["files"] = sum(len(v.get("files") or []) for v in state.values())
+    except Exception:
+        pass
     return {
         "ok": ok_state,
         "state_readable": ok_state,
         "parse": ok_parse,
         "pending": pending_count(),
+        **counts,
         "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
 
@@ -227,6 +264,11 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         if not AUTH:
             return True
+        # cookie 会话优先（登录页 POST /api/login 后下发），失败再退回 Basic
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE and session_ok(value.strip()):
+                return True
         header = self.headers.get("Authorization", "")
         if not header.startswith("Basic "):
             return False
@@ -234,23 +276,45 @@ class Handler(BaseHTTPRequestHandler):
             given = base64.b64decode(header[6:]).decode("utf-8", "replace")
         except Exception:
             return False
-        user, _, password = given.partition(":")
-        want_user, _, want_password = AUTH.partition(":")
-        return hmac.compare_digest(user, want_user) and hmac.compare_digest(
-            password, want_password
-        )
+        return check_credentials(given)
 
-    def _login(self) -> None:
-        try:
-            body = LOGIN_PATH.read_bytes()
-        except OSError:
-            body = "<h1>需要登录</h1>".encode()
-        self._send(
-            401,
-            body,
-            "text/html; charset=utf-8",
-            {"WWW-Authenticate": 'Basic realm="x-drive", charset="UTF-8"'},
-        )
+    def _login(self, page: bool = True) -> None:
+        """未登录时：页面给自定义登录页（200，避免浏览器弹原生框），接口给 401 JSON。"""
+        if page:
+            try:
+                body = LOGIN_PATH.read_bytes()
+            except OSError:
+                body = "<h1>需要登录</h1>".encode()
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+        self._json({"ok": False, "error": "unauthorized", "login": "/"}, 401)
+
+    def do_POST(self) -> None:  # noqa: N802 (标准库命名)
+        path = urlsplit(self.path).path
+        if path == "/api/login":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                self._json({"ok": False, "error": "bad request"}, 400)
+                return
+            creds = f"{payload.get('user','')}:{payload.get('password','')}"
+            if not AUTH or check_credentials(creds):
+                cookie = (
+                    f"{SESSION_COOKIE}={make_session()}; Path=/; Max-Age={SESSION_TTL}; "
+                    "HttpOnly; SameSite=Lax"
+                )
+                self._json({"ok": True}, extra={"Set-Cookie": cookie})
+            else:
+                self._json({"ok": False, "error": "账号或密码不正确"}, 401)
+            return
+        if path == "/api/logout":
+            self._json(
+                {"ok": True},
+                extra={"Set-Cookie": f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"},
+            )
+            return
+        self._send(404, b"not found", "text/plain; charset=utf-8")
 
     def do_HEAD(self) -> None:  # noqa: N802 (标准库命名)
         self.do_GET()
@@ -261,7 +325,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(health())
             return
         if not self._authorized():
-            self._login()
+            path = urlsplit(self.path).path
+            self._login(page=path in ("/", "/index.html"))
             return
         parts = urlsplit(self.path)
         path = parts.path
@@ -275,6 +340,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/tasks":
             self._json(collect())
+            return
+        if path == "/api/session":
+            # 已通过认证才会到这里；auth 表示是否启用了登录
+            self._json({"ok": True, "auth": bool(AUTH), "user": AUTH.partition(":")[0] if AUTH else ""})
             return
         if path == "/api/metrics":
             self._json(metrics_snapshot())
@@ -374,9 +443,9 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 return  # 浏览器 seek 时会主动断开旧请求
 
-    def _json(self, payload: dict) -> None:
+    def _json(self, payload: dict, code: int = 200, extra: dict | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()
-        self._send(200, body, "application/json; charset=utf-8")
+        self._send(code, body, "application/json; charset=utf-8", extra)
 
     def log_message(self, fmt: str, *args) -> None:
         log.info("%s %s", self.address_string(), fmt % args)
