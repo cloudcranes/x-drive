@@ -9,8 +9,9 @@ from app import core, main
 
 
 class FakeMessage:
-    def __init__(self):
+    def __init__(self, chat_id=1):
         self.text = ""
+        self.chat_id = chat_id
 
     async def edit_text(self, text):
         self.text = text
@@ -29,6 +30,8 @@ def make_ctx(tmp_path, state):
         state_path=str(tmp_path / "state.json"),
         tmp_root=str(tmp_path / "dl"),
         rclone_config=str(tmp_path / "rclone.conf"),
+        pending_dir=str(tmp_path / "pending"),
+        transcode="off",
     )
     app = SimpleNamespace(
         bot_data={"cfg": cfg, "http": object(), "state": state, "sem": asyncio.Semaphore(1)}
@@ -123,3 +126,43 @@ def test_deliver_partial_failure(tmp_path, stub_network, monkeypatch):
 
     assert "1 图" in text and "未入库" in text
     assert len(state["77"]["files"]) == 1 and state["77"]["files"][0].endswith("_02.jpg")
+
+
+def test_pending_written_on_partial_and_cleared_on_success(tmp_path, stub_network, monkeypatch):
+    """部分失败要留待办；全部成功要清掉待办。"""
+    async def fake_parse(client, cfg, url):
+        return {"video_url": "", "images": [
+            {"url": "https://pbs.twimg.com/media/broken.jpg"},
+            {"url": "https://pbs.twimg.com/media/ok.jpg"},
+        ]}
+
+    monkeypatch.setattr(main, "parse_link", fake_parse)
+    monkeypatch.setattr(main, "folder_link", lambda cfg, target: asyncio.sleep(0, result="https://d/x"))
+    ctx = make_ctx(tmp_path, {})
+    cfg = ctx.bot_data["cfg"]
+    run(ctx, "https://x.com/u/status/77")
+
+    from pathlib import Path
+    pending = list(Path(cfg.pending_dir).glob("*.json"))
+    assert pending, "部分失败必须留下待办，供 /retry 补抓"
+    import json as _json
+    rec = _json.loads(pending[0].read_text())
+    assert rec["stage"] == "partial" and rec["failures"]
+
+
+def test_force_bypasses_cache(tmp_path, stub_network, monkeypatch):
+    """force=True 时即便 state 命中也要重新跑（用于重试失败的媒体）。"""
+    calls = []
+
+    async def fake_parse(client, cfg, url):
+        calls.append(url)
+        return {"video_url": "", "images": [{"url": "https://pbs.twimg.com/media/ok.jpg"}]}
+
+    monkeypatch.setattr(main, "parse_link", fake_parse)
+    monkeypatch.setattr(main, "folder_link", lambda cfg, target: asyncio.sleep(0, result="https://d/y"))
+    state = {"123": {"path": "gdrive:X-Drive/a/2026-10/123", "link": "https://old",
+                     "files": ["a.jpg"], "title": "t"}}
+    text = asyncio.run(main.deliver(make_ctx(tmp_path, state), "https://x.com/u/status/123",
+                                    FakeMessage(), force=True))
+    assert calls, "force 必须重新解析"
+    assert "https://old" not in text

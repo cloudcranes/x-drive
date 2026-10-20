@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ from urllib.parse import urlsplit
 import httpx
 from telegram import Message, Update
 from telegram.error import TelegramError
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from . import core, fallback, media
 
@@ -46,6 +47,7 @@ class Config:
     tmp_root: str
     rclone_config: str
     transcode: str = "auto"
+    pending_dir: str = "/data/pending"
 
     @property
     def max_bytes(self) -> int:
@@ -73,6 +75,7 @@ class Config:
             tmp_root=os.getenv("TMP_ROOT", "/downloads"),
             rclone_config=os.getenv("RCLONE_CONFIG", "/config/rclone/rclone.conf"),
             transcode=(os.getenv("VIDEO_TRANSCODE", "auto").strip().lower() or "auto"),
+            pending_dir=os.getenv("PENDING_DIR", "/data/pending"),
         )
 
 
@@ -172,21 +175,69 @@ def safe_dir_name(key: str) -> str:
     return re.sub(r"[^0-9A-Za-z]", "", key) or hashlib.sha1(key.encode()).hexdigest()[:16]
 
 
-async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> str:
+def pending_file(cfg: Config, key: str) -> Path:
+    return Path(cfg.pending_dir) / f"{safe_dir_name(key)}.json"
+
+
+def mark_pending(cfg: Config, key: str, **fields) -> None:
+    """记录未完成任务，进程重启后据此补跑；成功与主动放弃时由 clear_pending 删除。"""
+    path = pending_file(cfg, key)
+    record: dict = {}
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    record.update(fields)
+    record.setdefault("key", key)
+    record["ts"] = time.time()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError as exc:
+        log.warning("待办落盘失败 %s：%s", path, exc)
+
+
+def clear_pending(cfg: Config, key: str) -> None:
+    try:
+        pending_file(cfg, key).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message, force: bool = False) -> str:
     cfg: Config = ctx.application.bot_data["cfg"]
     client: httpx.AsyncClient = ctx.application.bot_data["http"]
     state: dict = ctx.application.bot_data["state"]
 
+    async def progress(text: str) -> None:
+        await edit(status, text)
+
+    return await run_task(
+        cfg, client, state, url, progress, force=force, chat_id=status.chat_id
+    )
+
+
+async def run_task(
+    cfg: Config,
+    client: httpx.AsyncClient,
+    state: dict,
+    url: str,
+    progress,
+    force: bool = False,
+    chat_id: int | None = None,
+) -> str:
+    """解析 → 下载 → 转码 → 上传。progress(text) 用来更新外部消息，便于重启补跑时复用。"""
     expanded = await expand_short(client, url)
     key = cache_key(expanded)
     hit = state.get(key) or {}
-    if hit.get("link"):
+    if hit.get("link") and not force:
         rc, out, _ = await rclone(cfg, "lsf", hit["path"], timeout=120.0)
         if rc == 0 and out.strip():
-            await edit(status, "♻️ 此前已存过，复用链接")
+            await progress("♻️ 此前已存过，复用链接")
             return core.receipt(hit["link"], hit.get("files", []), [], hit.get("title", ""))
 
-    await edit(status, "⏳ 解析媒体…")
+    mark_pending(cfg, key, url=expanded, stage="parsing", chat_id=chat_id)
+    await progress("⏳ 解析媒体…")
     try:
         data = await parse_link(client, cfg, expanded)
     except Exception as exc:
@@ -240,13 +291,13 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
                 else:
                     origins[name] = core.orig_image_url(media_url)
                 if kind == "video":
-                    await edit(status, "⏳ 转码兼容 Main profile…")
+                    await progress("⏳ 转码兼容 Main profile…")
                     changed, info = await media.make_compatible(tmp / name, cfg.transcode)
                     if changed:
                         log.info("已转码 %s（原 profile %s）", name, info or "?")
                     elif info and info.lower() not in media.OK_PROFILES:
                         log.warning("转码未生效 %s：%s", name, info)
-                await edit(status, f"⏳ 下载 {len(saved)}/{len(entries)}")
+                await progress(f"⏳ 下载 {len(saved)}/{len(entries)}")
             except Exception as exc:  # 单个媒体失败不中断整条推文
                 failures.append(f"{name}: {str(exc)[:80]}")
 
@@ -266,7 +317,8 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
                 ),
                 encoding="utf-8",
             )
-            await edit(status, "⏳ 上传 Drive…")
+            mark_pending(cfg, key, url=expanded, stage="uploading", chat_id=chat_id)
+            await progress("⏳ 上传 Drive…")
             rc, _, err = await rclone(cfg, "mkdir", target, timeout=120.0)
             rc, _, err = await rclone(
                 cfg,
@@ -294,12 +346,22 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message) -> 
                 "title": title,
                 "author": author.get("name") or "",
                 "source": expanded,
+                "failures": failures,
                 "at": datetime.now().isoformat(timespec="seconds"),
             }
             core.save_state(cfg.state_path, state)
+            clear_pending(cfg, key)
+        if failures:
+            # 部分成功也要留待办，方便 /retry 补抓
+            mark_pending(cfg, key, url=expanded, stage="partial", chat_id=chat_id, failures=failures)
         return core.receipt(link, saved, failures, title)
+    except Exception:
+        # 失败保留临时文件与待办，重启后可补跑；成功路径在下面清理
+        mark_pending(cfg, key, url=expanded, stage="failed", chat_id=chat_id)
+        raise
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        if not failures and link:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 async def edit(message: Message, text: str) -> None:
@@ -309,18 +371,127 @@ async def edit(message: Message, text: str) -> None:
         pass
 
 
+def pick_url(args: list[str], text: str) -> str | None:
+    """命令参数里找链接；没有就用回复的那条消息。"""
+    for token in args:
+        if token.startswith("http"):
+            return token
+    found = core.extract_url(text or "")
+    return found
+
+
+def mentioned_key(args: list[str]) -> str | None:
+    for token in args:
+        digits = re.sub(r"\D", "", token)
+        if len(digits) >= 10:
+            return digits
+    return None
+
+
+async def on_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """补抓上次没入库的媒体；带链接时对该推文重跑，否则用最后一条待办。"""
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if user.id not in cfg.allowed:
+        return
+    state: dict = ctx.application.bot_data["state"]
+    pending: dict = ctx.application.bot_data["pending"]
+
+    url = pick_url(ctx.args or [], "")
+    if not url and message.reply_to_message:
+        url = core.extract_url(
+            message.reply_to_message.text or message.reply_to_message.caption or ""
+        )
+    if not url:
+        latest = sorted(pending.values(), key=lambda p: p.get("ts", 0), reverse=True)
+        if not latest:
+            await message.reply_text("没有待重试的任务。用法：`/retry <链接>` 或回复一条含链接的消息")
+            return
+        url = latest[0].get("url") or ""
+    if not url or not core.domain_allowed(url, cfg.domains):
+        await message.reply_text("⛔ 需要一条 x.com 链接")
+        return
+
+    status = await message.reply_text("⏳ 重试中…")
+    sem: asyncio.Semaphore = ctx.application.bot_data["sem"]
+    async with sem:
+        try:
+            text = await deliver(ctx, url, status, force=True)
+        except Exception as exc:
+            log.exception("重试失败: %s", url)
+            text = f"❌ 重试失败：{str(exc)[:400]}（可用 /retry 再试）"
+    await edit(status, text)
+
+
+async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """删除某条推文的整目录：/del <tweet_id|链接>。必须带 --yes 确认。"""
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if user.id not in cfg.allowed:
+        return
+    args = ctx.args or []
+    key = mentioned_key(args) or (core.tweet_id_from_url(args[0]) if args else None)
+    if not key:
+        await message.reply_text("用法：`/del <推文ID>`，确认执行加 `--yes`")
+        return
+    state: dict = ctx.application.bot_data["state"]
+    record = state.get(key)
+    if not record:
+        await message.reply_text(f"未找到 {key} 的记录")
+        return
+    if "--yes" not in args:
+        await message.reply_text(
+            f"将删除：\n{record.get('path')}\n\n确认请发送 `/del {key} --yes`"
+        )
+        return
+
+    target = record.get("path") or ""
+    root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
+    if not target.startswith(root + "/") or ".." in target:
+        await message.reply_text("⛔ 路径校验未通过，已拒绝删除")
+        return
+    rc, _, err = await rclone(cfg, "purge", target, timeout=600.0)
+    if rc != 0:
+        await message.reply_text(f"❌ 删除失败：{err.strip()[:300]}")
+        return
+    state.pop(key, None)
+    core.save_state(cfg.state_path, state)
+    clear_pending(cfg, key)
+    await message.reply_text(f"🗑 已删除 {key}（文件在 Drive 回收站，可恢复）")
+
+
+async def on_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if message:
+        await message.reply_text(
+            "用法：\n"
+            "• 直接发 x.com 链接 → 自动存 Drive\n"
+            "• `/retry <链接>` 或回复消息 → 重试上次没入库的部分\n"
+            "• `/del <推文ID>` → 查看将删除的目录，加 `--yes` 执行\n"
+            "• `/help` → 本说明"
+        )
+
+
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     user = update.effective_user
-    if not message or not message.text or not user:
+    text = (message.text or message.caption or "") if message else ""
+    if not message or not text or not user:
         return
     cfg: Config = ctx.application.bot_data["cfg"]
+    if not fresh_update(update):
+        log.info("跳过过期消息 %s", message.message_id)
+        return
     if user.id not in cfg.allowed:
         await message.reply_text(
             f"⛔ 未授权。你的 user id：{user.id}，把它加进 ALLOWED_USER_IDS 后重启。"
         )
         return
-    url = core.extract_url(message.text)
+    url = core.extract_url(text)
     if not url:
         return
     if not core.domain_allowed(url, cfg.domains):
@@ -336,6 +507,77 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             log.exception("处理失败: %s", url)
             text = f"❌ {str(exc)[:500]}"
     await edit(status, text)
+
+
+# ---------------------------------------------------------------- 待办补跑
+
+
+def load_pending(cfg: Config) -> dict:
+    pending: dict = {}
+    directory = Path(cfg.pending_dir)
+    if not directory.is_dir():
+        return pending
+    for path in directory.glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        key = record.get("key") or path.stem
+        pending[key] = record
+    return pending
+
+
+def fresh_update(update, max_age: int = 900) -> bool:
+    """忽略积压太久的消息，避免停机后一次性补刷。"""
+    message = update.effective_message
+    if message is None or message.date is None:
+        return False
+    age = time.time() - message.date.timestamp()
+    return age <= max_age
+
+
+async def bootstrap(application: Application) -> None:
+    """post_init 里只做注册，补跑放后台，避免拖慢启动。"""
+    application.create_task(resume_pending(application))
+
+
+async def resume_pending(application: Application) -> None:
+    """启动时补跑上次没完成/部分完成的推文，并把结果发回原会话。"""
+    cfg: Config = application.bot_data["cfg"]
+    pending: dict = application.bot_data["pending"]
+    if not pending:
+        return
+    log.info("发现 %d 条待补跑记录", len(pending))
+    for key, record in list(pending.items()):
+        url = record.get("url") or ""
+        chat_id = record.get("chat_id")
+        if not url:
+            clear_pending(cfg, key)
+            pending.pop(key, None)
+            continue
+        sent = None
+        if chat_id:
+            try:
+                sent = await application.bot.send_message(chat_id, "⏳ 重启后补跑：解析媒体…")
+            except TelegramError as exc:
+                log.warning("补跑时无法通知会话 %s：%s", chat_id, exc)
+
+        async def progress(text: str, _sent=sent) -> None:
+            if _sent is not None:
+                await edit(_sent, text)
+
+        try:
+            text = await run_task(
+                cfg, application.bot_data["http"], application.bot_data["state"],
+                url, progress, force=True, chat_id=chat_id,
+            )
+            application.bot_data["pending"].pop(key, None)
+            if sent is not None:
+                await edit(sent, "🔁 补跑完成\n" + text)
+        except Exception as exc:  # 单条失败不影响其他补跑
+            log.exception("补跑失败 %s：%s", key, exc)
+            if sent is not None:
+                await edit(sent, f"❌ 补跑失败：{str(exc)[:300]}（可用 /retry 再试）")
 
 
 # ---------------------------------------------------------------- 启动
@@ -384,11 +626,14 @@ def main() -> None:
         .read_timeout(30)
         .connect_timeout(20)
         .post_shutdown(shutdown)
+        .post_init(bootstrap)
         .build()
     )
+    Path(cfg.pending_dir).mkdir(parents=True, exist_ok=True)
     app.bot_data.update(
         cfg=cfg,
         state=core.load_state(cfg.state_path),
+        pending=load_pending(cfg),
         sem=asyncio.Semaphore(cfg.concurrency),
         http=httpx.AsyncClient(
             follow_redirects=True,
@@ -398,9 +643,19 @@ def main() -> None:
             },
         ),
     )
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
-    log.info("启动：remote=%s root=%s domains=%s", cfg.remote, cfg.drive_root, cfg.domains)
-    app.run_polling(drop_pending_updates=True, allowed_updates=["message"])
+    app.add_handler(
+        MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, on_message)
+    )
+    app.add_handler(CommandHandler("retry", on_retry))
+    app.add_handler(CommandHandler("del", on_delete))
+    app.add_handler(CommandHandler(["help", "start"], on_help))
+    log.info(
+        "启动：remote=%s root=%s domains=%s 待补跑=%d",
+        cfg.remote, cfg.drive_root, cfg.domains, len(app.bot_data["pending"]),
+    )
+    # drop_pending_updates=False：停机期间用户发的链接不再被 Telegram 侧丢弃；
+    # 旧的积压由 processed_update 里的时间窗过滤，避免重启后一次性补刷历史消息。
+    app.run_polling(drop_pending_updates=False, allowed_updates=["message"])
 
 
 if __name__ == "__main__":
