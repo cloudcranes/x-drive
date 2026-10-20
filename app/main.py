@@ -25,7 +25,7 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import core, fallback, media
+from . import core, fallback, media, metrics
 
 log = logging.getLogger("x-drive")
 
@@ -48,6 +48,8 @@ class Config:
     rclone_config: str
     transcode: str = "auto"
     pending_dir: str = "/data/pending"
+    metrics_path: str = "/data/metrics.json"
+    daily_upload_gb: int = 0
 
     @property
     def max_bytes(self) -> int:
@@ -76,6 +78,8 @@ class Config:
             rclone_config=os.getenv("RCLONE_CONFIG", "/config/rclone/rclone.conf"),
             transcode=(os.getenv("VIDEO_TRANSCODE", "auto").strip().lower() or "auto"),
             pending_dir=os.getenv("PENDING_DIR", "/data/pending"),
+            metrics_path=os.getenv("METRICS_PATH", "/data/metrics.json"),
+            daily_upload_gb=int(os.getenv("DAILY_UPLOAD_GB", "0") or 0),
         )
 
 
@@ -140,6 +144,45 @@ async def download(client: httpx.AsyncClient, url: str, dest: Path, max_bytes: i
     if total == 0:
         raise RuntimeError("空文件")
     return total
+
+
+def usage_file(cfg: Config) -> Path:
+    return Path(cfg.pending_dir).parent / "usage.json"
+
+
+def today_bytes(cfg: Config) -> int:
+    try:
+        data = json.loads(usage_file(cfg).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if data.get("date") != datetime.now().strftime("%Y-%m-%d"):
+        return 0
+    return int(data.get("bytes") or 0)
+
+
+def add_usage(cfg: Config, size: int) -> None:
+    path = usage_file(cfg)
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("date") != today:
+            data = {"date": today, "bytes": 0}
+    except (OSError, json.JSONDecodeError):
+        data = {"date": today, "bytes": 0}
+    data["bytes"] = int(data.get("bytes") or 0) + max(0, size)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def quota_exceeded(cfg: Config, incoming: int) -> bool:
+    """按 DAILY_UPLOAD_GB 预判；0 表示不限制。"""
+    if cfg.daily_upload_gb <= 0:
+        return False
+    limit = cfg.daily_upload_gb * 1024**3
+    return today_bytes(cfg) + incoming > limit
 
 
 async def folder_link(cfg: Config, target: str) -> str | None:
@@ -212,9 +255,11 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message, for
     async def progress(text: str) -> None:
         await edit(status, text)
 
-    return await run_task(
+    text = await run_task(
         cfg, client, state, url, progress, force=force, chat_id=status.chat_id
     )
+    metrics.bump(cfg.metrics_path, metrics.classify(text))
+    return text
 
 
 async def run_task(
@@ -317,6 +362,15 @@ async def run_task(
                 ),
                 encoding="utf-8",
             )
+            incoming = sum(f.stat().st_size for f in tmp.iterdir() if f.is_file())
+            if quota_exceeded(cfg, incoming):
+                used = today_bytes(cfg) / 1024**3
+                mark_pending(cfg, key, url=expanded, stage="quota", chat_id=chat_id)
+                return (
+                    "⛔ 今日上传量已达上限：已传 "
+                    f"{used:.1f}GB，本次 {incoming / 1024**3:.1f}GB，超出 {cfg.daily_upload_gb}GB/日 限制。"
+                    "文件已保留在 /downloads，可用 /retry 明天补传。"
+                )
             mark_pending(cfg, key, url=expanded, stage="uploading", chat_id=chat_id)
             await progress("⏳ 上传 Drive…")
             rc, _, err = await rclone(cfg, "mkdir", target, timeout=120.0)
@@ -333,10 +387,14 @@ async def run_task(
                 "2",
                 "--timeout",
                 "10m",
+                "--drive-stop-on-upload-limit",
                 timeout=3600.0,
             )
             if rc != 0:
+                if "uploadLimitExceeded" in err or "quota" in err.lower():
+                    raise RuntimeError("Google Drive 上传配额已用完，明日再试（已保留待办）")
                 raise RuntimeError(f"rclone 上传失败：{err.strip()[:300]}")
+            add_usage(cfg, incoming)
             link = await folder_link(cfg, target)
             state[key] = {
                 "path": target,
@@ -586,18 +644,48 @@ async def resume_pending(application: Application) -> None:
 async def self_check(cfg: Config) -> bool:
     ok = True
     async with httpx.AsyncClient() as client:
+        # 1. parse 服务存活 + 解析接口真的可用（打 / 只能证明进程在）
         try:
-            resp = await client.get(f"{cfg.parse_base}/", timeout=20.0)
-            print(f"parse 服务 {cfg.parse_base}: HTTP {resp.status_code}")
-            ok &= resp.status_code == 200
-        except httpx.HTTPError as exc:
+            resp = await client.get(
+                f"{cfg.parse_base}/video/share/url/parse",
+                params={"url": "https://x.com/i/status/20"},
+                timeout=40.0,
+            )
+            body = resp.json()
+            # 404/解析失败都算服务活着，只有连不上或 5xx 才算挂
+            alive = resp.status_code < 500 and isinstance(body, dict) and "code" in body
+            print(f"parse 解析接口: HTTP {resp.status_code} code={body.get('code')} {'OK' if alive else '异常'}")
+            ok &= alive
+        except Exception as exc:
             print(f"parse 服务 {cfg.parse_base}: 不可达 {exc}")
             ok = False
-    rc, _, err = await rclone(cfg, "lsd", f"{cfg.remote}:{cfg.drive_root}", timeout=90.0)
+
+        # 2. Telegram token 是否有效
+        try:
+            me = await client.get(f"https://api.telegram.org/bot{cfg.token}/getMe", timeout=15.0)
+            info = me.json()
+            good = bool(info.get("ok"))
+            print(f"telegram token: {'OK @' + info['result']['username'] if good else info.get('description','无效')}")
+            ok &= good
+        except Exception as exc:
+            print(f"telegram token: 校验失败 {exc}")
+            ok = False
+
+    # 3. Drive 可读 + 可写（写权限只有真写一次才能确认）
+    root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
+    rc, _, err = await rclone(cfg, "lsd", root, timeout=90.0)
     if rc != 0:
         rc, _, err = await rclone(cfg, "lsd", f"{cfg.remote}:", timeout=90.0)
     print(f"rclone {cfg.remote}: {'OK' if rc == 0 else err.strip()[:300]}")
     ok &= rc == 0
+    if rc == 0:
+        # 用 mkdir + rmdir 验证写权限（rclone copyto 不支持 stdin）
+        rc2, _, err2 = await rclone(cfg, "mkdir", f"{root}/_healthcheck", timeout=90.0)
+        print(f"Drive 写权限: {'OK' if rc2 == 0 else err2.strip()[:200]}")
+        if rc2 == 0:
+            await rclone(cfg, "rmdir", f"{root}/_healthcheck", timeout=90.0)
+        ok &= rc2 == 0
+
     print("自检", "通过" if ok else "未通过")
     return ok
 

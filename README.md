@@ -103,6 +103,16 @@ X-Drive/<作者uid>_<作者名>/<YYYY-MM>/<推文id>/
 | `/del <推文ID>` | 显示将删除的 Drive 目录；加 `--yes` 执行（文件进 Drive 回收站，可恢复） |
 | `/help` | 命令说明 |
 
+展示页顶栏可搜索标题/作者/@handle（按 `/` 聚焦），并用「全部 / 图片 / 视频」筛选；点卡片媒体打开灯箱，图片取原图、视频直接播放，支持 `←` `→` 切换、`Esc` 关闭。
+
+## 运行指标与配额
+
+- `bot` 每次任务结束按结果分类累加（`ok` / `partial` / `no_media` / `parse_fail` / `upload_fail` / `error`），写到 `/data/metrics.json`
+- 展示页 `GET /api/metrics` 直接读：总数、成功率、最近成功时间、最近 5 条失败原因、待补跑数量
+- `/api/health` 改为真实判断：`state.json` 可解析、parse 在线、待办数量
+- `DAILY_UPLOAD_GB` 设上限后，上传前先算「今天已传 + 本次」是否超限，超了直接拒绝（文件保留，`/retry` 次日补传）
+- rclone 加 `--drive-stop-on-upload-limit`，配额打满时立即失败而不是逐个重试
+
 ## 失败与重启恢复
 
 - 单个媒体下载/转码失败不会中断整条推文，失败项写进回执，同时落一份待办到 `/data/pending/<id>.json`，之后用 `/retry` 补抓

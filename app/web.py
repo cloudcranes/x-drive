@@ -23,6 +23,8 @@ from . import core
 log = logging.getLogger("x-drive.web")
 
 STATE = os.getenv("STATE_PATH", "/data/state.json")
+METRICS = os.getenv("METRICS_PATH", "/data/metrics.json")
+PENDING_DIR = os.getenv("PENDING_DIR", "/data/pending")
 PARSE = os.getenv("PARSE_BASE_URL", "http://parse:8000").rstrip("/")
 BIND = os.getenv("WEB_BIND", "0.0.0.0")
 PORT = int(os.getenv("WEB_PORT", "8080"))
@@ -69,24 +71,30 @@ def tweet_info(source: str, tweet_id: str) -> tuple[str, str]:
 SMALL_NAMES = {"orig", "large", "medium", "4096x4096"}
 
 
-def small_thumb(url: str) -> str:
-    """pbs.twimg.com 图片改用小尺寸变体（?name=small），缩略图不需要原图。"""
+def small_thumb(url: str, size: str = "small") -> str:
+    """pbs.twimg.com 图片换尺寸变体：缩略图用 small，灯箱要原图时传 orig。"""
     parts = urlsplit(url)
     if "pbs.twimg.com" not in (parts.hostname or ""):
         return url
     query = parse_qs(parts.query)
-    if query.get("name", [""])[0] not in SMALL_NAMES:
-        return url
-    query["name"] = ["small"]
+    current = query.get("name", [""])[0]
+    if size == "orig":
+        if current == "" and not query:
+            return url          # 没有 name 参数时本身就是原图
+        query["name"] = ["orig"]
+    else:
+        if current not in SMALL_NAMES:
+            return url
+        query["name"] = ["small"]
     query_string = "&".join(f"{k}={v[0]}" for k, v in query.items())
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query_string, ""))
 
 
-def thumb_url(kind: str, original: str, tweet_id: str, name: str) -> str:
+def thumb_url(kind: str, original: str, tweet_id: str, name: str, size: str = "small") -> str:
     """同源缩略图地址，避免浏览器直连 pbs.twimg.com。"""
     query = "&".join(
         f"{key}={quote(str(value), safe='')}"
-        for key, value in (("u", small_thumb(original)), ("k", kind), ("t", tweet_id), ("f", name))
+        for key, value in (("u", small_thumb(original, size)), ("k", kind), ("t", tweet_id), ("f", name))
     )
     return f"/thumb?{query}"
 
@@ -98,6 +106,45 @@ def video_url(original: str, tweet_id: str, name: str) -> str:
         for key, value in (("u", original), ("t", tweet_id), ("f", name))
     )
     return f"/video?{query}"
+
+
+def pending_count() -> int:
+    try:
+        return len([p for p in Path(PENDING_DIR).glob("*.json")])
+    except OSError:
+        return 0
+
+
+def state_readable() -> bool:
+    try:
+        json.loads(Path(STATE).read_text(encoding="utf-8"))
+        return True
+    except FileNotFoundError:
+        return True          # 还没有任何入库记录，属于正常
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def health() -> dict:
+    """容器 healthcheck 用：真正的存活判断，而不是恒 true。"""
+    ok_state = state_readable()
+    ok_parse = parse_online()
+    return {
+        "ok": ok_state,
+        "state_readable": ok_state,
+        "parse": ok_parse,
+        "pending": pending_count(),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+def metrics_snapshot() -> dict:
+    from . import metrics as m
+
+    data = m.snapshot(METRICS)
+    data["pending"] = pending_count()
+    data["parse"] = parse_online()
+    return data
 
 
 def collect() -> dict:
@@ -125,6 +172,7 @@ def collect() -> dict:
                     "name": name,
                     "thumb": thumb_url(kind, poster, key, name) if poster else "",
                     "raw": original,
+                    "full": (thumb_url(kind, poster, key, name, "orig") if (poster and kind == "image") else ""),
                     "play": video_url(original, key, name) if (kind == "video" and original) else "",
                 }
             )
@@ -210,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 (标准库命名)
         # 健康检查不要求认证，否则容器 healthcheck 永远 401
         if urlsplit(self.path).path == "/api/health":
-            self._json({"ok": True, "parse": parse_online()})
+            self._json(health())
             return
         if not self._authorized():
             self._login()
@@ -228,6 +276,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/tasks":
             self._json(collect())
             return
+        if path == "/api/metrics":
+            self._json(metrics_snapshot())
+            return
         if path == "/thumb":
             self._thumb(parse_qs(parts.query))
             return
@@ -239,6 +290,9 @@ class Handler(BaseHTTPRequestHandler):
     def _thumb(self, query: dict) -> None:
         """同源代理缩略图：只放行 twimg 域名，避免开放代理被滥用。"""
         url = (query.get("u") or [""])[0]
+        size = (query.get("s") or ["small"])[0]
+        if size == "orig":
+            url = small_thumb(url, "orig")
         host = (urlsplit(url).hostname or "").lower()
         if not url or not (host == "twimg.com" or host.endswith(".twimg.com")):
             self._send(400, b"bad thumb url", "text/plain; charset=utf-8")

@@ -216,3 +216,28 @@ def test_incremental_render_present():
     assert "mounted" in html, "缺少节点复用表"
     assert "显示的是上次结果" in html, "刷新失败时应保留旧列表"
     assert 'id="refresh"' in html, "缺少手动刷新入口"
+
+
+def test_metrics_endpoint(server, monkeypatch):
+    import tempfile, os
+    from pathlib import Path
+    d = tempfile.mkdtemp()
+    monkeypatch.setattr(web, "METRICS", os.path.join(d, "m.json"))
+    monkeypatch.setattr(web, "PENDING_DIR", os.path.join(d, "pending"))
+    data = json.loads(get(server + "/api/metrics").read())
+    assert data["attempts"] == 0 and data["pending"] == 0
+    assert "parse" in data
+
+
+def test_health_reflects_state_readability(server, monkeypatch):
+    import tempfile, os
+    bad = os.path.join(tempfile.mkdtemp(), "broken.json")
+    open(bad, "w").write("{not json")
+    monkeypatch.setattr(web, "STATE", bad)
+    assert json.loads(get(server + "/api/health").read())["ok"] is False
+
+
+def test_thumb_orig_variant(server):
+    assert web.small_thumb("https://pbs.twimg.com/media/a.png?name=orig", "orig").endswith("name=orig")
+    assert "name%3Dorig" in web.thumb_url("image", "https://pbs.twimg.com/media/a.png?name=orig",
+                                          "1", "a.png", "orig")

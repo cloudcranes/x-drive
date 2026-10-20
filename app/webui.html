@@ -39,6 +39,17 @@
     border:1px solid rgba(62,186,244,.4)}
   .brand .mark svg{width:13px;height:13px;stroke:var(--cyan)}
   .brand i{font-style:normal; color:var(--cyan)}
+  .search{display:flex; align-items:center; gap:8px; min-width:0; flex:1; max-width:620px}
+  .search input{flex:1; min-width:120px; padding:8px 12px; border-radius:8px; font-size:13px;
+    border:1px solid var(--line); background:rgba(13,13,13,.85); color:var(--text); outline:none;
+    transition:border-color .16s, box-shadow .16s}
+  .search input::placeholder{color:#4a5566}
+  .search input:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+  .chipbtn{font-family:var(--mono); font-size:11.5px; padding:6px 11px; border-radius:999px;
+    border:1px solid var(--line); background:rgba(13,13,13,.85); color:var(--muted); cursor:pointer;
+    transition:color .16s, border-color .16s, background .16s; white-space:nowrap}
+  .chipbtn:hover{color:var(--text); border-color:rgba(255,255,255,.2)}
+  .chipbtn.on{color:var(--cyan); border-color:rgba(62,186,244,.5); background:rgba(62,186,244,.10)}
   .refresh{margin-left:auto; width:32px; height:32px; padding:0; display:grid; place-items:center;
     border-radius:8px; border:1px solid var(--line); background:rgba(13,13,13,.85);
     color:var(--muted); cursor:pointer; transition:color .16s, border-color .16s, background .16s}
@@ -168,6 +179,23 @@
     font-family:var(--mono); font-size:11.5px; display:flex; justify-content:space-between;
     gap:14px; flex-wrap:wrap}
 
+  /* 灯箱 */
+  .lightbox{position:fixed; inset:0; z-index:50; background:rgba(0,0,0,.92);
+    display:grid; place-items:center; backdrop-filter:blur(6px)}
+  .lb-stage{max-width:min(92vw,1200px); max-height:86vh; display:grid; place-items:center}
+  .lb-stage img,.lb-stage video{max-width:100%; max-height:86vh; border-radius:10px;
+    box-shadow:0 30px 80px -30px rgba(0,0,0,.9)}
+  .lb-close,.lb-nav{position:absolute; border:1px solid var(--line); background:rgba(13,13,13,.85);
+    color:var(--text); cursor:pointer; border-radius:10px; width:40px; height:40px;
+    display:grid; place-items:center; font-size:16px}
+  .lb-close{right:20px; top:20px}
+  .lb-nav.prev{left:18px; top:50%; transform:translateY(-50%)}
+  .lb-nav.next{right:18px; top:50%; transform:translateY(-50%)}
+  .lb-nav[hidden]{visibility:hidden}
+  .lb-count{position:absolute; bottom:20px; left:50%; transform:translateX(-50%);
+    font-family:var(--mono); font-size:12px; color:var(--muted)}
+  .card-media{cursor:zoom-in}
+
   @media(prefers-reduced-motion:reduce){h1{animation:none} .card{transition:none}}
 </style>
 </head>
@@ -182,6 +210,12 @@
       </span>
       x-<i>drive</i>
     </div>
+    <div class="search">
+      <input id="q" type="search" placeholder="搜索标题 / 作者 / @handle   ( / )" autocomplete="off">
+      <button class="chipbtn" id="f-all" data-filter="all" type="button">全部</button>
+      <button class="chipbtn" id="f-img" data-filter="image" type="button">图片</button>
+      <button class="chipbtn" id="f-vid" data-filter="video" type="button">视频</button>
+    </div>
     <button class="refresh" id="refresh" type="button" title="立即刷新" aria-label="立即刷新">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
            stroke-linecap="round" stroke-linejoin="round">
@@ -191,6 +225,14 @@
     <div class="badge"><span class="dot" id="dot"></span><span id="health">连接中…</span></div>
   </div>
 </header>
+
+<div class="lightbox" id="lightbox" hidden>
+  <button class="lb-close" id="lb-close" type="button" aria-label="关闭">✕</button>
+  <button class="lb-nav prev" id="lb-prev" type="button" aria-label="上一张">‹</button>
+  <div class="lb-stage" id="lb-stage"></div>
+  <button class="lb-nav next" id="lb-next" type="button" aria-label="下一张">›</button>
+  <div class="lb-count" id="lb-count"></div>
+</div>
 
 <main>
   <section class="hero">
@@ -367,6 +409,14 @@ function card(t) {
   else if (items.length === 1 && cover.kind === "video") media.append(el("span", "more", "▶ 视频"));
   node.append(media);
 
+  media.addEventListener("click", e => {
+    const items = (t.media || []).filter(m => m.thumb || m.raw || m.play);
+    if (!items.length) return;
+    // 点到播放控件时不打开灯箱
+    if (e.target.closest("video, .playbtn, a")) return;
+    openLightbox(items, 0, t.title || "");
+  });
+
   const body = el("div", "card-body");
   const who = el("div", "who");
   who.append(el("span", "avatar", initial(t.author)));
@@ -410,6 +460,92 @@ const AUTH_HEADER = (() => {
   try { history.replaceState(null, "", location.href.replace(m[0], m[1])); } catch (e) {}
   try { return "Basic " + btoa(decodeURIComponent(creds)); } catch (e) { return null; }
 })();
+
+// 搜索与筛选状态
+const view = {q: "", kind: "all"};
+const allTasks = new Map();     // id -> task（供过滤时复用）
+
+function matches(t) {
+  if (view.kind === "image" && !t.images) return false;
+  if (view.kind === "video" && !t.videos) return false;
+  const q = view.q.trim().toLowerCase();
+  if (!q) return true;
+  return [t.title, t.author, t.handle, t.source].some(v => (v || "").toLowerCase().includes(q));
+}
+
+function applyFilter() {
+  const tasks = [...allTasks.values()].filter(matches);
+  syncFeed(tasks);
+  $("empty-slot").textContent = "";
+  if (!tasks.length && allTasks.size) {
+    $("feed").textContent = "";
+    $("empty-slot").append(el("div", "empty", "没有匹配的记录，换个关键词试试。"));
+  }
+}
+
+// 灯箱
+const lb = { items: [], i: 0 };
+function openLightbox(items, index, title) {
+  lb.items = items; lb.i = index || 0;
+  $("lightbox").hidden = false;
+  renderLightbox(title || "");
+}
+function renderLightbox(title) {
+  const stage = $("lb-stage");
+  stage.textContent = "";
+  const item = lb.items[lb.i];
+  if (!item) return;
+  if (item.kind === "video") {
+    const v = document.createElement("video");
+    v.src = abs(item.play || item.raw);
+    v.controls = true; v.autoplay = true; v.playsInline = true;
+    stage.append(v);
+  } else {
+    const img = new Image();
+    img.src = abs(item.full || item.raw || item.thumb);
+    img.alt = title;
+    img.referrerPolicy = "no-referrer";
+    stage.append(img);
+  }
+  $("lb-count").textContent = `${lb.i + 1} / ${lb.items.length}` + (title ? " · " + title.slice(0, 40) : "");
+  $("lb-prev").hidden = lb.i === 0;
+  $("lb-next").hidden = lb.i >= lb.items.length - 1;
+}
+function closeLightbox() {
+  $("lightbox").hidden = true;
+  $("lb-stage").textContent = "";
+}
+$("lb-close").addEventListener("click", closeLightbox);
+$("lb-prev").addEventListener("click", () => { if (lb.i > 0) { lb.i--; renderLightbox(""); } });
+$("lb-next").addEventListener("click", () => { if (lb.i < lb.items.length - 1) { lb.i++; renderLightbox(""); } });
+$("lightbox").addEventListener("click", e => { if (e.target.id === "lightbox") closeLightbox(); });
+document.addEventListener("keydown", e => {
+  if ($("lightbox").hidden) {
+    if (e.key === "/" && document.activeElement.tagName !== "INPUT") {
+      e.preventDefault(); $("q").focus();
+    }
+    return;
+  }
+  if (e.key === "Escape") closeLightbox();
+  if (e.key === "ArrowLeft" && lb.i > 0) { lb.i--; renderLightbox(""); }
+  if (e.key === "ArrowRight" && lb.i < lb.items.length - 1) { lb.i++; renderLightbox(""); }
+});
+
+// 输入与筛选按钮
+let qTimer = null;
+$("q").addEventListener("input", e => {
+  view.q = e.target.value;
+  clearTimeout(qTimer);
+  qTimer = setTimeout(applyFilter, 180);
+});
+for (const btn of document.querySelectorAll(".chipbtn")) {
+  if (btn.dataset.filter === "all") btn.classList.add("on");
+  btn.addEventListener("click", () => {
+    for (const b of document.querySelectorAll(".chipbtn")) b.classList.toggle("on", b === btn);
+    view.kind = btn.dataset.filter;
+    applyFilter();
+  });
+}
 
 // 增量渲染：按 id 复用已有卡片，避免轮询把正在播放的视频掐掉、把滚动位置重置
 const mounted = new Map();   // id -> {node, at, sig}
@@ -472,7 +608,9 @@ async function load() {
       $("s-images").textContent = d.stats.images;
       $("s-videos").textContent = d.stats.videos;
       $("s-last").textContent = d.stats.last ? fmt(d.stats.last) : "—";
-      syncFeed(d.tasks);
+      allTasks.clear();
+      for (const t of d.tasks) allTasks.set(t.id, t);
+      applyFilter();
       $("updated").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN");
       $("refresh").classList.remove("spin");
     } catch (e) {
