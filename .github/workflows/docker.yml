@@ -35,17 +35,32 @@ jobs:
           docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
             python -m pytest tests -q -p no:cacheprovider
 
-      # 失败时把用例级输出贴到 Job Summary，便于排查（本地与 CI 差异常用这一手）
+      # 失败时：把用例级输出写进 Job Summary，同时用 commit status 的 description
+      # 带出关键一行（Actions 日志需要认证，status 描述是公开可读的）
       - name: 失败诊断
         if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          OUT=$(docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
+            python -m pytest tests -q -p no:cacheprovider -x --tb=long 2>&1 | tail -80) || true
           {
             echo "### 测试失败诊断"
             echo '```'
-            docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
-              python -m pytest tests -q -p no:cacheprovider -x --tb=long 2>&1 | tail -60
+            echo "$OUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # 取出最有信息量的一行：FAILED 行或 Error 行
+          KEY=$(echo "$OUT" | grep -E "^(FAILED|ERROR)" | head -3 | tr '\n' ' ' | cut -c1-130)
+          [ -z "$KEY" ] && KEY=$(echo "$OUT" | grep -iE "error|failed" | head -1 | cut -c1-130)
+          [ -z "$KEY" ] && KEY="no explicit failure line"
+
+          curl -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"failure\",\"context\":\"ci-diagnose\",\"description\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$KEY")}"
 
   build:
     # 不设 needs：test job 在 GitHub Runner 上与本仓库有兼容问题（同样命令换容器/换分支都通过），
