@@ -24,41 +24,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 依赖装错和用例失败要分开看：先单独装，装不上直接停，报错一眼能分辨
-      - name: 安装依赖
-        run: |
-          docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
-            python -m pip install --no-cache-dir -r requirements.txt pytest
-
+      # 装依赖和跑测试必须在「同一个容器」里：两条独立的 docker run 是两个容器，
+      # 前一条装的 pytest 随容器销毁而消失，后一条就会报
+      # "No module named pytest"。用 sh -c 把两步串在同一次运行里。
       - name: 单元测试
         run: |
-          docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
+          docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim sh -c "
+            python -m pip install --no-cache-dir -q -r requirements.txt pytest &&
             python -m pytest tests -q -p no:cacheprovider
+          "
 
-      # 失败诊断：Actions 日志需要认证才能读，所以把关键信息编码进
-      # artifact 名称（artifacts 列表公开可读），正文同时留在 Summary。
+      # 失败诊断：Actions 日志需要认证才能读，把关键一行编码进 artifact 名称
+      # （artifacts 列表公开可读），正文同时留在 Job Summary。
       - name: 失败诊断
         if: failure()
         run: |
           set +e
-          OUT=$(docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
-            python -m pytest tests -p no:cacheprovider --tb=line -q 2>&1)
-          RC=$?
+          OUT=$(docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim sh -c "
+            python -m pip install --no-cache-dir -q -r requirements.txt pytest &&
+            python -m pytest tests -p no:cacheprovider --tb=line -q
+          " 2>&1)
           echo "$OUT" > /tmp/ci-failure.txt
           {
-            echo "### 测试失败诊断（exit=$RC）"
+            echo "### 测试失败诊断"
             echo '```'
-            echo "$OUT" | tail -60
+            printf '%s\n' "$OUT" | tail -60
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # 短摘要：优先取 FAILED / ERROR 开头那一行
           KEY=$(printf '%s\n' "$OUT" | grep -E "^(FAILED|ERROR)" | head -1)
           [ -z "$KEY" ] && KEY=$(printf '%s\n' "$OUT" | grep -iE "(error|exception|assert)" | tail -1)
           [ -z "$KEY" ] && KEY=$(printf '%s\n' "$OUT" | tail -1)
           SAFE=$(printf '%s' "$KEY" | tr -cs 'A-Za-z0-9._-' '_' | cut -c1-100)
           [ -z "$SAFE" ] && SAFE="unknown"
-          echo "KEY=$SAFE"
           echo "ARTNAME=ci-fail-${SAFE}" >> "$GITHUB_ENV"
 
       - name: 上传诊断
@@ -70,8 +68,7 @@ jobs:
           retention-days: 3
 
   build:
-    # 不设 needs：test job 在 GitHub Runner 上与本仓库有兼容问题（同样命令换容器/换分支都通过），
-    # 先让镜像构建不被它阻塞；本地与容器内测试照常执行。
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
