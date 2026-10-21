@@ -298,3 +298,55 @@ def test_purge_keeps_running_task():
     removed = asyncio.run(aria.purge_info_hash(C(), "5aff2ae18da78eb04665db379a3d9d8e2d382102"))
     assert removed == 0
     assert "aria2.removeDownloadResult" not in calls
+
+
+def test_purge_removes_paused_record_via_force_remove():
+    """paused 记录用 removeDownloadResult 删不掉（实测报 GID not found），
+    必须先 forceRemove，否则同一磁力会被永久挡住。"""
+    calls = []
+
+    class C:
+        async def post(self, url, json=None, timeout=None):
+            method = json["method"]
+            calls.append((method, json["params"][-1] if method != "aria2.tellStopped" else None))
+            if method == "aria2.tellActive":
+                return FakeResp({"result": []})
+            if method == "aria2.tellWaiting":
+                return FakeResp({"result": [
+                    {"gid": "paused1", "status": "paused",
+                     "infoHash": "5aff2ae18da78eb04665db379a3d9d8e2d382102"}]})
+            if method == "aria2.tellStopped":
+                return FakeResp({"result": []})
+            return FakeResp({"result": "OK"})
+
+    aria = aria2.Aria2("http://x", "s")
+    removed = asyncio.run(aria.purge_info_hash(C(), "5aff2ae18da78eb04665db379a3d9d8e2d382102"))
+    methods = [m for m, _ in calls]
+    assert "aria2.forceRemove" in methods, f"paused 必须先 forceRemove：{methods}"
+    assert removed == 1
+    # forceRemove 必须在 removeDownloadResult 之前
+    assert methods.index("aria2.forceRemove") < methods.index("aria2.removeDownloadResult")
+
+
+def test_purge_skips_active_and_waiting():
+    """正在下载/排队的同一任务不能删，否则会把别人的下载掐掉。"""
+    calls = []
+
+    class C:
+        async def post(self, url, json=None, timeout=None):
+            method = json["method"]
+            calls.append(method)
+            if method == "aria2.tellActive":
+                return FakeResp({"result": [
+                    {"gid": "a1", "status": "active",
+                     "infoHash": "5aff2ae18da78eb04665db379a3d9d8e2d382102"}]})
+            if method == "aria2.tellWaiting":
+                return FakeResp({"result": [
+                    {"gid": "w1", "status": "waiting",
+                     "infoHash": "5aff2ae18da78eb04665db379a3d9d8e2d382102"}]})
+            return FakeResp({"result": []})
+
+    aria = aria2.Aria2("http://x", "s")
+    removed = asyncio.run(aria.purge_info_hash(C(), "5aff2ae18da78eb04665db379a3d9d8e2d382102"))
+    assert removed == 0
+    assert "aria2.forceRemove" not in calls and "aria2.removeDownloadResult" not in calls

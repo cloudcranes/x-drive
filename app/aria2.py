@@ -103,22 +103,35 @@ class Aria2:
         """
         target = info_hash.upper()
         removed = 0
-        for method, args in (("tellActive", None), ("tellWaiting", (0, 100)), ("tellStopped", (0, 100))):
+        for method in ("tellActive", "tellWaiting", "tellStopped"):
             try:
-                items = await self.call(client, method, *args) if args else await self.call(client, method)
+                if method == "tellActive":
+                    items = await self.call(client, method)
+                else:
+                    items = await self.call(client, method, 0, 100)
             except Exception:
                 continue
             for item in items or []:
                 if (item.get("infoHash") or "").upper() != target:
                     continue
-                status = item.get("status")
                 gid = item.get("gid")
-                if not gid or status not in (DONE, ERROR, REMOVED, "paused"):
+                status = item.get("status")
+                if not gid:
                     continue
+                if status in ("active", "waiting"):
+                    # 还在跑/排队的同一任务不动，交给上层去重处理
+                    continue
+                if status == "paused":
+                    # paused 的记录 removeDownloadResult 删不掉，必须先 forceRemove
+                    try:
+                        await self.call(client, "forceRemove", gid)
+                    except Exception:
+                        pass
                 try:
                     await self.call(client, "removeDownloadResult", gid)
                     removed += 1
                 except Exception:
+                    # 记录可能已被 forceRemove 转成 removed，再试一次也行
                     pass
         return removed
 
