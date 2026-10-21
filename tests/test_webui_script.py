@@ -169,6 +169,18 @@ def test_scan_accepts_regex_literals():
     assert scan(ok) == []
 
 
+def test_scan_accepts_plain_division():
+    """除号不能被当成正则开头，否则后面整段都会错位。"""
+    assert scan("const a = b / c / d;\nconst e = (f + g) / 2;") == []
+
+
+def test_scan_reports_unbalanced_braces_with_line():
+    """报错要带行号，否则 800 行里找一处失衡太费劲。"""
+    probs = scan("function a() {\n  if (x) {\n    y();\n  }\n")
+    assert probs, "少了右括号必须报出来"
+    assert any("第" in p for p in probs), "要带行号"
+
+
 def test_scan_accepts_template_and_comments():
     ok = """
 // 注释里的 " 不该算字符串
