@@ -211,3 +211,118 @@ def test_meta_failure_does_not_break_collect(tmp_path, monkeypatch):
     monkeypatch.setattr(meta, "cached", lambda *a, **k: None)
     data = web.collect()
     assert data["tasks"][0]["meta"] == {}
+
+
+# ---------------------------------------------------------------- javbus 优先
+
+def test_lookup_prefers_javbus(tmp_path, monkeypatch):
+    """javbus 有数据时不该再去抓 javdb（省一次 HTML 解析和请求）。"""
+    from app import javbus, meta
+
+    p = str(tmp_path / "m.json")
+    calls = []
+
+    async def fake_javbus_movie(code, client=None):
+        calls.append(code)
+        return {"code": code, "title": "javbus 的标题", "maker": "M", "actors": [],
+                "cover": "", "series": "", "director": "", "publisher": "",
+                "duration": "", "categories": [], "date": "", "rating": "",
+                "source": "javbus"}
+
+    monkeypatch.setattr(javbus, "movie", fake_javbus_movie)
+    monkeypatch.setattr(meta, "USE_JAVBUS", True)
+
+    class NoNet:
+        async def get(self, *a, **kw):
+            raise AssertionError("javbus 成功时不该再请求 javdb")
+
+        async def aclose(self):
+            pass
+
+    info = asyncio.run(meta.lookup("ABC-1", p, client=NoNet()))
+    assert info["title"] == "javbus 的标题"
+    assert calls == ["ABC-1"]
+    assert json.loads(Path(p).read_text(encoding="utf-8"))["ABC-1"]["source"] == "javbus"
+
+
+def test_lookup_falls_back_to_javdb(tmp_path, monkeypatch, detail_html, search_html):
+    """javbus 没数据（None）时必须回退到 javdb，不能就这么放弃。"""
+    from app import javbus, meta
+
+    p = str(tmp_path / "m.json")
+
+    async def no_javbus(code, client=None):
+        return None
+
+    monkeypatch.setattr(javbus, "movie", no_javbus)
+    monkeypatch.setattr(meta, "USE_JAVBUS", True)
+
+    class Fake:
+        async def get(self, url, **kw):
+            class R:
+                status_code = 200
+            r = R()
+            r.text = search_html if "/search" in url else detail_html
+            return r
+
+        async def aclose(self):
+            pass
+
+    info = asyncio.run(meta.lookup("MIMK-288", p, client=Fake()))
+    assert info["maker"] == "MOODYZ", "应回退到 javdb 的结果"
+
+
+def test_lookup_falls_back_when_javbus_raises(tmp_path, monkeypatch, detail_html, search_html):
+    """javbus 抛异常也要能回退，不能把异常抛给下载流程。"""
+    from app import javbus, meta
+
+    p = str(tmp_path / "m.json")
+
+    async def boom(code, client=None):
+        raise RuntimeError("javbus down")
+
+    monkeypatch.setattr(javbus, "movie", boom)
+    monkeypatch.setattr(meta, "USE_JAVBUS", True)
+
+    class Fake:
+        async def get(self, url, **kw):
+            class R:
+                status_code = 200
+            r = R()
+            r.text = search_html if "/search" in url else detail_html
+            return r
+
+        async def aclose(self):
+            pass
+
+    info = asyncio.run(meta.lookup("MIMK-288", p, client=Fake()))
+    assert info and info["maker"] == "MOODYZ"
+
+
+def test_lookup_skips_javbus_when_disabled(tmp_path, monkeypatch, detail_html, search_html):
+    from app import javbus, meta
+
+    p = str(tmp_path / "m.json")
+    called = []
+
+    async def fake_javbus(code, client=None):
+        called.append(code)
+        return {"title": "不该被用到"}
+
+    monkeypatch.setattr(javbus, "movie", fake_javbus)
+    monkeypatch.setattr(meta, "USE_JAVBUS", False)
+
+    class Fake:
+        async def get(self, url, **kw):
+            class R:
+                status_code = 200
+            r = R()
+            r.text = search_html if "/search" in url else detail_html
+            return r
+
+        async def aclose(self):
+            pass
+
+    info = asyncio.run(meta.lookup("MIMK-288", p, client=Fake()))
+    assert called == [], "关掉后不该碰 javbus"
+    assert info["maker"] == "MOODYZ"

@@ -18,7 +18,7 @@ import time
 
 import httpx
 
-from . import core
+from . import core, javbus
 
 log = logging.getLogger("x-drive.meta")
 
@@ -29,6 +29,8 @@ TIMEOUT = 20.0
 # 两次外部请求之间的最小间隔（秒），只在本进程内生效
 MIN_INTERVAL = float(os.getenv("META_MIN_INTERVAL", "1.5") or 0)
 CACHE_PATH = os.getenv("META_PATH", "/data/meta.json")
+# 优先用 javbus（JSON 接口，字段更全）；关掉或它挂了会回退到 javdb
+USE_JAVBUS = os.getenv("META_USE_JAVBUS", "1") not in ("0", "false", "False")
 
 _lock = threading.Lock()
 _last_call = 0.0
@@ -150,6 +152,17 @@ def _throttle() -> None:
         _last_call = time.monotonic()
 
 
+def _save(info: dict, code: str, path: str | None = None) -> None:
+    """写缓存。失败只记日志 —— 缓存写不进去不该让本次查询失败。"""
+    try:
+        with _lock:
+            data = load_cache(path)
+            data[code] = info
+            save_cache(data, path)
+    except OSError as exc:
+        log.warning("元数据缓存写入失败：%s", exc)
+
+
 async def lookup(code: str, path: str | None = None, client: httpx.AsyncClient | None = None,
                  timeout: float = TIMEOUT) -> dict | None:
     """按番号取元数据：先看缓存，没有再联网抓，抓到就写缓存。
@@ -167,6 +180,20 @@ async def lookup(code: str, path: str | None = None, client: httpx.AsyncClient |
     cli = client or httpx.AsyncClient(follow_redirects=True, timeout=timeout,
                                       headers={"User-Agent": UA})
     try:
+        # 优先 javbus：直接返回 JSON，字段更全（导演/片商/发行商/系列/精确时长），
+        # 不用解析 HTML。它挂了再回退到 javdb。
+        if USE_JAVBUS:
+            try:
+                info = await javbus.movie(code, client=cli)
+            except Exception as exc:
+                log.warning("javbus 查 %s 出错：%s", code, exc)
+                info = None
+            if info and info.get("title"):
+                if not info.get("rating"):
+                    info["rating"] = ""
+                _save(info, code, path)
+                return info
+
         _throttle()
         r = await cli.get(f"{BASE}/search", params={"q": code}, headers={"User-Agent": UA})
         if r.status_code != 200:
@@ -188,13 +215,7 @@ async def lookup(code: str, path: str | None = None, client: httpx.AsyncClient |
             return None
 
         info["url"] = BASE + path_part
-        try:
-            with _lock:
-                data = load_cache(path)
-                data[code] = info
-                save_cache(data, path)
-        except OSError as exc:
-            log.warning("元数据缓存写入失败：%s", exc)
+        _save(info, code, path)
         return info
     except Exception as exc:
         log.warning("javdb 查询 %s 失败：%s", code, exc)
