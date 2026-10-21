@@ -51,16 +51,22 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # 取出最有信息量的一行：FAILED 行或 Error 行
-          KEY=$(echo "$OUT" | grep -E "^(FAILED|ERROR)" | head -3 | tr '\n' ' ' | cut -c1-130)
-          [ -z "$KEY" ] && KEY=$(echo "$OUT" | grep -iE "error|failed" | head -1 | cut -c1-130)
-          [ -z "$KEY" ] && KEY="no explicit failure line"
-
-          curl -sS -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d "{\"state\":\"failure\",\"context\":\"ci-diagnose\",\"description\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$KEY")}"
+          # 把失败行写进 artifact 文件名：artifacts 列表是公开可读的，
+          # 这样即使拿不到 Actions 日志也能看到关键一行
+          KEY=$(echo "$OUT" | grep -E "^(FAILED|ERROR)" | head -2 | tr '\n' '_' | tr -cd 'A-Za-z0-9._-' | cut -c1-90)
+          [ -z "$KEY" ] && KEY=$(echo "$OUT" | grep -iE "error|failed" | head -1 | tr -cd 'A-Za-z0-9._-' | cut -c1-90)
+          [ -z "$KEY" ] && KEY="no-explicit-failure-line"
+          echo "$OUT" > /tmp/ci-failure.txt
+          mkdir -p /tmp/ci-art && cp /tmp/ci-failure.txt "/tmp/ci-art/failure-${KEY}.txt"
+          echo "artifact name hint: failure-${KEY}"
+        # 无论成功失败都上传，便于事后取回
+      - name: 上传诊断
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-${{ github.run_id }}
+          path: /tmp/ci-art/
+          retention-days: 3
 
   build:
     # 不设 needs：test job 在 GitHub Runner 上与本仓库有兼容问题（同样命令换容器/换分支都通过），
