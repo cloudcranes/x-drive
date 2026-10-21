@@ -28,13 +28,25 @@ class RpcError(RuntimeError):
 class Incomplete(RuntimeError):
     """状态显示完成但实际没有拿到完整内容（含 BT 元数据阶段误判）。"""
 
+class Stalled(RuntimeError):
+    """长时间没有任何进展（死种/没人做种），提前放弃以免白等几小时。"""
+
 
 class Aria2:
-    def __init__(self, endpoint: str, secret: str = "", poll: float = 5.0, timeout: float = 7200.0):
+    def __init__(
+        self,
+        endpoint: str,
+        secret: str = "",
+        poll: float = 5.0,
+        timeout: float = 7200.0,
+        stall_timeout: float = 900.0,
+    ):
         self.endpoint = endpoint if endpoint.endswith("/jsonrpc") else endpoint.rstrip("/") + "/jsonrpc"
         self.secret = secret
         self.poll = poll
         self.timeout = timeout
+        # 连续这么久没有任何新字节就判定为死种（0 表示不检测）
+        self.stall_timeout = stall_timeout
         self._id = 0
 
     def _params(self, *args) -> list:
@@ -104,6 +116,10 @@ class Aria2:
         last = -1.0
         current = gid
         seen: set[str] = set()
+        # 停滞检测：记录上一次「有字节进展」的时刻
+        last_progress_at = time.monotonic()
+        last_completed = 0
+        progress_started = False
         while True:
             status = await self.call(client, "tellStatus", current, STATUS_FIELDS)
             st = status.get("status")
@@ -120,6 +136,24 @@ class Aria2:
 
             total = int(status.get("totalLength") or 0)
             done = int(status.get("completedLength") or 0)
+            # 元数据和校验阶段完成的字节数会来回跳，只有下载中才算进展
+            if st == "active" and done > last_completed:
+                last_progress_at = time.monotonic()
+                progress_started = True
+            last_completed = max(last_completed, done)
+
+            if (
+                self.stall_timeout
+                and progress_started
+                and st == "active"
+                and time.monotonic() - last_progress_at > self.stall_timeout
+            ):
+                raise Stalled(
+                    f"{int(self.stall_timeout)} 秒没有任何进展"
+                    f"（停在 {done}/{total} 字节，连接 {status.get('connections') or 0} 个），"
+                    "可能是死种或没人做种"
+                )
+
             percent = (done / total) if total else 0
             speed = int(status.get("downloadSpeed") or 0)
             if progress and (percent - last >= 0.02 or st != "active"):

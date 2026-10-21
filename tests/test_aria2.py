@@ -179,3 +179,59 @@ def test_abort_survives_missing_gid():
 
     aria = aria2.Aria2("http://x", "s")
     asyncio.run(aria.abort(C(), "g1"))     # 不应抛异常打断收尾
+
+
+def test_wait_gives_up_on_stalled_torrent():
+    """死种会一直挂着直到总超时（2小时），必须提前放弃。"""
+    aria = aria2.Aria2("http://x", "s", poll=0, timeout=10**6, stall_timeout=0)
+    # 手工模拟：始终没有新字节，把 stall_timeout 改成 0 秒使其立刻触发
+    aria.stall_timeout = 0.001
+    calls = {"n": 0}
+
+    async def call(client, method, *args):
+        calls["n"] += 1
+        # 第一次给一点进展，之后完全不动
+        done = "100" if calls["n"] > 1 else "0"
+        return {"status": "active", "totalLength": "1000", "completedLength": done,
+                "downloadSpeed": "0", "connections": "3"}
+
+    aria.call = call
+    with pytest.raises(aria2.Stalled) as exc:
+        asyncio.run(aria.wait(None, "g1"))
+    assert "没有任何进展" in str(exc.value)
+
+
+def test_stall_detection_ignores_metadata_phase():
+    """元数据/校验阶段没有字节进展是正常的，不能误判为死种。"""
+    aria = aria2.Aria2("http://x", "s", poll=0, timeout=3, stall_timeout=0.001)
+    calls = {"n": 0}
+
+    async def call(client, method, *args):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            # 元数据阶段：totalLength=0，不算进展
+            return {"status": "active", "totalLength": "0", "completedLength": "0",
+                    "downloadSpeed": "0", "connections": "5"}
+        return {"status": "complete", "totalLength": "1000", "completedLength": "1000",
+                "downloadSpeed": "0"}
+
+    aria.call = call
+    status = asyncio.run(aria.wait(None, "g1"))
+    assert status["status"] == "complete"
+
+
+def test_stall_timeout_zero_disables_check():
+    """配置成 0 应该关掉检测（留给需要无脑等待的场景）。"""
+    aria = aria2.Aria2("http://x", "s", poll=0, timeout=2, stall_timeout=0)
+    calls = {"n": 0}
+
+    async def call(client, method, *args):
+        calls["n"] += 1
+        if calls["n"] > 50:
+            return {"status": "complete", "totalLength": "1", "completedLength": "1"}
+        return {"status": "active", "totalLength": "1000", "completedLength": "0",
+                "downloadSpeed": "0"}
+
+    aria.call = call
+    status = asyncio.run(aria.wait(None, "g1"))
+    assert status["status"] == "complete"

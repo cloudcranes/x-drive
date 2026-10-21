@@ -44,6 +44,8 @@ UPLOAD_CHUNK = os.getenv("UPLOAD_CHUNK", "64M").strip() or "64M"
 # 失败自动重试：次数与首次退避秒数（指数增长，封顶 60s）
 RETRIES = max(0, int(os.getenv("RETRIES", "2") or 2))
 RETRY_BASE_DELAY = float(os.getenv("RETRY_BASE_DELAY", "3") or 3)
+# 连续这么久没有任何新字节就放弃（死种），0 表示不检测
+STALL_TIMEOUT = float(os.getenv("STALL_TIMEOUT", "900") or 0)
 TMP_ROOT = os.getenv("TMP_ROOT", "/downloads")
 
 BIND = os.getenv("WEB_BIND", "0.0.0.0")
@@ -216,7 +218,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
     work = pipeline.job_dir(TMP_ROOT, code or job_id)
 
     async def main() -> None:
-        aria = aria2.Aria2(ARIA2_RPC, ARIA2_SECRET, poll=3.0)
+        aria = aria2.Aria2(ARIA2_RPC, ARIA2_SECRET, poll=3.0, stall_timeout=STALL_TIMEOUT)
         async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
             pipeline.cleanup(work)
             work.mkdir(parents=True, exist_ok=True)

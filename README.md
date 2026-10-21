@@ -11,6 +11,38 @@ bot: ⏳ 已收到 番号 SSIS-123…
 Drive: X-Drive/SSIS-123/SSIS-123.mp4
 ```
 
+## 性能基线（实测，2026-10）
+
+改性能前先看这些数字，避免在已经到顶的地方反复折腾。
+
+### 下载端
+
+| 项目 | 实测 | 说明 |
+|---|---|---|
+| 服务器出网带宽 | ~26 MB/s（单连接 HTTP） | ovh 100MB 测试文件实测 26227467 B/s |
+| BT 实际下载 | ~32 MB/s（150 秒下完 4.87GB） | 已接近/超过单连接带宽，说明带宽是瓶颈 |
+| aria2 参数 | split=64, max-connection-per-server=32, bt-max-peers=128 | 已相当激进，无需再调 |
+| tracker 列表 | 128 条，每日自动更新 | `UPDATE_TRACKERS=true`，`/config/tracker.log` 可查 |
+| 做种 | seed-ratio=1.0, seed-time=0 | 上传量达到下载量即停，不占长期硬盘 |
+
+**结论：下载端已经吃满带宽，没有优化空间。** 觉得慢多半是种子本身 peer 少。
+
+### 上传端
+
+| 配置 | 300MB 单文件中位耗时 |
+|---|---|
+| transfers=2, chunk=64M（旧） | 52s |
+| **transfers=4, chunk=64M（现用）** | **28s** |
+| transfers=8, chunk=64M | 48s |
+| chunk=128M | 69s |
+
+网络抖动很大（同配置单次 12–55s），必须多次测量取中位数。参数可用
+`UPLOAD_TRANSFERS` / `UPLOAD_CHUNK` 覆盖。
+
+### 本地计算
+
+状态读写、番号识别、目录扫描都在毫秒级（见 `tests/bench.py`），不是瓶颈。
+
 ## 工作方式
 
 1. 从消息里抽出磁力/直链（可混在文字里；一条消息多个链接会逐个处理）

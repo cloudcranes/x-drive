@@ -50,6 +50,7 @@ class Config:
     metrics_path: str = "/data/metrics.json"
     daily_upload_gb: int = 0
     magnet_timeout: float = 7200.0
+    stall_timeout: float = 900.0
     aria2_rpc: str = "http://aria2:6800"
     aria2_secret: str = ""
     aria2_poll: float = 5.0
@@ -87,6 +88,7 @@ class Config:
             metrics_path=os.getenv("METRICS_PATH", "/data/metrics.json"),
             daily_upload_gb=int(os.getenv("DAILY_UPLOAD_GB", "0") or 0),
             magnet_timeout=float(os.getenv("MAGNET_TIMEOUT", "7200") or 7200),
+            stall_timeout=float(os.getenv("STALL_TIMEOUT", "900") or 0),
             aria2_rpc=os.getenv("ARIA2_RPC", "http://aria2:6800").strip(),
             aria2_secret=os.getenv("ARIA2_RPC_SECRET", "").strip(),
             aria2_poll=float(os.getenv("ARIA2_POLL", "5") or 5),
@@ -286,7 +288,8 @@ async def run_task(
     chat_id: int | None = None,
 ) -> str:
     """番号 → 下载（磁力/直链都走 aria2）→ 整理 → 按番号上传 Drive。"""
-    aria = aria2.Aria2(cfg.aria2_rpc, cfg.aria2_secret, cfg.aria2_poll, cfg.magnet_timeout)
+    aria = aria2.Aria2(cfg.aria2_rpc, cfg.aria2_secret, cfg.aria2_poll,
+                       cfg.magnet_timeout, cfg.stall_timeout)
     sources = fetcher.sources(text)
     if not sources:
         return (
