@@ -235,3 +235,66 @@ def test_stall_timeout_zero_disables_check():
     aria.call = call
     status = asyncio.run(aria.wait(None, "g1"))
     assert status["status"] == "complete"
+
+
+def test_info_hash_extracted_from_magnet():
+    m = "magnet:?xt=urn:btih:5AFF2AE18DA78EB04665DB379A3D9D8E2D382102&dn=mimk-288ch"
+    assert aria2.info_hash_of(m) == "5aff2ae18da78eb04665db379a3d9d8e2d382102"
+    assert aria2.info_hash_of("magnet:?dn=onlyname") == ""
+    assert aria2.info_hash_of("") == ""
+
+
+def test_add_magnet_clears_stale_same_infohash():
+    """同一 InfoHash 的旧记录会让 aria2 直接拒绝新任务，必须先清掉。"""
+    calls = []
+
+    class C:
+        async def post(self, url, json=None, timeout=None):
+            method = json["method"]
+            calls.append(method)
+            if method == "aria2.tellActive":
+                return FakeResp({"result": []})
+            if method == "aria2.tellWaiting":
+                return FakeResp({"result": []})
+            if method == "aria2.tellStopped":
+                return FakeResp({"result": [
+                    {"gid": "old1", "status": "complete",
+                     "infoHash": "5aff2ae18da78eb04665db379a3d9d8e2d382102"},
+                    {"gid": "old2", "status": "error",
+                     "infoHash": "5aff2ae18da78eb04665db379a3d9d8e2d382102"},
+                    {"gid": "other", "status": "complete", "infoHash": "deadbeef"},
+                ]})
+            if method == "aria2.addUri":
+                return FakeResp({"result": "newgid"})
+            return FakeResp({"result": "OK"})
+
+    aria = aria2.Aria2("http://x", "s")
+    gid = asyncio.run(aria.add_magnet(
+        C(), "magnet:?xt=urn:btih:5AFF2AE18DA78EB04665DB379A3D9D8E2D382102", "/d"))
+    assert gid == "newgid"
+    removed = [c for c in calls if c == "aria2.removeDownloadResult"]
+    assert len(removed) == 2, f"应清掉 2 条同种子旧记录，实际 {calls}"
+    # 别的种子不能动
+    assert "other" not in str(calls)
+
+
+def test_purge_keeps_running_task():
+    """正在下载的同一任务不能被删（那属于上层去重该管的事）。"""
+    calls = []
+
+    class C:
+        async def post(self, url, json=None, timeout=None):
+            method = json["method"]
+            calls.append(method)
+            if method == "aria2.tellActive":
+                return FakeResp({"result": [
+                    {"gid": "running", "status": "active",
+                     "infoHash": "5aff2ae18da78eb04665db379a3d9d8e2d382102"}]})
+            if method in ("aria2.tellWaiting", "aria2.tellStopped"):
+                return FakeResp({"result": []})
+            return FakeResp({"result": "OK"})
+
+    aria = aria2.Aria2("http://x", "s")
+    removed = asyncio.run(aria.purge_info_hash(C(), "5aff2ae18da78eb04665db379a3d9d8e2d382102"))
+    assert removed == 0
+    assert "aria2.removeDownloadResult" not in calls

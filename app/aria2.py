@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 
 import httpx
@@ -20,6 +21,12 @@ STATUS_FIELDS = [
     "uploadSpeed", "errorMessage", "files", "dir", "bittorrent", "connections",
     "followedBy", "belongsTo",
 ]
+
+
+def info_hash_of(magnet: str) -> str:
+    """从磁力链接里取 btih（支持 v1 的 40 位 hex）。取不到返回空串。"""
+    m = re.search(r"xt=urn:btih:([0-9a-fA-F]{40})", magnet or "")
+    return m.group(1).lower() if m else ""
 
 
 class RpcError(RuntimeError):
@@ -77,9 +84,43 @@ class Aria2:
             "auto-file-renaming": "false",
             "allow-overwrite": "true",
         }
+        # 同一个种子重复提交时，aria2 会因为我们保留的旧记录（失败任务不清记录）
+        # 直接报 "InfoHash ... is already registered"。先把同名记录清掉。
+        info_hash = info_hash_of(magnet)
+        if info_hash:
+            removed = await self.purge_info_hash(client, info_hash)
+            if removed:
+                log.info("清掉 %d 条同种子的旧记录 %s", removed, info_hash[:12])
         gid = await self.call(client, "addUri", [magnet], options)
         log.info("已提交磁力任务 gid=%s dir=%s", gid, directory)
         return gid
+
+    async def purge_info_hash(self, client, info_hash: str) -> int:
+        """删掉会与新增任务冲突的旧记录。
+
+        只动「已完成/已出错」的历史记录；正在跑的同一任务不碰（那属于重复提交，
+        交给上层的去重逻辑处理）。
+        """
+        target = info_hash.upper()
+        removed = 0
+        for method, args in (("tellActive", None), ("tellWaiting", (0, 100)), ("tellStopped", (0, 100))):
+            try:
+                items = await self.call(client, method, *args) if args else await self.call(client, method)
+            except Exception:
+                continue
+            for item in items or []:
+                if (item.get("infoHash") or "").upper() != target:
+                    continue
+                status = item.get("status")
+                gid = item.get("gid")
+                if not gid or status not in (DONE, ERROR, REMOVED, "paused"):
+                    continue
+                try:
+                    await self.call(client, "removeDownloadResult", gid)
+                    removed += 1
+                except Exception:
+                    pass
+        return removed
 
     async def add_uri(self, client, url: str, directory: str, filename: str = "") -> str:
         options = {
