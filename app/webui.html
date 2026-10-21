@@ -181,6 +181,19 @@
     box-shadow:0 16px 30px -22px rgba(0,0,0,.95), 0 0 22px -14px rgba(62,186,244,.75)}
   .card.hl{border-color:rgba(62,186,244,.6); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
 
+  /* 封面：等比填充，固定比例避免不同图尺寸把网格撑乱 */
+  .card-cover{aspect-ratio:16/9; overflow:hidden; background:#0b0b0b; border-bottom:1px solid var(--line-soft)}
+  .card-cover img{width:100%; height:100%; object-fit:cover; display:block; opacity:.92;
+    transition:opacity .18s, transform .3s}
+  .card:hover .card-cover img{opacity:1; transform:scale(1.03)}
+  .card-title{padding:9px 13px 0; font-size:12.5px; line-height:1.45; color:var(--text);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .card-actors{padding:8px 13px 0; display:flex; flex-wrap:wrap; gap:5px}
+  .actor-chip{font:inherit; font-size:10.5px; padding:2px 8px; border-radius:999px; cursor:pointer;
+    color:var(--violet); border:1px solid rgba(201,163,255,.28); background:rgba(201,163,255,.07)}
+  .actor-chip:hover{border-color:rgba(201,163,255,.6); background:rgba(201,163,255,.14)}
+  .tag.rate{color:#ffd479; border-color:rgba(255,212,121,.3); background:rgba(255,212,121,.07)}
+
   .card-head{display:flex; align-items:flex-start; gap:9px; padding:13px 13px 0}
   .series{font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.1em;
     text-transform:uppercase; color:var(--faint); padding-top:3px; flex:none; max-width:38%;
@@ -516,7 +529,10 @@ function matches(t) {
   const q = norm(view.q);
   if (!q) return true;
   // 原文 + 去掉分隔符的两份文本都比一遍，SSIS123 / fc2ppv4422 都能搜到
-  const hay = [t.code, t.series, t.source, t.path, (t.files || []).join(" ")]
+  const m = t.meta || {};
+  const hay = [t.code, t.series, t.source, t.path, (t.files || []).join(" "),
+               m.title, m.maker, m.director, (m.actors || []).join(" "),
+               (m.categories || []).join(" "), m.date]
     .map(v => (v || "").toLowerCase()).join(" ");
   return hay.includes(view.q.trim().toLowerCase()) || strip(hay).includes(q);
 }
@@ -614,17 +630,55 @@ function renderActiveFilters() {
 
 // ── 卡片
 function card(t) {
+  const m = t.meta || {};
   const node = el("article", "card");
   const head = el("div", "card-head");
   head.append(el("span", "series", t.series || "—"));
   head.append(el("span", "code", t.code));
   node.append(head);
 
+  // 封面：走同源代理，避免浏览器直连图床被拦
+  if (m.cover) {
+    const wrap = el("div", "card-cover");
+    const img = el("img");
+    img.loading = "lazy";
+    img.src = BASE + "/proxy?u=" + encodeURIComponent(m.cover);
+    img.alt = "";
+    wrap.append(img);
+    node.append(wrap);
+  }
+
+  // 标题是元数据里最有用的信息，放不下就截断
+  if (m.title) {
+    const ti = el("div", "card-title", m.title);
+    ti.title = m.title;
+    node.append(ti);
+  }
+
   const body = el("div", "card-body");
   const kind = el("span", "tag " + (t.cat === "video" ? "vid" : "img"), t.kind);
   body.append(kind);
   body.append(el("span", "tag", t.size_text));
+  if (m.maker) body.append(el("span", "tag", m.maker));
+  if (m.rating) body.append(el("span", "tag rate", "★ " + m.rating));
   node.append(body);
+
+  // 演员单独一行，点了能当筛选条件
+  const actors = m.actors || [];
+  if (actors.length) {
+    const row = el("div", "card-actors");
+    for (const name of actors.slice(0, 4)) {
+      const a = el("button", "actor-chip", name);
+      a.addEventListener("click", e => {
+        e.stopPropagation();
+        view.q = name;
+        $("q").value = name;
+        applyFilter();
+      });
+      row.append(a);
+    }
+    node.append(row);
+  }
 
   const foot = el("div", "card-foot");
   foot.append(el("span", "time", fmt(t.at)));
@@ -647,7 +701,8 @@ function card(t) {
 // 增量渲染：按 id 复用已有卡片，轮询时只重排、不重建
 const mounted = new Map();
 let inflight = null;
-const sigOf = t => [t.at, t.code, t.kind, t.size_text, t.link, t.series].join("~");
+const sigOf = t => [t.at, t.code, t.kind, t.size_text, t.link, t.series,
+  (t.meta && (t.meta.title || "") + "|" + (t.meta.cover || "")) || ""].join("~");
 
 function syncFeed(tasks) {
   const feed = $("feed");

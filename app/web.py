@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from . import aria2, cleanup, codes, core, diskspace, fetcher, pipeline, retry
+from . import aria2, cleanup, codes, core, diskspace, fetcher, meta, pipeline, retry
 
 log = logging.getLogger("x-drive.web")
 
@@ -304,6 +304,13 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
 
         policy.history.extend(up_policy.history)
 
+        # 元数据是锦上添花：查不到也要把归档记录写进去，不能因此丢记录
+        info = None
+        try:
+            info = asyncio.run(meta.lookup(folder))
+        except Exception as exc:
+            log.warning("查 %s 的元数据失败：%s", folder, exc)
+
         core.update_state(STATE, {
             folder: {
                 "code": folder,
@@ -313,6 +320,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
                 "size": size,
                 "source": source[:300],
                 "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "meta": info or {},
             }
         })
         job_update(job_id, stage="done", link=link or "", code=folder, size=size,
@@ -486,6 +494,29 @@ def start_job(source: str, code: str, info: dict | None = None) -> str:
     return job_id
 
 
+def backfill_meta(limit: int = 50) -> dict:
+    """给还没有元数据的归档补抓。逐个来，失败的跳过，不影响别的。
+
+    老归档是在这个功能之前入库的，没有 meta 字段；补一次之后就都有缓存了。
+    """
+    state = core.load_state(STATE)
+    todo = [(k, (v.get("code") or k)) for k, v in state.items()
+            if isinstance(v, dict) and not v.get("meta")]
+    done, failed = [], []
+    for key, code in todo[:max(0, limit)]:
+        try:
+            info = asyncio.run(meta.lookup(code))
+        except Exception as exc:
+            log.warning("补抓 %s 元数据失败：%s", code, exc)
+            info = None
+        if not info:
+            failed.append(code)
+            continue
+        core.update_state(STATE, {key: {**state[key], "meta": info}})
+        done.append(code)
+    return {"ok": True, "updated": done, "failed": failed,
+            "remaining": max(0, len(todo) - len(done) - len(failed))}
+
 def build_cleanup_plan(dry_run: bool = True) -> dict:
     """算出该删哪些归档；dry_run 时只给清单不执行。"""
     state = core.load_state(STATE)
@@ -591,6 +622,8 @@ def collect() -> dict:
                 "cat": "video" if kind.startswith("视频") else "image",
                 "source": item.get("source") or "",
                 "is_magnet": (item.get("source") or "").lower().startswith("magnet:"),
+                # 元数据只读缓存，不在渲染时联网；没抓过的用 backfill 补
+                "meta": item.get("meta") or meta.cached(code) or {},
             }
         )
     items.sort(key=lambda t: t["at"] or "", reverse=True)
@@ -856,6 +889,11 @@ class Handler(BaseHTTPRequestHandler):
             info = peek(magnet)
             self._json({"ok": bool(info), "info": info}, 200 if info else 502)
             return
+        if path == "/api/meta/backfill":
+            # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
+            limit = int((parse_qs(parts.query).get("limit", ["50"]) or ["50"])[0] or 50)
+            self._json(backfill_meta(limit=limit))
+            return
         if path == "/api/cleanup/preview":
             self._json({"ok": True, **build_cleanup_plan(dry_run=True)})
             return
@@ -871,10 +909,14 @@ class Handler(BaseHTTPRequestHandler):
         """同源转发 whatslink 的截图，避免浏览器直连第三方域名。"""
         url = (query.get("u") or [""])[0]
         host = (urlsplit(url).hostname or "").lower()
-        if not url or host not in ("whatslink.info", "www.whatslink.info"):
+        # 只放行白名单：截图来自 whatslink，封面来自 javdb 的图床
+        allowed = ("whatslink.info", "www.whatslink.info", "jdbstatic.com")
+        if not url or not any(host == h or host.endswith("." + h) for h in allowed):
             self._send(400, b"bad proxy url", "text/plain; charset=utf-8")
             return
-        req_headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://whatslink.info/"}
+        referer = ("https://whatslink.info/" if "whatslink" in host
+                   else "https://javdb.com/")
+        req_headers = {"User-Agent": "Mozilla/5.0", "Referer": referer}
         for attempt in range(3):          # 上游偶发 500，重试两次基本就稳
             try:
                 req = urllib.request.Request(url, headers=req_headers)
