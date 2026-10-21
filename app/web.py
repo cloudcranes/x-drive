@@ -813,6 +813,38 @@ class Handler(BaseHTTPRequestHandler):
             plan = build_cleanup_plan(dry_run=False)
             self._json({"ok": True, **plan})
             return
+        if path == "/api/archive/delete":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 8192)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            code = (payload.get("code") or "").strip()
+            if not code:
+                self._json({"ok": False, "error": "缺少番号"}, 400)
+                return
+            state = core.load_state(STATE)
+            if code not in state:
+                self._json({"ok": False, "error": f"{code} 不在归档记录里"}, 404)
+                return
+            target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
+            # 删除不可逆：没显式 confirm 只回报将删什么
+            if not payload.get("confirm"):
+                self._json({"ok": True, "code": code, "target": target,
+                            "files": state[code].get("files") or [],
+                            "size": state[code].get("size") or 0,
+                            "hint": "需要 confirm=true 才会真正删除 Drive 目录与归档记录"}, 200)
+                return
+            done = purge_archives([code])
+            if not done:
+                self._json({"ok": False, "error": f"删除 {code} 失败，记录已保留可重试"}, 502)
+                return
+            self._json({"ok": True, "deleted": done})
+            return
         if path == "/api/aria2/remove":
             if not self._authorized():
                 self._drain()

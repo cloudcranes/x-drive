@@ -54,6 +54,11 @@
   .side-block{display:flex; flex-direction:column; gap:2px; min-height:0}
   .side-block.series{max-height:42%}
   .side-block.month{max-height:30%}
+  .dimtabs{display:flex; gap:3px; padding:0 2px 6px}
+  .dimtabs button{flex:1; font:inherit; font-size:10.5px; padding:4px 0; cursor:pointer;
+    border-radius:6px; border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
+  .dimtabs button.on{color:var(--cyan); border-color:rgba(62,186,244,.45); background:rgba(62,186,244,.1)}
+  .dimtabs button:hover{border-color:rgba(62,186,244,.35)}
   .side-block .nav{overflow-y:auto; min-height:0; margin-right:-4px; padding-right:4px}
   .brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.02em; font-size:17px;
     padding:0 4px}
@@ -215,6 +220,10 @@
     padding:1px 0; white-space:nowrap}
   .card-foot a:hover{text-decoration:underline}
   .card-foot .nolink{margin-left:auto; color:var(--faint)}
+  .card-del{font:inherit; font-family:var(--mono); font-size:10px; padding:2px 8px; cursor:pointer;
+    border-radius:5px; border:1px solid transparent; background:transparent; color:var(--faint);
+    transition:color .15s, border-color .15s, background .15s}
+  .card-del:hover{color:#ff8a8a; border-color:rgba(255,138,138,.4); background:rgba(255,138,138,.09)}
 
   .empty{margin:26px var(--pad) 60px; padding:44px 22px; color:var(--muted); text-align:center;
     border:1px dashed var(--line); border-radius:var(--radius)}
@@ -359,7 +368,13 @@
   </div>
 
   <div class="side-block series">
-    <div class="side-h">系列 <button id="clear-series" type="button" hidden>清除</button></div>
+    <div class="side-h"><span id="dim-label">系列</span>
+      <button id="clear-series" type="button" hidden>清除</button></div>
+    <div class="dimtabs" id="dimtabs">
+      <button type="button" data-dim="series" class="on">系列</button>
+      <button type="button" data-dim="actor">演员</button>
+      <button type="button" data-dim="maker">片商</button>
+    </div>
     <nav class="nav" id="nav-series"></nav>
   </div>
 
@@ -515,7 +530,9 @@ function authInit(init) {
 }
 
 // ── 视图状态
-const view = {q: "", kind: "all", series: "", month: "", sort: "new"};
+const view = {q: "", kind: "all", series: "", month: "", sort: "new",
+  // 分类浏览的维度：系列 / 演员 / 片商。三者共用一个侧栏位，省地方。
+  dim: "series"};
 let sideExpanded = false;   // 系列列表是否展开全部
 const allTasks = new Map();
 
@@ -524,7 +541,10 @@ const KIND_LABEL = {all: "全部归档", video: "只看视频", image: "只看�
 function matches(t) {
   if (view.kind === "video" && t.cat !== "video") return false;
   if (view.kind === "image" && t.cat !== "image") return false;
-  if (view.series && t.series !== view.series) return false;
+  if (view.series) {
+    const v = dimValues(t, view.dim);
+    if (!v.includes(view.series)) return false;
+  }
   if (view.month && t.month !== view.month) return false;
   const q = norm(view.q);
   if (!q) return true;
@@ -536,6 +556,16 @@ function matches(t) {
     .map(v => (v || "").toLowerCase()).join(" ");
   return hay.includes(view.q.trim().toLowerCase()) || strip(hay).includes(q);
 }
+
+// 一个归档在某个维度上有哪些取值（演员/片商可能多个）
+function dimValues(t, dim) {
+  const m = t.meta || {};
+  if (dim === "actor") return (m.actors || []).length ? m.actors : ["未知演员"];
+  if (dim === "maker") return m.maker ? [m.maker] : ["未知片商"];
+  return [t.series || "其他"];
+}
+
+const DIM_LABEL = {series: "系列", actor: "演员", maker: "片商"};
 
 const norm = s => (s || "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "");
 const strip = s => (s || "").replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "");
@@ -551,7 +581,10 @@ const SORTS = {
 function renderSidebar() {
   const bySeries = new Map(), byMonth = new Map();
   for (const t of allTasks.values()) {
-    bySeries.set(t.series || "其他", (bySeries.get(t.series || "其他") || 0) + 1);
+    // 按当前维度累加；一个归档挂多个演员时每个演员都算一次
+    for (const name of dimValues(t, view.dim)) {
+      bySeries.set(name, (bySeries.get(name) || 0) + 1);
+    }
     if (t.month) byMonth.set(t.month, (byMonth.get(t.month) || 0) + 1);
   }
   const fill = (box, entries, key) => {
@@ -579,7 +612,7 @@ function renderSidebar() {
   const shown = sideExpanded ? seriesEntries : seriesEntries.slice(0, 12);
   fill($("nav-series"), shown, "series");
   if (seriesEntries.length > shown.length) {
-    const more = el("button", "it more", `展开其余 ${seriesEntries.length - shown.length} 个系列`);
+    const more = el("button", "it more", `展开其余 ${seriesEntries.length - shown.length} 个${DIM_LABEL[view.dim]}`);
     more.type = "button";
     more.addEventListener("click", () => { sideExpanded = true; renderSidebar(); });
     $("nav-series").append(more);
@@ -590,6 +623,8 @@ function renderSidebar() {
     $("nav-series").append(less);
   }
   fill($("nav-month"), [...byMonth.entries()].sort((a, b) => b[0].localeCompare(a[0])), "month");
+  $("dim-label").textContent = DIM_LABEL[view.dim];
+  for (const b of $("dimtabs").children) b.classList.toggle("on", b.dataset.dim === view.dim);
   $("clear-series").hidden = !view.series;
   $("clear-month").hidden = !view.month;
 }
@@ -600,7 +635,7 @@ function renderActiveFilters() {
   box.textContent = "";
   const chips = [];
   if (view.kind !== "all") chips.push(["类型：" + (view.kind === "video" ? "视频" : "图片"), () => { view.kind = "all"; syncKindSeg(); }]);
-  if (view.series) chips.push(["系列：" + view.series, () => { view.series = ""; renderSidebar(); }]);
+  if (view.series) chips.push([DIM_LABEL[view.dim] + "：" + view.series, () => { view.series = ""; renderSidebar(); }]);
   if (view.month) chips.push([fmtMonth(view.month), () => { view.month = ""; renderSidebar(); }]);
   if (view.q.trim()) chips.push(["“" + view.q.trim() + "”", () => { view.q = ""; $("q").value = ""; }]);
 
@@ -682,6 +717,14 @@ function card(t) {
 
   const foot = el("div", "card-foot");
   foot.append(el("span", "time", fmt(t.at)));
+  const del = el("button", "card-del", "删除");
+  del.type = "button";
+  del.title = "删除 Drive 目录与归档记录";
+  del.addEventListener("click", e => {
+    e.stopPropagation();
+    askDelete(t);
+  });
+  foot.append(del);
   if (t.link) {
     const a = el("a", null, "Drive ↗");
     a.href = t.link; a.target = "_blank"; a.rel = "noopener";
@@ -696,6 +739,51 @@ function card(t) {
     if (t.link) window.open(t.link, "_blank", "noopener");
   });
   return node;
+}
+
+// 删除归档：两段式。先问服务端「将删什么」，把番号和体积摆给用户看，
+// 再让用户确认；确认后才带 confirm=true 真删。删除不可逆，不做一键删。
+async function askDelete(t) {
+  let info = null;
+  try {
+    const r = await fetch(BASE + "/api/archive/delete", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code: t.code}),
+    }));
+    info = await r.json();
+  } catch (e) {
+    flash("查询删除目标失败：" + e.message, true);
+    return;
+  }
+  if (!info || !info.ok) {
+    flash((info && info.error) || "无法删除", true);
+    return;
+  }
+  const size = t.size_text || "";
+  const n = (info.files || []).length;
+  const ok = confirm(`确定删除 ${t.code}？\n\n`
+    + `将删除 Drive 目录：X-Drive/${t.code}\n`
+    + `包含 ${n} 个文件 · ${size}\n\n`
+    + `此操作不可撤销。`);
+  if (!ok) return;
+  try {
+    const r2 = await fetch(BASE + "/api/archive/delete", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code: t.code, confirm: true}),
+    }));
+    const res = await r2.json();
+    if (res && res.ok) {
+      flash(`${t.code} 已删除`);
+      allTasks.delete(t.id);
+      mounted.get(t.id)?.node.remove();
+      mounted.delete(t.id);
+      load();
+    } else {
+      flash((res && res.error) || "删除失败", true);
+    }
+  } catch (e) {
+    flash("删除失败：" + e.message, true);
+  }
 }
 
 // 增量渲染：按 id 复用已有卡片，轮询时只重排、不重建
@@ -773,6 +861,14 @@ $("kindseg").addEventListener("click", e => {
 });
 $("sortsel").addEventListener("change", e => { view.sort = e.target.value; applyFilter(); });
 $("clear-series").addEventListener("click", () => { view.series = ""; renderSidebar(); applyFilter(); });
+$("dimtabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-dim]");
+  if (!b) return;
+  view.dim = b.dataset.dim;
+  view.series = "";      // 换维度时旧的选择已无意义
+  renderSidebar();
+  applyFilter();
+});
 $("clear-month").addEventListener("click", () => { view.month = ""; renderSidebar(); applyFilter(); });
 
 let qTimer = null;
@@ -816,6 +912,22 @@ $("queuebtn").addEventListener("click", () => $("queue").classList.contains("ope
 $("queue-close").addEventListener("click", closeQueue);
 
 // ── 列表数据
+// 轻量提示：直接写左下角状态行，3 秒后恢复。不引第三方 toast。
+let flashTimer = null;
+function flash(msg, isError) {
+  const health = $("health");
+  if (!health) return;
+  if (!health.dataset.orig) health.dataset.orig = health.textContent;
+  health.textContent = msg;
+  $("dot").className = isError ? "dot off" : "dot";
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    health.textContent = health.dataset.orig || "";
+    $("dot").className = "dot";
+    delete health.dataset.orig;
+  }, 3000);
+}
+
 async function load() {
   if (inflight) return inflight;
   inflight = (async () => {

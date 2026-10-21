@@ -249,3 +249,59 @@ def test_webui_layout_structure():
     assert "column-count" not in html, "瀑布流应被网格取代"
     # 搜索必须能忽略分隔符（SSIS123 → SSIS-123）
     assert "strip(hay).includes" in html
+
+
+# ---------------------------------------------------------------- 删除归档
+
+def _post_json(url, body):
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data,
+                                 headers={"Content-Type": "application/json"},
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read() or b"{}")
+
+
+def test_archive_delete_requires_confirm(server, monkeypatch):
+    """没 confirm 只能看到将删什么，绝不能真删。"""
+    called = []
+    monkeypatch.setattr(web, "purge_archives", lambda codes: called.append(codes) or [])
+    status, body = _post_json(server + "/api/archive/delete", {"code": "SSIS-123"})
+    assert status == 200
+    assert body["ok"] and body["code"] == "SSIS-123"
+    assert body["size"] == 2 * 1024**3
+    assert "confirm" in body["hint"]
+    assert called == [], "没有 confirm 就不许删"
+
+
+def test_archive_delete_with_confirm(server, monkeypatch):
+    monkeypatch.setattr(web, "purge_archives",
+                        lambda codes: [{"code": c, "ok": True} for c in codes])
+    status, body = _post_json(server + "/api/archive/delete",
+                              {"code": "SSIS-123", "confirm": True})
+    assert status == 200
+    assert body["deleted"][0]["code"] == "SSIS-123"
+
+
+def test_archive_delete_unknown_code(server):
+    status, body = _post_json(server + "/api/archive/delete",
+                              {"code": "NOPE-1", "confirm": True})
+    assert status == 404
+    assert not body["ok"]
+
+
+def test_archive_delete_needs_code(server):
+    status, body = _post_json(server + "/api/archive/delete", {"confirm": True})
+    assert status == 400
+
+
+def test_archive_delete_keeps_record_when_purge_fails(server, monkeypatch):
+    """Drive 删失败时记录必须留着，否则档案还在盘上却查不到了。"""
+    monkeypatch.setattr(web, "purge_archives", lambda codes: [])
+    status, body = _post_json(server + "/api/archive/delete",
+                              {"code": "SSIS-123", "confirm": True})
+    assert status == 502 and not body["ok"]
+    assert "SSIS-123" in core.load_state(web.STATE), "失败不能丢记录"
