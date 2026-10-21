@@ -77,6 +77,47 @@ def test_add_magnet_overwrites_without_control_file():
     assert opts["allow-overwrite"] == "true"
     assert opts["auto-file-renaming"] == "false", "不许改名，否则文件名对不上番号"
 
+def test_queue_has_its_own_timeout():
+    """排队不消耗下载预算，但也不能无限等：aria2 队列被死种堵住时要判失败。"""
+    c = FakeClient([{"result": {"status": "waiting", "totalLength": "100", "completedLength": "0"}}])
+    aria = aria2.Aria2("http://x", poll=0.01, timeout=60, stall_timeout=0, queue_timeout=0.05)
+    with pytest.raises(RuntimeError, match="排队超过"):
+        asyncio.run(aria.wait(c, "g"))
+
+
+def test_waiting_then_active_still_downloads():
+    """排队结束后照常下载，不能因为排过队就立刻报错。"""
+    c = FakeClient([
+        {"result": {"status": "waiting", "totalLength": "100", "completedLength": "0"}},
+        {"result": {"status": "waiting", "totalLength": "100", "completedLength": "0"}},
+        {"result": {"status": "active", "totalLength": "100", "completedLength": "40"}},
+        {"result": {"status": "complete", "totalLength": "100", "completedLength": "100"}},
+    ])
+    aria = aria2.Aria2("http://x", poll=0.01, timeout=0.08, stall_timeout=0)
+    st = asyncio.run(aria.wait(c, "g"))
+    assert st["status"] == "complete"
+
+
+def test_waiting_time_does_not_count_toward_timeout():
+    """排队等 aria2 空位的时间不能算进下载超时。
+
+    编排侧一次提交多个番号时，超过 max-concurrent-downloads 的任务会停在
+    waiting。如果排队时间计入 timeout，一次提交 10 个任务、每个 1 小时，
+    排在最后的会被判超时，尽管它根本没开始下。
+    """
+    c = FakeClient([
+        {"result": {"status": "waiting", "totalLength": "100", "completedLength": "0"}},
+        {"result": {"status": "waiting", "totalLength": "100", "completedLength": "0"}},
+        {"result": {"status": "waiting", "totalLength": "100", "completedLength": "0"}},
+        {"result": {"status": "active", "totalLength": "100", "completedLength": "10"}},
+        {"result": {"status": "complete", "totalLength": "100", "completedLength": "100"}},
+    ])
+    aria = aria2.Aria2("http://x", poll=0, timeout=0.05)
+    # 每轮 poll 都会 sleep(0)，排队期间不应累积到超时
+    st = asyncio.run(aria.wait(c, "g"))
+    assert st["status"] == "complete"
+
+
 def test_wait_returns_on_complete():
     c = FakeClient([
         {"result": {"status": "active", "totalLength": "100", "completedLength": "40", "downloadSpeed": "1000"}},

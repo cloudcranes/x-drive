@@ -50,6 +50,7 @@ class Aria2:
         poll: float = 5.0,
         timeout: float = 7200.0,
         stall_timeout: float = 900.0,
+        queue_timeout: float = 21600.0,
     ):
         self.endpoint = endpoint if endpoint.endswith("/jsonrpc") else endpoint.rstrip("/") + "/jsonrpc"
         self.secret = secret
@@ -57,6 +58,9 @@ class Aria2:
         self.timeout = timeout
         # 连续这么久没有任何新字节就判定为死种（0 表示不检测）
         self.stall_timeout = stall_timeout
+        # 排队最多等这么久（默认 6 小时）。排队本身不算下载超时，但也不能无限等：
+        # aria2 挂了或队列被死种堵住时，任务要能被判失败而不是永远挂着。
+        self.queue_timeout = queue_timeout
         self._id = 0
 
     def _params(self, *args) -> list:
@@ -192,6 +196,11 @@ class Aria2:
           · complete 之后还要核对 completedLength 与 totalLength。
         """
         deadline = time.monotonic() + self.timeout
+        # 排队（waiting）时间不计入超时：编排侧一次提交多个番号时，超过
+        # max-concurrent-downloads 的任务会一直排队。若把排队算进 timeout，
+        # 提交 10 个任务、每个下 1 小时，排最后的会在还没开始下时就报超时。
+        queued_since = None
+        queued_total = 0.0
         last = -1.0
         current = gid
         seen: set[str] = set()
@@ -253,6 +262,21 @@ class Aria2:
                 return status
             if st in (ERROR, REMOVED):
                 raise RuntimeError(f"aria2 任务失败：{status.get('errorMessage') or st}")
+            # 排队期间不判超时，并把已排队时长从 deadline 里顺延掉
+            if st == "waiting":
+                now = time.monotonic()
+                if queued_since is None:
+                    queued_since = now
+                queued_total = now - queued_since
+                if self.queue_timeout and queued_total > self.queue_timeout:
+                    raise RuntimeError(
+                        f"排队超过 {int(self.queue_timeout)}s 仍未开始下载"
+                        f"（aria2 队列被堵住，检查 max-concurrent-downloads 或死种）")
+                # 排队不消耗下载时间预算
+                deadline = max(deadline, now + self.timeout - queued_total)
+                await asyncio.sleep(self.poll)
+                continue
+            queued_since = None
             if time.monotonic() > deadline:
                 raise RuntimeError(f"aria2 下载超时（{int(self.timeout)}s）")
             await asyncio.sleep(self.poll)
