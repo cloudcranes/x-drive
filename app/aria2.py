@@ -297,7 +297,18 @@ class Aria2:
 
         async def drain() -> None:
             status = await self.call(client, "tellStatus", gid, ["status", "followedBy"])
-            if status.get("status") == REMOVED:
+            st = status.get("status")
+            if st == REMOVED:
+                return
+            # 已经下完的任务 forcePause 不起作用，记录会一直留着，而上层紧接着
+            # 删掉目录后 aria2 可能又把完成的文件落盘回来，留下占空间的孤儿目录。
+            # 实测发生过：停了 SIRO-5755，aria2 记录是 complete，2.5G 残留在了
+            # downloads/ 里。所以完成态直接连记录一起清掉。
+            if st == DONE:
+                try:
+                    await self.call(client, "removeDownloadResult", gid)
+                except Exception:
+                    pass
                 return
             for child in status.get("followedBy") or []:
                 try:

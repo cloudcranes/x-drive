@@ -499,3 +499,54 @@ def test_infohash_race_is_retried_once():
         asyncio.run(aria.add_magnet(
             C(), "magnet:?xt=urn:btih:5AFF2AE18DA78EB04665DB379A3D9D8E2D382102", "/d"))
     assert state["add_calls"] == 1, "识别出重复后不应再试 addUri"
+
+
+def test_abort_clears_completed_task_record():
+    """已经下完的任务 forcePause 不生效，记录会留着，上层删目录后 aria2
+    可能再把文件落盘回来，留下孤儿目录。实测漏过 2.5G。"""
+    c = FakeClient([{"result": {"status": "complete", "followedBy": []}}])
+    asyncio.run(aria2.Aria2("http://x").abort(c, "g"))
+    methods = [call["method"] for call in c.calls]
+    assert "aria2.removeDownloadResult" in methods, "完成态要连记录一起清"
+
+
+def test_abort_pauses_active_task():
+    """还没下完的照旧 forcePause，不能改掉原来的行为。"""
+    c = FakeClient([{"result": {"status": "active", "followedBy": []}}])
+    asyncio.run(aria2.Aria2("http://x").abort(c, "g"))
+    methods = [call["method"] for call in c.calls]
+    assert "aria2.forcePause" in methods
+    assert "aria2.removeDownloadResult" not in methods
+
+
+def test_abort_pauses_children():
+    """BT 元数据任务要连带把子任务也停掉。
+
+    forcePause 和 drain() 是并发发出的，按调用顺序摆假响应不可靠，
+    所以按方法名返回：tellStatus 才给 followedBy。
+    """
+    class ByMethod:
+        def __init__(self):
+            self.calls = []
+
+        async def post(self, url, json=None, timeout=None):
+            self.calls.append(json)
+            if json["method"] == "aria2.tellStatus":
+                payload = {"result": {"status": "active", "followedBy": ["child1"]}}
+            else:
+                payload = {"result": "OK"}
+
+            class R:
+                def raise_for_status(self_inner):
+                    pass
+
+                def json(self_inner):
+                    return payload
+
+            return R()
+
+    c = ByMethod()
+    asyncio.run(aria2.Aria2("http://x").abort(c, "g"))
+    paused = [call["params"][-1] for call in c.calls
+              if call["method"] == "aria2.forcePause"]
+    assert "child1" in paused, paused
