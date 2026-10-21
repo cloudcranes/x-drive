@@ -522,44 +522,73 @@ def backfill_meta(limit: int = 50) -> dict:
 
 # ---------------------------------------------------------------- 订阅自动化
 
+def _resolve_key(data: dict, value: str) -> str:
+    """把「订阅键」或「裸 ID」都解析成真实的键。
+
+    界面上传的是 key（形如 actor:YnZ1K），但老数据和命令行里可能只给裸 ID，
+    两种都认，免得到处要用户记住前缀。
+    """
+    if not value:
+        return ""
+    if value in data:
+        return value
+    for key, sub in data.items():
+        if (sub.get("id") or "") == value:
+            return key
+    return ""
+
+
 def subs_snapshot() -> list[dict]:
-    return sorted(subscribe.load_subs(SUBS).values(),
-                  key=lambda d: d.get("added_at") or "", reverse=True)
+    out = []
+    for key, sub in subscribe.load_subs(SUBS).items():
+        item = dict(sub)
+        item.setdefault("key", key)
+        out.append(item)
+    return sorted(out, key=lambda d: d.get("added_at") or "", reverse=True)
 
 
 def add_sub(actor: str, max_per_run: int = 1, max_size_gb: float = 0,
-            name: str = "") -> dict:
-    """加一个演员订阅。游标设成今天，只抓之后出的新片，不回填历史。"""
-    actor_id = subscribe.actor_id_of(actor)
-    if not actor_id:
-        return {"ok": False, "error": "需要一个 javdb 演员页 ID 或链接"}
+            name: str = "", kind: str = "actor") -> dict:
+    """加一个订阅（演员或番号系列）。游标设成今天，只抓之后出的新片，不回填历史。"""
+    if kind not in ("actor", "series"):
+        kind = "actor"
+    sub_id = subscribe.sub_id_of(actor, kind)
+    if not sub_id:
+        label = "演员页" if kind == "actor" else "系列页"
+        return {"ok": False, "error": f"需要一个 javdb {label} ID 或链接"}
     data = subscribe.load_subs(SUBS)
-    if actor_id in data:
-        return {"ok": False, "error": f"{actor_id} 已经订阅过了"}
-    sub = subscribe.new_sub(actor_id, name or actor_id,
+    # 演员和系列分属两套 ID 空间，键要带上 kind，避免撞车
+    key = f"{kind}:{sub_id}"
+    if key in data:
+        return {"ok": False, "error": f"{sub_id} 已经订阅过了"}
+    sub = subscribe.new_sub(sub_id, name or sub_id,
                             cursor=time.strftime("%Y-%m-%d"),
-                            max_per_run=max_per_run, max_size_gb=max_size_gb)
-    data[actor_id] = sub
+                            max_per_run=max_per_run, max_size_gb=max_size_gb,
+                            kind=kind)
+    sub["key"] = key
+    data[key] = sub
     subscribe.save_subs(SUBS, data)
     return {"ok": True, "sub": sub}
 
 
-def remove_sub(actor_id: str) -> dict:
+def remove_sub(key: str) -> dict:
     data = subscribe.load_subs(SUBS)
-    if actor_id not in data:
+    key = _resolve_key(data, key)
+    if not key:
         return {"ok": False, "error": "订阅不存在"}
-    data.pop(actor_id)
+    data.pop(key)
     subscribe.save_subs(SUBS, data)
     return {"ok": True}
 
 
-def toggle_sub(actor_id: str, enabled: bool) -> dict:
+def toggle_sub(key: str, enabled: bool) -> dict:
     data = subscribe.load_subs(SUBS)
-    if actor_id not in data:
+    key = _resolve_key(data, key)
+    if not key:
         return {"ok": False, "error": "订阅不存在"}
-    data[actor_id]["enabled"] = bool(enabled)
+    data[key]["enabled"] = bool(enabled)
     subscribe.save_subs(SUBS, data)
-    return {"ok": True, "sub": data[actor_id]}
+    return {"ok": True, "sub": data[key]}
 
 
 def known_codes_now() -> set[str]:
@@ -584,14 +613,16 @@ def run_subscriptions(only: str = "") -> dict:
     data = subscribe.load_subs(SUBS)
     results = []
     known = known_codes_now()
-    for actor_id, sub in list(data.items()):
-        if only and actor_id != only:
+    only_key = _resolve_key(data, only) if only else ""
+    for key, sub in list(data.items()):
+        if only and key != only_key:
             continue
         if not sub.get("enabled", True):
             continue
         out = asyncio.run(subscribe.check(
-            actor_id, sub.get("cursor") or "", sub.get("max_per_run") or 1,
-            sub.get("max_size_gb") or 0, known_codes=known))
+            sub.get("id") or key, sub.get("cursor") or "",
+            sub.get("max_per_run") or 1, sub.get("max_size_gb") or 0,
+            known_codes=known, kind=sub.get("kind") or "actor"))
         started = []
         for item in out["new"]:
             code = item["code"]
@@ -604,8 +635,8 @@ def run_subscriptions(only: str = "") -> dict:
             known.add(code.upper())
             started.append({"code": code, "job": job_id, "size_mb": item["size_mb"]})
         # 游标推进要落盘：否则下次还会重复扫同一批
-        data[actor_id]["cursor"] = out["cursor"]
-        data[actor_id]["last_run"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        data[key]["cursor"] = out["cursor"]
+        data[key]["last_run"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         if started:
             last = f"新片 {len(started)} 部"
         elif out["error"]:
@@ -614,8 +645,10 @@ def run_subscriptions(only: str = "") -> dict:
             last = f"跳过 {out['skipped']} 部（超体积上限或没有磁力）"
         else:
             last = "没有新片"
-        data[actor_id]["last_result"] = last
-        results.append({"actor": actor_id, "name": sub.get("name") or actor_id,
+        data[key]["last_result"] = last
+        results.append({"key": key, "kind": sub.get("kind") or "actor",
+                        "id": sub.get("id") or key,
+                        "name": sub.get("name") or key,
                         "started": started, "error": out["error"]})
     subscribe.save_subs(SUBS, data)
     return {"ok": True, "results": results}
@@ -949,7 +982,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(add_sub(payload.get("actor") or "",
                                int(payload.get("max_per_run") or 1),
                                float(payload.get("max_size_gb") or 0),
-                               payload.get("name") or ""))
+                               payload.get("name") or "",
+                               payload.get("kind") or "actor"))
             return
         if path == "/api/subs/toggle":
             if not self._authorized():

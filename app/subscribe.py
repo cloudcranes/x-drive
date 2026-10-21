@@ -27,9 +27,15 @@ TIMEOUT = 25.0
 
 _ITEM_SPLIT = re.compile(r'<div class="item">')
 _PATH_RE = re.compile(r'href="(/v/[A-Za-z0-9]+)"')
-_CODE_RE = re.compile(r"<strong>([A-Za-z]+-\d+)</strong>")
+# 番号结尾可能带字母（例：VSPDS-221AI 是 AI 重制版），只认结尾是数字会漏掉整页
+_CODE_RE = re.compile(r"<strong>([A-Za-z]+-\d+[A-Za-z]*)</strong>")
 _DATE_RE = re.compile(r'<div class="meta">\s*(\d{4}-\d{2}-\d{2})')
-_ACTOR_ID_RE = re.compile(r"/actors/([A-Za-z0-9]+)")
+# 订阅对象可以是演员（/actors/xxx）或番号系列（/series/xxx）
+_PATH_PREFIX = {"actor": "actors", "series": "series"}
+_ID_RE = {
+    "actor": re.compile(r"/actors/([A-Za-z0-9]+)"),
+    "series": re.compile(r"/series/([A-Za-z0-9]+)"),
+}
 
 # 详情页的磁力条目：<div class="item" data-size="5545" data-files="5" data-date="...">
 _MAGNET_ITEM_RE = re.compile(
@@ -39,17 +45,30 @@ _MAGNET_HREF_RE = re.compile(r'href="(magnet:\?[^"]+)"')
 _TAG_RE = re.compile(r'<span class="tag[^"]*">([^<]+)</span>')
 
 
-def actor_id_of(value: str) -> str:
-    """接受完整演员页 URL 或裸 ID，取出 ID。"""
+def sub_id_of(value: str, kind: str = "actor") -> str:
+    """从完整页面 URL 或裸 ID 里取出订阅对象 ID。
+
+    kind 决定认哪种链接；裸 ID 两种都接受（都是 4~12 位字母数字）。
+    """
     value = (value or "").strip()
-    m = _ACTOR_ID_RE.search(value)
-    if m:
-        return m.group(1)
+    for k in ([kind] + [x for x in _PATH_PREFIX if x != kind]):
+        m = _ID_RE[k].search(value)
+        if m:
+            return m.group(1)
     return value if re.fullmatch(r"[A-Za-z0-9]{4,12}", value) else ""
 
 
-def parse_actor_items(html: str) -> list[dict]:
-    """演员页的作品列表：番号、日期、详情页路径、是否标了含磁链。"""
+def actor_id_of(value: str) -> str:
+    """兼容旧调用。"""
+    return sub_id_of(value, "actor")
+
+
+def parse_items(html: str) -> list[dict]:
+    """作品列表：番号、日期、详情页路径、是否标了含磁链。
+
+    演员页（/actors/）和系列页（/series/）的条目结构实测一致，
+    都是 div.item > a.box > .video-title strong + .meta 日期，所以共用一套解析。
+    """
     out = []
     for block in _ITEM_SPLIT.split(html)[1:]:
         path = _PATH_RE.search(block)
@@ -112,6 +131,19 @@ def pick_magnet(items: list[dict], prefer=("中文字幕", "高清")) -> dict | 
     return sorted(items, key=score)[0]
 
 
+def parse_actor_items(html: str) -> list[dict]:
+    """兼容旧调用。"""
+    return parse_items(html)
+
+
+def page_title(html: str) -> str:
+    """取页面标题里的名字（<title> 形如「系列名 | JavDB 成人影片數據庫」）。"""
+    m = re.search(r"<title>([^<]*)</title>", html)
+    if not m:
+        return ""
+    return m.group(1).split("|")[0].strip()[:60]
+
+
 def load_subs(path: str) -> dict:
     return core.load_state(path)
 
@@ -120,12 +152,12 @@ def save_subs(path: str, data: dict) -> None:
     core.save_state(path, data)
 
 
-def new_sub(actor_id: str, name: str, cursor: str, max_per_run: int = 1,
-            max_size_gb: float = 0) -> dict:
+def new_sub(sub_id: str, name: str, cursor: str, max_per_run: int = 1,
+            max_size_gb: float = 0, kind: str = "actor") -> dict:
     return {
-        "id": actor_id,
-        "name": name or actor_id,
-        "kind": "actor",
+        "id": sub_id,
+        "name": name or sub_id,
+        "kind": kind if kind in _PATH_PREFIX else "actor",
         "cursor": cursor,
         "enabled": True,
         "max_per_run": max(1, int(max_per_run)),
@@ -167,9 +199,9 @@ async def fetch(client: httpx.AsyncClient, url: str, timeout: float = TIMEOUT) -
         return None
 
 
-async def check(actor_id: str, cursor: str, max_per_run: int = 1,
+async def check(sub_id: str, cursor: str, max_per_run: int = 1,
                 max_size_gb: float = 0, known_codes: set[str] | None = None,
-                client: httpx.AsyncClient | None = None) -> dict:
+                client: httpx.AsyncClient | None = None, kind: str = "actor") -> dict:
     """查一次订阅，返回要下载的条目（不真正提交，提交由调用方做）。
 
     任何一步失败都返回空结果，不抛异常 —— 订阅是后台任务，挂了不能拖累别处。
@@ -179,12 +211,14 @@ async def check(actor_id: str, cursor: str, max_per_run: int = 1,
     cli = client or httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT)
     result = {"new": [], "cursor": cursor, "error": "", "skipped": 0}
     try:
-        html = await fetch(cli, f"{BASE}/actors/{actor_id}")
+        prefix = _PATH_PREFIX.get(kind, "actors")
+        html = await fetch(cli, f"{BASE}/{prefix}/{sub_id}")
         if not html:
-            result["error"] = "演员页抓取失败"
+            result["error"] = f"{prefix} 页抓取失败"
             return result
 
-        items = parse_actor_items(html)
+        result["name"] = page_title(html)
+        items = parse_items(html)
         todo = candidates(items, cursor, known)[: max(1, int(max_per_run))]
         if not todo:
             # 即使没有新片，也把游标推到本页最新，避免下次重复比对老条目
@@ -221,7 +255,7 @@ async def check(actor_id: str, cursor: str, max_per_run: int = 1,
             result["cursor"] = max(result["cursor"], it["date"])
         return result
     except Exception as exc:
-        log.warning("检查订阅 %s 失败：%s", actor_id, exc)
+        log.warning("检查订阅 %s 失败：%s", sub_id, exc)
         result["error"] = str(exc)[:200]
         return result
     finally:

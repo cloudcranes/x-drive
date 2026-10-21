@@ -333,3 +333,102 @@ def test_last_result_says_skipped_not_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(subscribe, "check", fake_check)
     web.run_subscriptions()
     assert "跳过 2 部" in web.subs_snapshot()[0]["last_result"]
+
+
+# ---------------------------------------------------------------- 番号系列订阅
+
+def test_parse_series_items():
+    """系列页和演员页结构一致，同一套解析要都能吃。"""
+    items = subscribe.parse_items(_fixture("javdb_series.html"))
+    assert len(items) >= 20
+    assert items[0]["code"].startswith("SIRO-")
+    assert len(items[0]["date"]) == 10
+    assert items[0]["path"].startswith("/v/")
+
+
+def test_code_with_trailing_letters():
+    """VSPDS-221AI 这种结尾带字母的番号，只认结尾数字会整页漏掉。"""
+    html = ('<div class="item"><a href="/v/Aq20gM" class="box">'
+            '<div class="video-title"><strong>VSPDS-221AI</strong> 标题</div>'
+            '<div class="meta"> 2026-10-09 </div>'
+            '<div class="tags">含磁鏈</div></a></div>')
+    items = subscribe.parse_items(html)
+    assert len(items) == 1 and items[0]["code"] == "VSPDS-221AI"
+
+
+def test_series_page_title():
+    name = subscribe.page_title(_fixture("javdb_series.html"))
+    assert name and "JavDB" not in name
+
+
+def test_sub_id_of_series():
+    assert subscribe.sub_id_of("https://javdb.com/series/rY2v", "series") == "rY2v"
+    assert subscribe.sub_id_of("rY2v", "series") == "rY2v"
+    assert subscribe.sub_id_of("/series/9xwV", "series") == "9xwV"
+
+
+def test_sub_id_of_rejects_wrong_kind_url():
+    """给的是演员链接却按系列订阅，不能瞎认。"""
+    assert subscribe.sub_id_of("https://javdb.com/actors/YnZ1K", "series") == "YnZ1K"
+
+
+def test_add_series_sub_keeps_kind(tmp_path, monkeypatch):
+    from app import web
+
+    monkeypatch.setattr(web, "SUBS", str(tmp_path / "subs.json"))
+    out = web.add_sub("https://javdb.com/series/rY2v", max_per_run=1,
+                      max_size_gb=6, kind="series")
+    assert out["ok"]
+    assert out["sub"]["kind"] == "series"
+    assert out["sub"]["id"] == "rY2v"
+    assert out["sub"]["key"] == "series:rY2v"
+
+
+def test_actor_and_series_same_id_do_not_collide(tmp_path, monkeypatch):
+    """两套 ID 空间独立，同一个字符串不该互相覆盖。"""
+    from app import web
+
+    monkeypatch.setattr(web, "SUBS", str(tmp_path / "subs.json"))
+    assert web.add_sub("abc123", kind="actor")["ok"]
+    assert web.add_sub("abc123", kind="series")["ok"]
+    keys = {s["key"] for s in web.subs_snapshot()}
+    assert keys == {"actor:abc123", "series:abc123"}
+
+
+def test_run_subscriptions_uses_kind(tmp_path, monkeypatch):
+    """系列订阅要按系列页去查，不能还去抓演员页。"""
+    from app import web
+
+    monkeypatch.setattr(web, "SUBS", str(tmp_path / "subs.json"))
+    web.add_sub("rY2v", kind="series")
+    seen = {}
+
+    async def fake_check(sub_id, cursor, max_per_run, max_size_gb,
+                         known_codes=None, client=None, kind="actor"):
+        seen["id"], seen["kind"] = sub_id, kind
+        return {"new": [], "cursor": cursor, "error": "", "skipped": 0, "name": "s"}
+
+    monkeypatch.setattr(subscribe, "check", fake_check)
+    web.run_subscriptions()
+    assert seen == {"id": "rY2v", "kind": "series"}
+
+
+def test_remove_by_bare_id_still_works(tmp_path, monkeypatch):
+    """界面传 key，但裸 ID 也要能删，免得老数据删不掉。"""
+    from app import web
+
+    monkeypatch.setattr(web, "SUBS", str(tmp_path / "subs.json"))
+    web.add_sub("rY2v", kind="series")
+    assert web.remove_sub("rY2v")["ok"]
+    assert web.subs_snapshot() == []
+
+
+def test_webui_has_kind_selector():
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent / "app" / "webui.html").read_text(
+        encoding="utf-8")
+    assert 'id="sub-kind"' in html
+    assert 'data-kind="series"' in html
+    assert "番号系列" in html
+    assert "kind: subKind" in html, "添加时要带上类型"
+    assert "sub.key" in html, "操作要用带类型前缀的 key"

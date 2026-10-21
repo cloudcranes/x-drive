@@ -240,6 +240,12 @@
   .ghostbtn:hover{border-color:rgba(62,186,244,.4); color:var(--text)}
   .ghostbtn svg{width:14px; height:14px; flex:none}
   .subs-head{display:flex; flex-direction:column; gap:9px}
+  .subs-kind{display:flex; gap:4px}
+  .subs-kind button{flex:none; font:inherit; font-size:11.5px; padding:5px 13px; cursor:pointer;
+    border-radius:7px; border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
+  .subs-kind button.on{color:var(--cyan); border-color:rgba(62,186,244,.45); background:rgba(62,186,244,.1)}
+  .subs-kind button:hover{border-color:rgba(62,186,244,.35)}
+
   .subs-opts{display:flex; gap:14px; align-items:center; font-size:11.5px; color:var(--muted);
     font-family:var(--mono)}
   .subs-opts input{width:62px; padding:5px 7px; border-radius:6px; border:1px solid var(--line);
@@ -487,6 +493,10 @@
 
   <section class="panel" id="subpanel" hidden>
     <div class="subs-head">
+      <div class="subs-kind" id="sub-kind">
+        <button type="button" data-kind="actor" class="on">演员</button>
+        <button type="button" data-kind="series">番号系列</button>
+      </div>
       <input id="sub-actor" type="text" autocomplete="off" spellcheck="false"
              placeholder="演员页 ID 或链接，例如 YnZ1K 或 https://javdb.com/actors/YnZ1K">
       <div class="subs-opts">
@@ -1019,6 +1029,20 @@ $("logout").addEventListener("click", async () => {
 
 // ── 新建下载
 // ── 订阅自动化
+let subKind = "actor";
+const KIND_NAME = {actor: "演员", series: "系列"};
+const KIND_PLACEHOLDER = {
+  actor: "演员页 ID 或链接，例如 YnZ1K 或 https://javdb.com/actors/YnZ1K",
+  series: "系列页 ID 或链接，例如 rY2v 或 https://javdb.com/series/rY2v",
+};
+$("sub-kind").addEventListener("click", e => {
+  const b = e.target.closest("button[data-kind]");
+  if (!b) return;
+  subKind = b.dataset.kind;
+  for (const x of $("sub-kind").children) x.classList.toggle("on", x.dataset.kind === subKind);
+  $("sub-actor").placeholder = KIND_PLACEHOLDER[subKind];
+});
+
 function setSubHint(text, kind) {
   const h = $("sub-hint");
   h.textContent = text || "";
@@ -1051,6 +1075,8 @@ async function renderSubs() {
   }
   for (const sub of subs) {
     const row = el("div", "sub-row" + (sub.enabled ? "" : " off"));
+    const kindTag = el("span", "tag", KIND_NAME[sub.kind] || "演员");
+    row.append(kindTag);
     row.append(el("span", "nm", sub.name || sub.id));
     const meta = [`游标 ${sub.cursor || "—"}`, `每次 ${sub.max_per_run || 1} 部`];
     if (sub.max_size_gb) meta.push(`单片≤${sub.max_size_gb}GB`);
@@ -1059,13 +1085,13 @@ async function renderSubs() {
     const r = el("div", "r");
     const tog = el("button", null, sub.enabled ? "暂停" : "启用");
     tog.addEventListener("click", async () => {
-      await subsApi("/api/subs/toggle", {id: sub.id, enabled: !sub.enabled});
+      await subsApi("/api/subs/toggle", {id: sub.key || sub.id, enabled: !sub.enabled});
       renderSubs();
     });
     const run = el("button", null, "立即检查");
     run.addEventListener("click", async () => {
       setSubHint("检查中…");
-      const res = await subsApi("/api/subs/run", {id: sub.id});
+      const res = await subsApi("/api/subs/run", {id: sub.key || sub.id});
       const n = (res.results || []).reduce((a, x) => a + (x.started || []).length, 0);
       setSubHint(res.ok ? `新提交 ${n} 个任务` : (res.error || "失败"), res.ok ? "ok" : "err");
       renderSubs();
@@ -1074,7 +1100,7 @@ async function renderSubs() {
     const del = el("button", null, "删除");
     del.addEventListener("click", async () => {
       if (!confirm(`取消对 ${sub.name || sub.id} 的订阅？\n已有的归档不受影响。`)) return;
-      await subsApi("/api/subs/remove", {id: sub.id});
+      await subsApi("/api/subs/remove", {id: sub.key || sub.id});
       renderSubs();
     });
     r.append(tog, run, del);
@@ -1103,6 +1129,7 @@ $("sub-add").addEventListener("click", async () => {
   setSubHint("添加中…");
   const res = await subsApi("/api/subs/add", {
     actor,
+    kind: subKind,
     max_per_run: parseInt($("sub-max").value || "1", 10),
     max_size_gb: parseFloat($("sub-size").value || "0"),
   });
