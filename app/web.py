@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from . import aria2, codes, core, fetcher, pipeline, retry
+from . import aria2, cleanup, codes, core, fetcher, pipeline, retry
 
 log = logging.getLogger("x-drive.web")
 
@@ -46,6 +46,10 @@ RETRIES = max(0, int(os.getenv("RETRIES", "2") or 2))
 RETRY_BASE_DELAY = float(os.getenv("RETRY_BASE_DELAY", "3") or 3)
 # 连续这么久没有任何新字节就放弃（死种），0 表示不检测
 STALL_TIMEOUT = float(os.getenv("STALL_TIMEOUT", "900") or 0)
+# 归档回收：默认关闭（0），需要时再开，避免误删
+CLEANUP_MAX_GB = float(os.getenv("CLEANUP_MAX_GB", "0") or 0)
+CLEANUP_KEEP_RECENT = int(os.getenv("CLEANUP_KEEP_RECENT", "10") or 10)
+CLEANUP_OLDER_DAYS = float(os.getenv("CLEANUP_OLDER_DAYS", "0") or 0)
 TMP_ROOT = os.getenv("TMP_ROOT", "/downloads")
 
 BIND = os.getenv("WEB_BIND", "0.0.0.0")
@@ -370,6 +374,50 @@ def start_job(source: str, code: str, info: dict | None = None) -> str:
     return job_id
 
 
+def build_cleanup_plan(dry_run: bool = True) -> dict:
+    """算出该删哪些归档；dry_run 时只给清单不执行。"""
+    state = core.load_state(STATE)
+    archives = []
+    for key, item in state.items():
+        archives.append({
+            "id": key,
+            "code": item.get("code") or key,
+            "size": int(item.get("size") or 0),
+            "at": item.get("at") or "",
+        })
+    plan = cleanup.plan_cleanup(
+        archives,
+        keep_recent=CLEANUP_KEEP_RECENT,
+        max_bytes=int(CLEANUP_MAX_GB * 1024**3),
+        active_codes=active_codes(),
+        older_than_days=CLEANUP_OLDER_DAYS,
+        dry_run=dry_run,
+    )
+    result = plan.as_dict()
+    if not dry_run:
+        result["removed"] = purge_archives([i["code"] for i in plan.delete])
+    return result
+
+
+def purge_archives(codes_to_drop: list[str]) -> list[dict]:
+    """真正删除：Drive 目录 + state 记录。任一失败就保留记录，便于重试。"""
+    done = []
+    for code in codes_to_drop:
+        if not code:
+            continue
+        target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
+        rc, _, err = rclone("purge", target, timeout=1800.0)
+        if rc != 0:
+            log.warning("删除 %s 失败：%s", code, err.strip()[:200])
+            continue
+        state = core.load_state(STATE)
+        if code in state:
+            state.pop(code, None)
+            core.save_state(STATE, state)
+        done.append({"code": code, "ok": True})
+    return done
+
+
 def aria_tasks() -> dict:
     """实时队列（来自 aria2），供页面展示正在下载的内容。"""
     async def main() -> dict:
@@ -602,6 +650,24 @@ class Handler(BaseHTTPRequestHandler):
                     JOBS.pop(job_id, None)
             self._json({"ok": True})
             return
+        if path == "/api/cleanup/run":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 8192)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            # 必须显式传 confirm，否则一律按 dry-run 处理，防止误删
+            if not payload.get("confirm"):
+                self._json({"ok": True, **build_cleanup_plan(dry_run=True),
+                            "hint": "需要 confirm=true 才会真正删除"}, 200)
+                return
+            plan = build_cleanup_plan(dry_run=False)
+            self._json({"ok": True, **plan})
+            return
         if path == "/api/aria2/remove":
             if not self._authorized():
                 self._drain()
@@ -677,6 +743,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             info = peek(magnet)
             self._json({"ok": bool(info), "info": info}, 200 if info else 502)
+            return
+        if path == "/api/cleanup/preview":
+            self._json({"ok": True, **build_cleanup_plan(dry_run=True)})
             return
         if path == "/api/jobs":
             self._json({"jobs": jobs_snapshot()})

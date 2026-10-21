@@ -38,6 +38,9 @@ class Incomplete(RuntimeError):
 class Stalled(RuntimeError):
     """长时间没有任何进展（死种/没人做种），提前放弃以免白等几小时。"""
 
+class Duplicate(RuntimeError):
+    """同一个种子已经在下载中，不应该重复提交。"""
+
 
 class Aria2:
     def __init__(
@@ -91,7 +94,20 @@ class Aria2:
             removed = await self.purge_info_hash(client, info_hash)
             if removed:
                 log.info("清掉 %d 条同种子的旧记录 %s", removed, info_hash[:12])
-        gid = await self.call(client, "addUri", [magnet], options)
+        if getattr(self, "_last_purge_active", False):
+            raise Duplicate("这个种子正在下载中，等它跑完再提交")
+        try:
+            gid = await self.call(client, "addUri", [magnet], options)
+        except RpcError as exc:
+            # 并发提交时，另一个任务可能在「清理旧记录」和「addUri」之间注册了同一
+            # 种子，仍然会撞上 InfoHash 冲突。重试一次：此时它已经在列表里，
+            # 再来一轮能明确判断出「正在下载」。
+            if "already registered" not in str(exc):
+                raise
+            await self.purge_info_hash(client, info_hash)
+            if getattr(self, "_last_purge_active", False):
+                raise Duplicate("这个种子正在下载中，等它跑完再提交") from exc
+            raise
         log.info("已提交磁力任务 gid=%s dir=%s", gid, directory)
         return gid
 
@@ -103,6 +119,7 @@ class Aria2:
         """
         target = info_hash.upper()
         removed = 0
+        self._last_purge_active = False
         for method in ("tellActive", "tellWaiting", "tellStopped"):
             try:
                 if method == "tellActive":
@@ -120,6 +137,7 @@ class Aria2:
                     continue
                 if status in ("active", "waiting"):
                     # 还在跑/排队的同一任务不动，交给上层去重处理
+                    self._last_purge_active = True
                     continue
                 if status == "paused":
                     # paused 的记录 removeDownloadResult 删不掉，必须先 forceRemove

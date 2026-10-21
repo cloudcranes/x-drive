@@ -123,3 +123,10 @@ def test_run_with_retry_reports_each_attempt():
     assert [s[0] for s in seen] == [1, 2], seen
     # 退避应逐次变长：base=1 → 第一次 1s，第二次 2s
     assert [s[2] for s in seen] == [1.0, 2.0], seen
+
+
+def test_duplicate_torrent_is_not_retried():
+    """同一磁力正在下载属于确定性冲突，重试只是白等。"""
+    for msg in ("这个种子正在下载中，等它跑完再提交",
+                "aria2 任务失败：InfoHash 5aff... is already registered"):
+        assert retry.is_fatal(msg), msg

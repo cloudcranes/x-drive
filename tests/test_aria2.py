@@ -392,3 +392,55 @@ def test_progress_callback_can_abort_download():
     aria.call = call
     with pytest.raises(Stop):
         asyncio.run(aria.wait(None, "g1", progress=progress))
+
+
+def test_duplicate_active_torrent_gives_readable_error():
+    """同一磁力已在下载时，应报「正在下载」而不是难懂的 aria2 RPC 错误。"""
+    class C:
+        async def post(self, url, json=None, timeout=None):
+            method = json["method"]
+            if method == "aria2.tellActive":
+                return FakeResp({"result": [
+                    {"gid": "run1", "status": "active",
+                     "infoHash": "5aff2ae18da78eb04665db379a3d9d8e2d382102"}]})
+            if method in ("aria2.tellWaiting", "aria2.tellStopped"):
+                return FakeResp({"result": []})
+            return FakeResp({"result": "newgid"})
+
+    aria = aria2.Aria2("http://x", "s")
+    with pytest.raises(aria2.Duplicate) as exc:
+        asyncio.run(aria.add_magnet(
+            C(), "magnet:?xt=urn:btih:5AFF2AE18DA78EB04665DB379A3D9D8E2D382102", "/d"))
+    assert "正在下载" in str(exc.value)
+
+
+def test_infohash_race_is_retried_once():
+    """并发提交时，清理旧记录和 addUri 之间另一个任务可能抢先注册同一磁力。
+
+    这种情况下要再查一次列表，判断出「正在下载」而不是把 RPC 错误直接抛给用户。
+    """
+    state = {"add_calls": 0, "active": []}
+
+    class C:
+        async def post(self, url, json=None, timeout=None):
+            method = json["method"]
+            if method == "aria2.addUri":
+                state["add_calls"] += 1
+                if state["add_calls"] == 1:
+                    # 第一次：模拟被别的任务抢先注册
+                    state["active"] = [{"gid": "other", "status": "active",
+                                        "infoHash": "5aff2ae18da78eb04665db379a3d9d8e2d382102"}]
+                    return FakeResp({"error": {"code": 1,
+                                               "message": "InfoHash 5aff... is already registered"}})
+                return FakeResp({"result": "newgid"})
+            if method == "aria2.tellActive":
+                return FakeResp({"result": state["active"]})
+            if method in ("aria2.tellWaiting", "aria2.tellStopped"):
+                return FakeResp({"result": []})
+            return FakeResp({"result": "OK"})
+
+    aria = aria2.Aria2("http://x", "s")
+    with pytest.raises(aria2.Duplicate):
+        asyncio.run(aria.add_magnet(
+            C(), "magnet:?xt=urn:btih:5AFF2AE18DA78EB04665DB379A3D9D8E2D382102", "/d"))
+    assert state["add_calls"] == 1, "识别出重复后不应再试 addUri"

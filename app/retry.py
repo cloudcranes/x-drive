@@ -19,6 +19,8 @@ FATAL_PATTERNS = (
     "超过 DAILY_UPLOAD_GB",
     "没有找到视频文件",          # 下载完了但没内容，再试也一样
     "已归档过了",
+    "正在下载中",              # 同一磁力被并发提交，重试也没用
+    "already registered",
     "已停止",                    # 用户主动停的
     "unauthorized",
     "invalid_grant",

@@ -322,3 +322,85 @@ def test_cancel_interrupts_retry_wait(monkeypatch, tmp_path):
         web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
     assert calls["download"] == 1
     assert web.JOBS["j1"]["error"] == "已停止"
+
+
+# ---------------------------------------------------------------- 归档回收
+
+def test_cleanup_preview_is_read_only(server, monkeypatch):
+    """预览接口绝不能删东西。"""
+    base, _ = server
+    core.save_state(web.STATE, {
+        f"CODE-{i}": {"code": f"CODE-{i}", "size": 1024**3,
+                      "at": f"2026-01-{i+1:02d}T00:00:00"} for i in range(5)
+    })
+    monkeypatch.setattr(web, "CLEANUP_MAX_GB", 2.0)
+    monkeypatch.setattr(web, "CLEANUP_KEEP_RECENT", 1)
+    called = []
+    monkeypatch.setattr(web, "purge_archives", lambda codes: called.append(codes) or [])
+
+    host, port = base.removeprefix("http://").split(":")
+    c = http.client.HTTPConnection(host, int(port), timeout=10)
+    c.request("GET", "/api/cleanup/preview")
+    r = c.getresponse(); data = json.loads(r.read()); c.close()
+
+    assert data["dry_run"] is True
+    assert data["delete_count"] > 0, "应该算出有东西可删"
+    assert not called, "预览不能执行删除"
+    assert len(core.load_state(web.STATE)) == 5, "state 不能被改动"
+
+
+def test_cleanup_run_without_confirm_is_dry_run(server, monkeypatch):
+    """不带 confirm 的调用一律按 dry-run 处理，防止误删。"""
+    base, _ = server
+    core.save_state(web.STATE, {
+        f"C-{i}": {"code": f"C-{i}", "size": 1024**3, "at": f"2026-01-{i+1:02d}T00:00:00"}
+        for i in range(5)})
+    monkeypatch.setattr(web, "CLEANUP_MAX_GB", 1.0)
+    monkeypatch.setattr(web, "CLEANUP_KEEP_RECENT", 1)
+    called = []
+    monkeypatch.setattr(web, "purge_archives", lambda codes: called.append(codes) or [])
+
+    status, data = post(base, "/api/cleanup/run", {})
+    assert status == 200 and data["dry_run"] is True
+    assert not called
+
+
+def test_cleanup_run_with_confirm_executes(server, monkeypatch):
+    base, _ = server
+    core.save_state(web.STATE, {
+        f"D-{i}": {"code": f"D-{i}", "size": 1024**3, "at": f"2026-01-{i+1:02d}T00:00:00"}
+        for i in range(5)})
+    monkeypatch.setattr(web, "CLEANUP_MAX_GB", 1.0)
+    monkeypatch.setattr(web, "CLEANUP_KEEP_RECENT", 1)
+    called = []
+    monkeypatch.setattr(web, "purge_archives",
+                        lambda codes: called.append(codes) or [{"code": c, "ok": True} for c in codes])
+
+    status, data = post(base, "/api/cleanup/run", {"confirm": True})
+    assert status == 200 and data["dry_run"] is False
+    assert called and called[0], "确认后应真正执行"
+
+
+def test_cleanup_never_touches_active_job_codes(server, monkeypatch):
+    """正在下载的番号即使在删除清单候选里也不能被清掉。"""
+    base, _ = server
+    core.save_state(web.STATE, {
+        "BUSY-001": {"code": "BUSY-001", "size": 10 * 1024**3, "at": "2026-01-01T00:00:00"},
+        "OLD-002": {"code": "OLD-002", "size": 10 * 1024**3, "at": "2026-01-02T00:00:00"},
+    })
+    web.job_update("jx", stage="downloading", code="BUSY-001", percent=50.0)
+    monkeypatch.setattr(web, "CLEANUP_MAX_GB", 1.0)
+    monkeypatch.setattr(web, "CLEANUP_KEEP_RECENT", 0)
+
+    plan = web.build_cleanup_plan(dry_run=True)
+    assert "BUSY-001" not in [i["code"] for i in plan["delete"]]
+
+
+def test_purge_archives_keeps_state_on_failure(server, monkeypatch):
+    """Drive 删不掉时不能把 state 记录也删了，否则归档会「消失」但文件还在。"""
+    base, _ = server
+    core.save_state(web.STATE, {"KEEP-1": {"code": "KEEP-1", "size": 1}})
+    monkeypatch.setattr(web, "rclone", lambda *a, **kw: (1, "", "purge 失败"))
+    removed = web.purge_archives(["KEEP-1"])
+    assert removed == []
+    assert "KEEP-1" in core.load_state(web.STATE)
