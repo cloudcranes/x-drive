@@ -432,3 +432,36 @@ def test_webui_has_kind_selector():
     assert "番号系列" in html
     assert "kind: subKind" in html, "添加时要带上类型"
     assert "sub.key" in html, "操作要用带类型前缀的 key"
+
+
+def test_run_subscriptions_fills_name_from_page(tmp_path, monkeypatch):
+    """只填裸 ID 时，检查一次后应显示能看懂的名字，而不是一堆字母。"""
+    from app import web
+
+    monkeypatch.setattr(web, "SUBS", str(tmp_path / "subs.json"))
+    web.add_sub("rY2v", kind="series")
+    assert web.subs_snapshot()[0]["name"] == "rY2v"
+
+    async def fake_check(*a, **kw):
+        return {"new": [], "cursor": "2026-10-20", "error": "", "skipped": 0,
+                "name": "【初撮り】ネットでAV応募→AV体験撮影"}
+
+    monkeypatch.setattr(subscribe, "check", fake_check)
+    web.run_subscriptions()
+    assert web.subs_snapshot()[0]["name"] == "【初撮り】ネットでAV応募→AV体験撮影"
+
+
+def test_run_subscriptions_keeps_custom_name(tmp_path, monkeypatch):
+    """用户自己起过名字就不要覆盖。"""
+    from app import web
+
+    monkeypatch.setattr(web, "SUBS", str(tmp_path / "subs.json"))
+    web.add_sub("rY2v", kind="series", name="我的系列")
+
+    async def fake_check(*a, **kw):
+        return {"new": [], "cursor": "2026-10-20", "error": "", "skipped": 0,
+                "name": "页面上的名字"}
+
+    monkeypatch.setattr(subscribe, "check", fake_check)
+    web.run_subscriptions()
+    assert web.subs_snapshot()[0]["name"] == "我的系列"

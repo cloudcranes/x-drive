@@ -637,6 +637,9 @@ def run_subscriptions(only: str = "") -> dict:
         # 游标推进要落盘：否则下次还会重复扫同一批
         data[key]["cursor"] = out["cursor"]
         data[key]["last_run"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        # 只填了裸 ID 的订阅，从页面标题补一个能看懂的名字
+        if out.get("name") and data[key].get("name") in ("", data[key].get("id")):
+            data[key]["name"] = out["name"]
         if started:
             last = f"新片 {len(started)} 部"
         elif out["error"]:
