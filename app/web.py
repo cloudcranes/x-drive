@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from . import aria2, cleanup, codes, core, fetcher, pipeline, retry
+from . import aria2, cleanup, codes, core, diskspace, fetcher, pipeline, retry
 
 log = logging.getLogger("x-drive.web")
 
@@ -51,6 +51,11 @@ CLEANUP_MAX_GB = float(os.getenv("CLEANUP_MAX_GB", "0") or 0)
 CLEANUP_KEEP_RECENT = int(os.getenv("CLEANUP_KEEP_RECENT", "10") or 10)
 CLEANUP_OLDER_DAYS = float(os.getenv("CLEANUP_OLDER_DAYS", "0") or 0)
 TMP_ROOT = os.getenv("TMP_ROOT", "/downloads")
+# 磁盘空间闸门：下载前确认放得下，放不下就排队（写满会导致 aria2 报错并丢残片）
+DISK_RESERVE_GB = float(os.getenv("DISK_RESERVE_GB", "5") or 0)
+DISK_CHECK_INTERVAL = max(5.0, float(os.getenv("DISK_CHECK_INTERVAL", "30") or 30))
+# 排队最久等多久（秒），0 表示不限
+DISK_QUEUE_TIMEOUT = float(os.getenv("DISK_QUEUE_TIMEOUT", "0") or 0)
 
 BIND = os.getenv("WEB_BIND", "0.0.0.0")
 PORT = int(os.getenv("WEB_PORT", "8080"))
@@ -362,15 +367,122 @@ def peek(magnet: str) -> dict | None:
     return info
 
 
+# 等着被放行的任务：job_id -> (source, code)。放行后从队列移除。
+WAITING: dict[str, tuple[str, str]] = {}
+_waiting_lock = threading.Lock()
+# 任务什么时候开始排队的，用于 DISK_QUEUE_TIMEOUT
+_queued_at: dict[str, float] = {}
+
+def _pending_jobs() -> list[dict]:
+    """排队中 + 下载中的任务快照，算已占用的空间额度用。"""
+    with _jobs_lock:
+        return [dict(j) for j in JOBS.values() if j.get("stage") in ("queued", "downloading")]
+
+def admit(job_id: str) -> bool:
+    """现在放得下吗？放得下就从队列里拿掉、记上额度、启动线程。"""
+    with _waiting_lock:
+        item = WAITING.get(job_id)
+        if item is None:
+            return False
+        with _jobs_lock:
+            job = dict(JOBS.get(job_id) or {})
+        need = int(job.get("total") or 0)
+        reserve = int(DISK_RESERVE_GB * diskspace.GB)
+        free = diskspace.free_bytes(TMP_ROOT)
+        # 已经许给「已在下载」的任务的额度要先扣掉，否则几个任务会同时
+        # 判定「放得下」然后一起开下，合起来把盘吃穿。排队中的不算，
+        # 否则队列一长额度就被还没开始的任务吃光，队头永远轮不到。
+        already = diskspace.reserved_by(_pending_jobs())
+        usable = None if free is None else free - max(0, already)
+        if not diskspace.fits(need, usable, reserve):
+            return False
+        WAITING.pop(job_id, None)
+        _queued_at.pop(job_id, None)
+        # 立刻转成 downloading，这样下一次 admit 就会把这份额度算进去
+        with _jobs_lock:
+            JOBS.setdefault(job_id, {}).update(
+                {"stage": "downloading", "error": "", "queued_position": 0})
+    source, code = item
+    threading.Thread(target=run_web_job, args=(job_id, source, code), daemon=True).start()
+    return True
+
+def pump_queue() -> int:
+    """把队列里放得下的任务依次放行，返回放行数量。
+
+    按提交顺序处理：先来的先拿空间，避免大任务一直插队把小任务饿死。
+    """
+    released = 0
+    with _waiting_lock:
+        order = list(WAITING.keys())
+    for job_id in order:
+        if admit(job_id):
+            released += 1
+    _refresh_queue_positions()
+    return released
+
+def _refresh_queue_positions() -> None:
+    """给排队任务标上位置，UI 上能看出排第几个。"""
+    with _waiting_lock:
+        order = list(WAITING.keys())
+    free = diskspace.free_bytes(TMP_ROOT)
+    reserve_gb = DISK_RESERVE_GB
+    for idx, job_id in enumerate(order, start=1):
+        with _jobs_lock:
+            job = dict(JOBS.get(job_id) or {})
+        need = int(job.get("total") or 0)
+        if free is None:
+            hint = "等待磁盘空间确认"
+        else:
+            short = need + int(reserve_gb * diskspace.GB) - free
+            hint = ("等待磁盘空间" if short <= 0
+                    else f"等待磁盘空间（还差 {core.human_size(max(0, short))}）")
+        job_update(job_id, stage="queued", queued_position=idx, error=hint)
+
+def _queue_loop() -> None:
+    """后台调度：定期重算空间，够一个就放一个。"""
+    while True:
+        try:
+            pump_queue()
+            if DISK_QUEUE_TIMEOUT:
+                now = time.time()
+                with _waiting_lock:
+                    expired = [j for j, t in _queued_at.items()
+                               if now - t > DISK_QUEUE_TIMEOUT]
+                    for j in expired:
+                        WAITING.pop(j, None)
+                        _queued_at.pop(j, None)
+                for job_id in expired:
+                    job_update(job_id, stage="failed",
+                               error=f"排队超过 {int(DISK_QUEUE_TIMEOUT)}s 仍未等到磁盘空间")
+        except Exception:
+            log.exception("磁盘空间调度出错")
+        time.sleep(DISK_CHECK_INTERVAL)
+
+_job_seq = 0
+_job_seq_lock = threading.Lock()
+
+def _new_job_id() -> str:
+    """毫秒级时间戳在同一毫秒内会撞车，加一个自增序号保证唯一。"""
+    global _job_seq
+    with _job_seq_lock:
+        _job_seq += 1
+        seq = _job_seq
+    return f"j{int(time.time() * 1000) % 10**10}{seq % 100:02d}"
+
 def start_job(source: str, code: str, info: dict | None = None) -> str:
-    job_id = f"j{int(time.time() * 1000) % 10**10}"
+    job_id = _new_job_id()
     job_update(job_id, source=source[:300], code=code, stage="queued", percent=0.0, speed=0)
     if info:
         job_update(
             job_id, name=info.get("name") or "", total=info.get("size") or 0,
             screenshots=info.get("screenshots") or [],
         )
-    threading.Thread(target=run_web_job, args=(job_id, source, code), daemon=True).start()
+    with _waiting_lock:
+        WAITING[job_id] = (source, code)
+        _queued_at[job_id] = time.time()
+    # 立刻试一次：空间够就不用等下一个调度周期
+    if not admit(job_id):
+        _refresh_queue_positions()
     return job_id
 
 
@@ -794,6 +906,8 @@ def serve(host: str = BIND, port: int = PORT) -> ThreadingHTTPServer:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     httpd = serve()
+    # 磁盘空间调度线程：排队任务要能被自动放行，不能只靠提交时那一次判断
+    threading.Thread(target=_queue_loop, daemon=True, name="disk-queue").start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

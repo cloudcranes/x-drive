@@ -895,7 +895,7 @@ $("dl-submit").addEventListener("click", async () => {
 });
 
 // ── 任务队列
-const STAGE_TEXT = {queued: "排队", downloading: "下载中", organizing: "整理中",
+const STAGE_TEXT = {queued: "等空间", downloading: "下载中", organizing: "整理中",
   uploading: "上传中", done: "完成", failed: "失败"};
 const ACTIVE = new Set(["queued", "downloading", "organizing", "uploading"]);
 let lastJobs = [];
@@ -930,6 +930,8 @@ function jobNode(j) {
   if (ACTIVE.has(j.stage) && j.percent) bits.push((j.percent).toFixed(0) + "%");
   if (j.speed) bits.push((j.speed / 1048576).toFixed(1) + "MB/s");
   if (j.stage === "done" && j.link) bits.push("已上传");
+  // 排队中的任务：把位置和还差多少空间说清楚，否则只看到「等空间」不知道在等什么
+  if (j.stage === "queued" && j.queued_position) bits.push(`第 ${j.queued_position} 位`);
   if (j.error) bits.push(j.error);
   meta.append(el("span", null, bits.join(" · ") || fmt(j.at)));
   meta.append(el("span", "sp"));
