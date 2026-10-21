@@ -174,6 +174,7 @@ class Aria2:
         last_progress_at = time.monotonic()
         last_completed = 0
         progress_started = False
+        last_report = time.monotonic()
         while True:
             status = await self.call(client, "tellStatus", current, STATUS_FIELDS)
             st = status.get("status")
@@ -210,9 +211,15 @@ class Aria2:
 
             percent = (done / total) if total else 0
             speed = int(status.get("downloadSpeed") or 0)
-            if progress and (percent - last >= 0.02 or st != "active"):
+            # 进度回调节制用 2%，但「取消检查」必须每轮都做：
+            # 否则取消信号要等积够 2% 才被看见，4.87GB 的种子要下满 97MB，
+            # 慢速时用户点了停止会很久没反应。
+            changed = percent - last >= 0.02 or st != "active"
+            stalled_report = time.monotonic() - last_report >= self.poll * 4
+            if progress and (changed or stalled_report):
                 await progress(percent, speed, status)
                 last = percent
+                last_report = time.monotonic()
             if st == DONE:
                 if total and done < total:
                     raise Incomplete(

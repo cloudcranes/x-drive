@@ -350,3 +350,45 @@ def test_purge_skips_active_and_waiting():
     removed = asyncio.run(aria.purge_info_hash(C(), "5aff2ae18da78eb04665db379a3d9d8e2d382102"))
     assert removed == 0
     assert "aria2.forceRemove" not in calls and "aria2.removeDownloadResult" not in calls
+
+
+def test_progress_called_even_when_percent_barely_moves():
+    """取消信号靠进度回调传递；如果只按 2% 节流，慢速任务点了停止会很久无反应。"""
+    aria = aria2.Aria2("http://x", "s", poll=0, timeout=3)
+    calls = {"n": 0}
+    reports = []
+
+    async def call(client, method, *args):
+        calls["n"] += 1
+        if calls["n"] > 6:
+            return {"status": "complete", "totalLength": "1000000000",
+                    "completedLength": "1000000000", "downloadSpeed": "0"}
+        # 只涨了 0.1%，远达不到 2%
+        return {"status": "active", "totalLength": "1000000000",
+                "completedLength": "1000000", "downloadSpeed": "1000"}
+
+    async def progress(percent, speed, status):
+        reports.append(percent)
+
+    aria.call = call
+    asyncio.run(aria.wait(None, "g1", progress=progress))
+    assert len(reports) > 1, f"进度几乎不变时也必须定期回调，实际 {len(reports)} 次"
+
+
+def test_progress_callback_can_abort_download():
+    """回调里抛异常要能终止等待（用户点停止的路径）。"""
+    aria = aria2.Aria2("http://x", "s", poll=0, timeout=5)
+
+    async def call(client, method, *args):
+        return {"status": "active", "totalLength": "1000000000",
+                "completedLength": "500000", "downloadSpeed": "100"}
+
+    class Stop(Exception):
+        pass
+
+    async def progress(percent, speed, status):
+        raise Stop("已停止")
+
+    aria.call = call
+    with pytest.raises(Stop):
+        asyncio.run(aria.wait(None, "g1", progress=progress))
