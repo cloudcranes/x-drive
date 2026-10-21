@@ -177,7 +177,7 @@ async def check(actor_id: str, cursor: str, max_per_run: int = 1,
     known = {c.upper() for c in (known_codes or set())}
     own = client is None
     cli = client or httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT)
-    result = {"new": [], "cursor": cursor, "error": ""}
+    result = {"new": [], "cursor": cursor, "error": "", "skipped": 0}
     try:
         html = await fetch(cli, f"{BASE}/actors/{actor_id}")
         if not html:
@@ -201,10 +201,13 @@ async def check(actor_id: str, cursor: str, max_per_run: int = 1,
             best = pick_magnet(magnets)
             if not best:
                 log.info("%s 详情页没有磁力，跳过", it["code"])
+                result["skipped"] += 1
+                result["cursor"] = max(result["cursor"], it["date"])
                 continue
             size_gb = best["size_mb"] / 1024.0
             if max_size_gb and size_gb > max_size_gb:
                 log.info("%s 体积 %.2fGB 超过上限 %.1fGB，跳过", it["code"], size_gb, max_size_gb)
+                result["skipped"] += 1
                 result["cursor"] = max(result["cursor"], it["date"])
                 continue
             result["new"].append({

@@ -299,3 +299,37 @@ def test_webui_has_subscription_panel():
         assert hook in html, f"缺少 {hook}"
     assert '"bad")' not in html, "提示类名应为 err，不是 bad"
     assert "回填历史" in html, "界面要说明不会回填历史"
+
+
+def test_check_counts_skipped_by_size():
+    """被体积上限挡下的要计数，否则界面只会说「没有新片」，看不出是拦掉了。"""
+    actor_html = _fixture("javdb_actor.html")
+
+    class Fake:
+        async def get(self, url, **kw):
+            class R:
+                status_code = 200
+            r = R()
+            r.text = actor_html if "/actors/" in url else _fixture("javdb_detail.html")
+            return r
+
+        async def aclose(self):
+            pass
+
+    out = asyncio.run(subscribe.check("YnZ1K", "2026-01-01", max_per_run=3,
+                                      max_size_gb=0.0001, client=Fake()))
+    assert out["new"] == [] and out["skipped"] >= 1
+
+
+def test_last_result_says_skipped_not_empty(tmp_path, monkeypatch):
+    from app import web
+
+    monkeypatch.setattr(web, "SUBS", str(tmp_path / "subs.json"))
+    web.add_sub("YnZ1K")
+
+    async def fake_check(*a, **kw):
+        return {"new": [], "cursor": "2026-10-21", "error": "", "skipped": 2}
+
+    monkeypatch.setattr(subscribe, "check", fake_check)
+    web.run_subscriptions()
+    assert "跳过 2 部" in web.subs_snapshot()[0]["last_result"]

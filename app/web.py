@@ -606,8 +606,15 @@ def run_subscriptions(only: str = "") -> dict:
         # 游标推进要落盘：否则下次还会重复扫同一批
         data[actor_id]["cursor"] = out["cursor"]
         data[actor_id]["last_run"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        data[actor_id]["last_result"] = (f"新片 {len(started)} 部" if started
-                                        else (out["error"] or "没有新片"))
+        if started:
+            last = f"新片 {len(started)} 部"
+        elif out["error"]:
+            last = out["error"]
+        elif out.get("skipped"):
+            last = f"跳过 {out['skipped']} 部（超体积上限或没有磁力）"
+        else:
+            last = "没有新片"
+        data[actor_id]["last_result"] = last
         results.append({"actor": actor_id, "name": sub.get("name") or actor_id,
                         "started": started, "error": out["error"]})
     subscribe.save_subs(SUBS, data)
