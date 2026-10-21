@@ -234,6 +234,28 @@
   .panel{margin:14px var(--pad) 0; padding:13px 14px; border:1px solid rgba(62,186,244,.28);
     border-radius:var(--radius); background:linear-gradient(160deg,rgba(16,20,22,.95),rgba(9,9,9,.96));
     box-shadow:0 18px 40px -30px rgba(62,186,244,.8)}
+  .ghostbtn{display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:8px;
+    border:1px solid var(--line); background:transparent; color:var(--muted); cursor:pointer; font:inherit;
+    font-size:12px}
+  .ghostbtn:hover{border-color:rgba(62,186,244,.4); color:var(--text)}
+  .ghostbtn svg{width:14px; height:14px; flex:none}
+  .subs-head{display:flex; flex-direction:column; gap:9px}
+  .subs-opts{display:flex; gap:14px; align-items:center; font-size:11.5px; color:var(--muted);
+    font-family:var(--mono)}
+  .subs-opts input{width:62px; padding:5px 7px; border-radius:6px; border:1px solid var(--line);
+    background:rgba(0,0,0,.6); color:var(--text); font:inherit; font-family:var(--mono)}
+  .subs-list{margin-top:10px; display:flex; flex-direction:column; gap:6px}
+  .sub-row{display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:8px;
+    border:1px solid var(--line-soft); background:rgba(255,255,255,.02); font-size:12px}
+  .sub-row.off{opacity:.5}
+  .sub-row .nm{font-weight:600; color:var(--text-2)}
+  .sub-row .meta{font-family:var(--mono); font-size:10.5px; color:var(--dim)}
+  .sub-row .r{margin-left:auto; display:flex; gap:5px}
+  .sub-row button{font:inherit; font-size:10.5px; padding:3px 8px; border-radius:5px; cursor:pointer;
+    border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
+  .sub-row button:hover{color:var(--text); border-color:rgba(62,186,244,.4)}
+  .subs-tip{margin-top:9px; font-size:11px; color:var(--faint); line-height:1.6}
+
   .panel input[type=text]{width:100%; padding:10px 12px; border-radius:8px; font-family:var(--mono);
     font-size:12.5px; border:1px solid var(--line); background:rgba(0,0,0,.6); color:var(--text);
     outline:none; transition:border-color .16s, box-shadow .16s}
@@ -432,6 +454,14 @@
         </svg>
         <span class="lbl">新建下载</span>
       </button>
+      <button class="ghostbtn" id="subs-open" type="button" title="订阅自动化">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.7 21a2 2 0 0 1-3.4 0"/>
+        </svg>
+        <span class="lbl">订阅</span>
+      </button>
       <button class="queuebtn" id="queuebtn" type="button" title="下载队列">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 6h11M3 12h11M3 18h7"/><path d="m16 12 3 3 3-3"/><path d="M19 15V6"/>
@@ -453,6 +483,25 @@
       <span class="hint" id="dl-hint"></span>
     </div>
     <div class="preview" id="dl-preview" hidden></div>
+  </section>
+
+  <section class="panel" id="subpanel" hidden>
+    <div class="subs-head">
+      <input id="sub-actor" type="text" autocomplete="off" spellcheck="false"
+             placeholder="演员页 ID 或链接，例如 YnZ1K 或 https://javdb.com/actors/YnZ1K">
+      <div class="subs-opts">
+        <label>每次最多 <input id="sub-max" type="number" min="1" max="5" value="1"></label>
+        <label>单片上限 <input id="sub-size" type="number" min="0" step="0.5" value="8">GB</label>
+      </div>
+    </div>
+    <div class="panel-actions">
+      <button class="primary" id="sub-add" type="button">添加订阅</button>
+      <button class="ghost" id="sub-run" type="button">立即检查全部</button>
+      <button class="ghost" id="sub-close" type="button">关闭</button>
+      <span class="hint" id="sub-hint"></span>
+    </div>
+    <div class="subs-list" id="subs-list"></div>
+    <div class="subs-tip">订阅只会抓「添加之后」新出的片，不会回填历史。每轮受条数和体积上限约束。</div>
   </section>
 
   <div class="resultbar">
@@ -969,7 +1018,112 @@ $("logout").addEventListener("click", async () => {
 });
 
 // ── 新建下载
-function openPanel() {
+// ── 订阅自动化
+function setSubHint(text, kind) {
+  const h = $("sub-hint");
+  h.textContent = text || "";
+  h.className = "hint" + (kind ? " " + kind : "");
+}
+
+async function subsApi(path, body) {
+  const opts = body === undefined ? {cache: "no-store"}
+    : {method: "POST", headers: {"Content-Type": "application/json"},
+       body: JSON.stringify(body)};
+  const r = await fetch(BASE + path, authInit(opts));
+  return r.json();
+}
+
+async function renderSubs() {
+  const box = $("subs-list");
+  let data;
+  try {
+    data = await subsApi("/api/subs");
+  } catch (e) {
+    box.textContent = "";
+    box.append(el("div", "meta", "读取订阅失败：" + e.message));
+    return;
+  }
+  box.textContent = "";
+  const subs = (data && data.subs) || [];
+  if (!subs.length) {
+    box.append(el("div", "meta", "还没有订阅。粘贴演员页链接后点「添加订阅」。"));
+    return;
+  }
+  for (const sub of subs) {
+    const row = el("div", "sub-row" + (sub.enabled ? "" : " off"));
+    row.append(el("span", "nm", sub.name || sub.id));
+    const meta = [`游标 ${sub.cursor || "—"}`, `每次 ${sub.max_per_run || 1} 部`];
+    if (sub.max_size_gb) meta.push(`单片≤${sub.max_size_gb}GB`);
+    if (sub.last_result) meta.push(sub.last_result);
+    row.append(el("span", "meta", meta.join(" · ")));
+    const r = el("div", "r");
+    const tog = el("button", null, sub.enabled ? "暂停" : "启用");
+    tog.addEventListener("click", async () => {
+      await subsApi("/api/subs/toggle", {id: sub.id, enabled: !sub.enabled});
+      renderSubs();
+    });
+    const run = el("button", null, "立即检查");
+    run.addEventListener("click", async () => {
+      setSubHint("检查中…");
+      const res = await subsApi("/api/subs/run", {id: sub.id});
+      const n = (res.results || []).reduce((a, x) => a + (x.started || []).length, 0);
+      setSubHint(res.ok ? `新提交 ${n} 个任务` : (res.error || "失败"), res.ok ? "ok" : "err");
+      renderSubs();
+      load();
+    });
+    const del = el("button", null, "删除");
+    del.addEventListener("click", async () => {
+      if (!confirm(`取消对 ${sub.name || sub.id} 的订阅？\n已有的归档不受影响。`)) return;
+      await subsApi("/api/subs/remove", {id: sub.id});
+      renderSubs();
+    });
+    r.append(tog, run, del);
+    row.append(r);
+    box.append(row);
+  }
+}
+
+function openSubs() {
+  $("subpanel").hidden = false;
+  $("subs-open").classList.add("on");
+  $("sub-actor").focus();
+  renderSubs();
+}
+function closeSubs() {
+  $("subpanel").hidden = true;
+  $("subs-open").classList.remove("on");
+  setSubHint("");
+}
+
+$("subs-open").addEventListener("click", () => $("subpanel").hidden ? openSubs() : closeSubs());
+$("sub-close").addEventListener("click", closeSubs);
+$("sub-add").addEventListener("click", async () => {
+  const actor = $("sub-actor").value.trim();
+  if (!actor) { setSubHint("先填演员页 ID 或链接", "err"); return; }
+  setSubHint("添加中…");
+  const res = await subsApi("/api/subs/add", {
+    actor,
+    max_per_run: parseInt($("sub-max").value || "1", 10),
+    max_size_gb: parseFloat($("sub-size").value || "0"),
+  });
+  if (res && res.ok) {
+    $("sub-actor").value = "";
+    setSubHint("已添加", "ok");
+    renderSubs();
+  } else {
+    setSubHint((res && res.error) || "添加失败", "err");
+  }
+});
+$("sub-run").addEventListener("click", async () => {
+  setSubHint("检查全部订阅…");
+  const res = await subsApi("/api/subs/run", {});
+  const n = (res.results || []).reduce((a, x) => a + (x.started || []).length, 0);
+  setSubHint(res.ok ? `新提交 ${n} 个任务` : (res.error || "失败"), res.ok ? "ok" : "err");
+  renderSubs();
+  load();
+});
+
+function openPanel() {function openPanel() {
   $("panel").hidden = false;
   $("new-task").classList.add("on");
   $("dl-text").focus();

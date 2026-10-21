@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from . import aria2, cleanup, codes, core, diskspace, fetcher, meta, pipeline, retry
+from . import aria2, cleanup, codes, core, diskspace, fetcher, meta, pipeline, retry, subscribe
 
 log = logging.getLogger("x-drive.web")
 
@@ -46,6 +46,9 @@ RETRIES = max(0, int(os.getenv("RETRIES", "2") or 2))
 RETRY_BASE_DELAY = float(os.getenv("RETRY_BASE_DELAY", "3") or 3)
 # 连续这么久没有任何新字节就放弃（死种），0 表示不检测
 STALL_TIMEOUT = float(os.getenv("STALL_TIMEOUT", "900") or 0)
+# 订阅自动化：订阅存在 data/subs.json，后台每隔 SUBS_INTERVAL 秒查一次
+SUBS = os.getenv("SUBS_PATH", "/data/subs.json")
+SUBS_INTERVAL = max(300.0, float(os.getenv("SUBS_INTERVAL", "3600") or 3600))
 # 归档回收：默认关闭（0），需要时再开，避免误删
 CLEANUP_MAX_GB = float(os.getenv("CLEANUP_MAX_GB", "0") or 0)
 CLEANUP_KEEP_RECENT = int(os.getenv("CLEANUP_KEEP_RECENT", "10") or 10)
@@ -517,6 +520,119 @@ def backfill_meta(limit: int = 50) -> dict:
     return {"ok": True, "updated": done, "failed": failed,
             "remaining": max(0, len(todo) - len(done) - len(failed))}
 
+# ---------------------------------------------------------------- 订阅自动化
+
+def subs_snapshot() -> list[dict]:
+    return sorted(subscribe.load_subs(SUBS).values(),
+                  key=lambda d: d.get("added_at") or "", reverse=True)
+
+
+def add_sub(actor: str, max_per_run: int = 1, max_size_gb: float = 0,
+            name: str = "") -> dict:
+    """加一个演员订阅。游标设成今天，只抓之后出的新片，不回填历史。"""
+    actor_id = subscribe.actor_id_of(actor)
+    if not actor_id:
+        return {"ok": False, "error": "需要一个 javdb 演员页 ID 或链接"}
+    data = subscribe.load_subs(SUBS)
+    if actor_id in data:
+        return {"ok": False, "error": f"{actor_id} 已经订阅过了"}
+    sub = subscribe.new_sub(actor_id, name or actor_id,
+                            cursor=time.strftime("%Y-%m-%d"),
+                            max_per_run=max_per_run, max_size_gb=max_size_gb)
+    data[actor_id] = sub
+    subscribe.save_subs(SUBS, data)
+    return {"ok": True, "sub": sub}
+
+
+def remove_sub(actor_id: str) -> dict:
+    data = subscribe.load_subs(SUBS)
+    if actor_id not in data:
+        return {"ok": False, "error": "订阅不存在"}
+    data.pop(actor_id)
+    subscribe.save_subs(SUBS, data)
+    return {"ok": True}
+
+
+def toggle_sub(actor_id: str, enabled: bool) -> dict:
+    data = subscribe.load_subs(SUBS)
+    if actor_id not in data:
+        return {"ok": False, "error": "订阅不存在"}
+    data[actor_id]["enabled"] = bool(enabled)
+    subscribe.save_subs(SUBS, data)
+    return {"ok": True, "sub": data[actor_id]}
+
+
+def known_codes_now() -> set[str]:
+    """已经归档 + 正在跑的番号，自动下载前要拿这个去重。"""
+    codes = set()
+    try:
+        codes |= {str(k).upper() for k in core.load_state(STATE)}
+    except Exception:
+        pass
+    codes |= {c.upper() for c in active_codes() if c}
+    return codes
+
+
+def run_subscriptions(only: str = "") -> dict:
+    """查所有启用的订阅，把新片提交下载。返回每个订阅的结果。
+
+    这是后台任务：单个订阅出问题只记在该条目上，不影响其它订阅，也不抛异常。
+    """
+    if not diskspace_room_ok():
+        return {"ok": False, "error": "磁盘空间不足，本轮跳过", "results": []}
+
+    data = subscribe.load_subs(SUBS)
+    results = []
+    known = known_codes_now()
+    for actor_id, sub in list(data.items()):
+        if only and actor_id != only:
+            continue
+        if not sub.get("enabled", True):
+            continue
+        out = asyncio.run(subscribe.check(
+            actor_id, sub.get("cursor") or "", sub.get("max_per_run") or 1,
+            sub.get("max_size_gb") or 0, known_codes=known))
+        started = []
+        for item in out["new"]:
+            code = item["code"]
+            if code.upper() in known:
+                continue
+            job_id = start_job(item["magnet"], code,
+                               {"name": item.get("title") or code,
+                                "size": int(item.get("size_mb") or 0) * 1024 * 1024,
+                                "screenshots": []})
+            known.add(code.upper())
+            started.append({"code": code, "job": job_id, "size_mb": item["size_mb"]})
+        # 游标推进要落盘：否则下次还会重复扫同一批
+        data[actor_id]["cursor"] = out["cursor"]
+        data[actor_id]["last_run"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        data[actor_id]["last_result"] = (f"新片 {len(started)} 部" if started
+                                        else (out["error"] or "没有新片"))
+        results.append({"actor": actor_id, "name": sub.get("name") or actor_id,
+                        "started": started, "error": out["error"]})
+    subscribe.save_subs(SUBS, data)
+    return {"ok": True, "results": results}
+
+
+def diskspace_room_ok() -> bool:
+    """有空间才跑自动下载；不够就整轮跳过，等下次。"""
+    free = diskspace.free_bytes(TMP_ROOT)
+    reserve = int(DISK_RESERVE_GB * diskspace.GB)
+    return free is None or free > reserve
+
+
+def _subs_loop() -> None:
+    while True:
+        try:
+            res = run_subscriptions()
+            n = sum(len(r.get("started") or []) for r in res.get("results") or [])
+            if n:
+                log.info("订阅轮询：新提交 %d 个任务", n)
+        except Exception:
+            log.exception("订阅轮询出错")
+        time.sleep(SUBS_INTERVAL)
+
+
 def build_cleanup_plan(dry_run: bool = True) -> dict:
     """算出该删哪些归档；dry_run 时只给清单不执行。"""
     state = core.load_state(STATE)
@@ -813,6 +929,57 @@ class Handler(BaseHTTPRequestHandler):
             plan = build_cleanup_plan(dry_run=False)
             self._json({"ok": True, **plan})
             return
+        if path == "/api/subs/add":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 8192)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            self._json(add_sub(payload.get("actor") or "",
+                               int(payload.get("max_per_run") or 1),
+                               float(payload.get("max_size_gb") or 0),
+                               payload.get("name") or ""))
+            return
+        if path == "/api/subs/toggle":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            self._json(toggle_sub(payload.get("id") or "", bool(payload.get("enabled"))))
+            return
+        if path == "/api/subs/remove":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            self._json(remove_sub(payload.get("id") or ""))
+            return
+        if path == "/api/subs/run":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            self._json(run_subscriptions(payload.get("id") or ""))
+            return
         if path == "/api/archive/delete":
             if not self._authorized():
                 self._drain()
@@ -921,6 +1088,9 @@ class Handler(BaseHTTPRequestHandler):
             info = peek(magnet)
             self._json({"ok": bool(info), "info": info}, 200 if info else 502)
             return
+        if path == "/api/subs":
+            self._json({"ok": True, "subs": subs_snapshot()})
+            return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
             limit = int((parse_qs(parts.query).get("limit", ["50"]) or ["50"])[0] or 50)
@@ -982,6 +1152,8 @@ def main() -> None:
     httpd = serve()
     # 磁盘空间调度线程：排队任务要能被自动放行，不能只靠提交时那一次判断
     threading.Thread(target=_queue_loop, daemon=True, name="disk-queue").start()
+    # 订阅轮询线程：定时查演员页，有新的自动提交
+    threading.Thread(target=_subs_loop, daemon=True, name="subs").start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
