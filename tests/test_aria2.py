@@ -63,6 +63,20 @@ def test_add_magnet_sets_safe_options():
     assert c.calls[0]["params"][0] == ["magnet:?xt=urn:btih:a"]
 
 
+def test_add_magnet_overwrites_without_control_file():
+    """上次中断留下的残片没有 .aria2 控制文件时，aria2 会拒绝下载。
+
+    实测（aria2 1.36.0）：/downloads/Sintel 里有同名文件但没有 .aria2 时，
+    addUri 后子任务直接 error，报 "File ... exists, but a control file
+    (*.aria2) does not exist"。加上这个选项后同一场景能完整下载完。
+    """
+    c = FakeClient([{"result": "gid123"}])
+    asyncio.run(aria2.Aria2("http://x").add_magnet(c, "magnet:?xt=urn:btih:a", "/downloads/job"))
+    opts = c.calls[0]["params"][1]
+    assert opts["allow-overwrite-without-control-file"] == "true"
+    assert opts["allow-overwrite"] == "true"
+    assert opts["auto-file-renaming"] == "false", "不许改名，否则文件名对不上番号"
+
 def test_wait_returns_on_complete():
     c = FakeClient([
         {"result": {"status": "active", "totalLength": "100", "completedLength": "40", "downloadSpeed": "1000"}},

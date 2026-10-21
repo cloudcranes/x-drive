@@ -50,6 +50,19 @@ sed -i "s|^RCLONE_CONFIG_HOST=.*|RCLONE_CONFIG_HOST=$RCLONE_CONF|" "$ENV_FILE"
 grep -q '^RCLONE_CONFIG_HOST=' "$ENV_FILE" || echo "RCLONE_CONFIG_HOST=$RCLONE_CONF" >> "$ENV_FILE"
 
 mkdir -p data downloads
+
+# aria2 只在 /config 为空时生成默认配置，之后一直沿用挂载目录里的 aria2.conf。
+# 先起一次让它生成，再把实测有效的参数写进去，最后重启让参数生效。
+if [ ! -f aria2-config/aria2.conf ]; then
+  echo "== 首次启动 aria2 以生成默认配置"
+  docker compose up -d aria2
+  for _ in $(seq 1 30); do
+    [ -f aria2-config/aria2.conf ] && break
+    sleep 2
+  done
+fi
+bash scripts/tune-aria2.sh
+
 docker compose up -d --build
 sleep 10
 docker compose ps

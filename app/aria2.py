@@ -84,8 +84,15 @@ class Aria2:
             "seed-time": "0",
             "bt-stop-timeout": "180",
             "file-allocation": "none",
-            "auto-file-renaming": "false",
+            # 同名文件直接覆盖：上次中断留下的残片不该让新任务失败
             "allow-overwrite": "true",
+            # 不允许自动改名，配合上面两项把内容固定回原来的名字
+            "auto-file-renaming": "false",
+            # 关键：允许在没有 .aria2 控制文件时覆盖已存在的文件。默认 false 时，
+            # 目录里留了残片（上次中断/SIGKILL 后没写控制文件）而 .aria2 丢失，
+            # aria2 会直接报 "File ... exists, but a control file ... does not
+            # exist" 并取消下载 —— 同一个番号重试永远失败。
+            "allow-overwrite-without-control-file": "true",
         }
         # 同一个种子重复提交时，aria2 会因为我们保留的旧记录（失败任务不清记录）
         # 直接报 "InfoHash ... is already registered"。先把同名记录清掉。
