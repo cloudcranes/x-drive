@@ -35,37 +35,38 @@ jobs:
           docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
             python -m pytest tests -q -p no:cacheprovider
 
-      # 失败时：把用例级输出写进 Job Summary，同时用 commit status 的 description
-      # 带出关键一行（Actions 日志需要认证，status 描述是公开可读的）
+      # 失败诊断：Actions 日志需要认证才能读，所以把关键信息编码进
+      # artifact 名称（artifacts 列表公开可读），正文同时留在 Summary。
       - name: 失败诊断
         if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           OUT=$(docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim \
-            python -m pytest tests -q -p no:cacheprovider -x --tb=long 2>&1 | tail -80) || true
+            python -m pytest tests -p no:cacheprovider --tb=line -q 2>&1)
+          RC=$?
+          echo "$OUT" > /tmp/ci-failure.txt
           {
-            echo "### 测试失败诊断"
+            echo "### 测试失败诊断（exit=$RC）"
             echo '```'
-            echo "$OUT"
+            echo "$OUT" | tail -60
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # 把失败行写进 artifact 文件名：artifacts 列表是公开可读的，
-          # 这样即使拿不到 Actions 日志也能看到关键一行
-          KEY=$(echo "$OUT" | grep -E "^(FAILED|ERROR)" | head -2 | tr '\n' '_' | tr -cd 'A-Za-z0-9._-' | cut -c1-90)
-          [ -z "$KEY" ] && KEY=$(echo "$OUT" | grep -iE "error|failed" | head -1 | tr -cd 'A-Za-z0-9._-' | cut -c1-90)
-          [ -z "$KEY" ] && KEY="no-explicit-failure-line"
-          echo "$OUT" > /tmp/ci-failure.txt
-          mkdir -p /tmp/ci-art && cp /tmp/ci-failure.txt "/tmp/ci-art/failure-${KEY}.txt"
-          echo "artifact name hint: failure-${KEY}"
-        # 无论成功失败都上传，便于事后取回
+          # 短摘要：优先取 FAILED / ERROR 开头那一行
+          KEY=$(printf '%s\n' "$OUT" | grep -E "^(FAILED|ERROR)" | head -1)
+          [ -z "$KEY" ] && KEY=$(printf '%s\n' "$OUT" | grep -iE "(error|exception|assert)" | tail -1)
+          [ -z "$KEY" ] && KEY=$(printf '%s\n' "$OUT" | tail -1)
+          SAFE=$(printf '%s' "$KEY" | tr -cs 'A-Za-z0-9._-' '_' | cut -c1-100)
+          [ -z "$SAFE" ] && SAFE="unknown"
+          echo "KEY=$SAFE"
+          echo "ARTNAME=ci-fail-${SAFE}" >> "$GITHUB_ENV"
+
       - name: 上传诊断
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-failure-${{ github.run_id }}
-          path: /tmp/ci-art/
+          name: ${{ env.ARTNAME }}
+          path: /tmp/ci-failure.txt
           retention-days: 3
 
   build:
