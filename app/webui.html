@@ -1,0 +1,1896 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x-drive · 番号归档</title>
+<link rel="icon" href="data:,">
+<style>
+  /* 两级结构：左侧固定侧栏（品牌 / 统计 / 筛选 / 状态），右侧内容区（工具条 + 卡片网格）。
+     窄屏时侧栏收进抽屉，工具条变成上下两行。 */
+  :root{
+    --bg:#000; --panel:rgba(13,13,13,.85); --panel-2:rgba(20,20,20,.9);
+    --line:rgba(255,255,255,.10); --line-soft:rgba(255,255,255,.06); --line-2:rgba(251,219,163,.22);
+    --text:#f8fafc; --text-2:#dbe2ec; --muted:#a3b0c2; --dim:#6b7c94; --faint:#4a5566;
+    --cyan:#3ebaf4; --cyan-dim:rgba(62,186,244,.10); --green:#5fd38d; --red:#ef6a6a; --violet:#c9a3ff;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;
+    --side:264px;        /* 侧栏宽度 */
+    --bar-w:302px;       /* 下载队列宽度 */
+    --pad:24px;          /* 内容区左右内边距 */
+    --gap:16px;
+    --radius:12px;
+  }
+  *{box-sizing:border-box}
+  html{scrollbar-gutter:stable}
+  body{
+    margin:0; min-height:100vh; color:var(--text); background:var(--bg);
+    background-image:
+      radial-gradient(760px 460px at 92% -12%, rgba(62,186,244,.13), transparent 66%),
+      radial-gradient(560px 380px at -6% 4%, rgba(236,72,153,.06), transparent 70%);
+    background-attachment:fixed;
+    font:15px/1.6 var(--sans); -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit}
+  [hidden]{display:none !important}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.13); border-radius:20px; border:3px solid transparent;
+    background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(62,186,244,.4); background-clip:content-box}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  button{font:inherit; color:inherit; cursor:pointer}
+  :focus-visible{outline:2px solid rgba(62,186,244,.7); outline-offset:2px}
+
+  /* ───────────────────────── 侧栏 */
+  .side{
+    position:fixed; inset:0 auto 0 0; width:var(--side); z-index:30;
+    display:flex; flex-direction:column; gap:16px; padding:18px 16px 14px;
+    background:linear-gradient(180deg,rgba(12,12,12,.96),rgba(6,6,6,.98));
+    border-right:1px solid var(--line); overflow:hidden;   /* 只让筛选区滚动，页脚钉底 */
+  }
+  /* 品牌 + 统计固定，系列/月份各自可滚动，页脚永远可见 */
+  .side > .brand, .side > .stat{flex:none}
+  .side-block{display:flex; flex-direction:column; gap:2px; min-height:0}
+  .side-block.series{max-height:42%}
+  .side-block.month{max-height:30%}
+  .dimtabs{display:flex; gap:3px; padding:0 2px 6px}
+  .dimtabs button{flex:1; font:inherit; font-size:10.5px; padding:4px 0; cursor:pointer;
+    border-radius:6px; border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
+  .dimtabs button.on{color:var(--cyan); border-color:rgba(62,186,244,.45); background:rgba(62,186,244,.1)}
+  .dimtabs button:hover{border-color:rgba(62,186,244,.35)}
+  .side-block .nav{overflow-y:auto; min-height:0; margin-right:-4px; padding-right:4px}
+  .brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.02em; font-size:17px;
+    padding:0 4px}
+  .brand .mark{width:28px;height:28px;border-radius:9px;display:grid;place-items:center; flex:none;
+    background:linear-gradient(150deg,rgba(62,186,244,.32),rgba(62,186,244,.08));
+    border:1px solid rgba(62,186,244,.4); box-shadow:0 0 20px -8px rgba(62,186,244,.9)}
+  .brand .mark svg{width:14px;height:14px;stroke:var(--cyan)}
+  .brand i{font-style:normal; color:var(--cyan)}
+
+  .side-h{display:flex; align-items:center; justify-content:space-between;
+    font-family:var(--mono); font-size:10.5px; font-weight:700; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--faint); padding:0 4px; margin:2px 0 -6px}
+  .side-h button{border:0; background:none; color:var(--dim); font:inherit; letter-spacing:0;
+    text-transform:none; padding:2px 0; cursor:pointer}
+  .side-h button:hover{color:var(--cyan)}
+
+  /* 统计 */
+  .stat{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line-soft);
+    border:1px solid var(--line); border-radius:var(--radius); overflow:hidden}
+  .stat div{background:rgba(10,10,10,.9); padding:10px 12px}
+  .stat b{display:block; font-family:var(--mono); font-size:17px; font-weight:800; line-height:1.25;
+    letter-spacing:-.02em; font-variant-numeric:tabular-nums}
+  .stat span{display:block; font-size:10.5px; color:var(--dim); letter-spacing:.03em; margin-top:1px}
+
+  /* 导航 / 筛选条目 */
+  .nav{display:flex; flex-direction:column; gap:1px}
+  .nav .it{display:flex; align-items:center; gap:9px; width:100%; padding:7px 10px; border:0;
+    border-radius:7px; background:none; text-align:left; color:var(--muted); font-size:13px;
+    transition:background .14s, color .14s}
+  .nav .it:hover{background:rgba(255,255,255,.05); color:var(--text)}
+  .nav .it.on{background:rgba(62,186,244,.11); color:var(--cyan)}
+  .nav .it.on .n{color:var(--cyan)}
+  .nav .it .n{font-family:var(--mono); font-size:11.5px; color:var(--dim); margin-left:auto;
+    font-variant-numeric:tabular-nums}
+  .nav .it .t{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .nav .it.more{justify-content:center; color:var(--dim); font-size:11.5px; border:1px dashed var(--line);
+    margin-top:4px}
+  .nav .it.more:hover{color:var(--cyan); border-color:rgba(62,186,244,.4)}
+
+  .side-foot{margin-top:auto; display:flex; flex-direction:column; gap:9px; padding:0 2px}
+  .status{display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px;
+    color:var(--dim)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 10px var(--cyan);flex:none}
+  .dot.off{background:var(--red);box-shadow:0 0 10px var(--red)}
+  #health{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .side-actions{display:flex; gap:8px}
+  .ghost{flex:1; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    padding:7px 10px; border-radius:8px; border:1px solid var(--line); background:rgba(255,255,255,.02);
+    color:var(--muted); font-size:12px; cursor:pointer; transition:color .14s, border-color .14s, background .14s}
+  .ghost:hover{color:var(--text); border-color:rgba(255,255,255,.2); background:rgba(255,255,255,.05)}
+  .ghost svg{width:13px;height:13px}
+  .ghost.on{color:var(--cyan); border-color:rgba(62,186,244,.4); background:var(--cyan-dim)}
+  #updated{font-family:var(--mono); font-size:10.5px; color:var(--faint); padding:0 2px}
+
+  /* ───────────────────────── 内容区 */
+  .shell{margin-left:var(--side); display:flex; align-items:flex-start; min-width:0}
+  .main{flex:1; min-width:0}
+  .toolbar{position:sticky; top:0; z-index:20; display:flex; flex-direction:column; gap:9px;
+    padding:14px var(--pad) 11px; background:rgba(0,0,0,.84); backdrop-filter:blur(16px);
+    border-bottom:1px solid var(--line)}
+  .tb-row{display:flex; align-items:center; gap:10px; min-width:0}
+  .tb-search{flex:1; min-width:0; position:relative; display:flex; align-items:center}
+  .tb-search svg{position:absolute; left:11px; width:14px; height:14px; stroke:var(--dim); pointer-events:none}
+  .tb-search input{width:100%; padding:8px 12px 8px 33px; border-radius:8px; font:inherit; font-size:13px;
+    border:1px solid var(--line); background:rgba(13,13,13,.9); color:var(--text); outline:none;
+    transition:border-color .16s, box-shadow .16s}
+  .tb-search input::placeholder{color:var(--faint)}
+  .tb-search input:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+  .tb-seg{display:flex; gap:1px; padding:2px; border-radius:9px; border:1px solid var(--line);
+    background:rgba(13,13,13,.9); flex:none}
+  .tb-seg button{border:0; background:none; padding:5px 11px; border-radius:7px; font-size:12.5px;
+    color:var(--muted); transition:background .14s, color .14s; white-space:nowrap}
+  .tb-seg button:hover{color:var(--text)}
+  .tb-seg button.on{background:rgba(62,186,244,.14); color:var(--cyan); font-weight:600}
+  .pill{display:inline-flex; align-items:center; gap:6px; padding:6px 11px; border-radius:999px;
+    border:1px solid var(--line); background:rgba(13,13,13,.9); color:var(--muted); font-size:12px;
+    white-space:nowrap; max-width:240px; transition:color .14s, border-color .14s, background .14s}
+  .pill:hover{color:var(--text); border-color:rgba(255,255,255,.2)}
+  .pill.on{color:var(--cyan); border-color:rgba(62,186,244,.5); background:var(--cyan-dim)}
+  .pill .x{font-size:13px; line-height:1; opacity:.7}
+  .pill .cnt{font-family:var(--mono); font-size:10.5px; color:var(--dim)}
+  .spacer{flex:1; min-width:0}
+  .primary{display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:8px;
+    border:1px solid transparent; font-weight:700; font-size:13px; white-space:nowrap;
+    color:#04140d; background:linear-gradient(150deg,var(--cyan),#2b9fd0);
+    box-shadow:0 6px 18px -10px rgba(62,186,244,.9); transition:filter .16s, transform .16s}
+  .primary:hover{filter:brightness(1.08)}
+  .primary:active{transform:translateY(1px)}
+  .primary svg{width:13px;height:13px;stroke:#04140d}
+  .queuebtn{position:relative; display:inline-flex; align-items:center; gap:7px; padding:8px 12px;
+    border-radius:8px; border:1px solid var(--line); background:rgba(13,13,13,.9); color:var(--muted);
+    font-size:12.5px; white-space:nowrap; transition:color .14s, border-color .14s, background .14s}
+  .queuebtn:hover{color:var(--text); border-color:rgba(255,255,255,.2)}
+  .queuebtn.on{color:var(--cyan); border-color:rgba(62,186,244,.45); background:var(--cyan-dim)}
+  .queuebtn svg{width:14px;height:14px;stroke:currentColor}
+  .queuebtn .n{font-family:var(--mono); font-size:10.5px; color:var(--dim); min-width:0}
+  .queuebtn.busy .n{color:var(--cyan)}
+
+  .filters{display:flex; align-items:center; gap:7px; overflow-x:auto; scrollbar-width:none;
+    padding-bottom:1px}
+  .filters::-webkit-scrollbar{display:none}
+  .filters .lb{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--faint); flex:none; margin-right:1px}
+  .filters .div{width:1px; height:16px; background:var(--line); flex:none; margin:0 3px}
+
+  /* 结果条 */
+  .resultbar{display:flex; align-items:baseline; gap:10px; padding:16px var(--pad) 0; min-height:34px}
+  .resultbar h2{margin:0; font-size:14.5px; font-weight:700; letter-spacing:-.01em}
+  .resultbar .sub{font-family:var(--mono); font-size:11.5px; color:var(--dim)}
+  .resultbar .sub b{color:var(--text-2); font-weight:700}
+  .resultbar .right{margin-left:auto; display:flex; align-items:center; gap:7px}
+  .sortsel{font-family:var(--mono); font-size:11px; padding:4px 7px; border-radius:6px;
+    border:1px solid var(--line); background:rgba(13,13,13,.9); color:var(--muted); outline:none; cursor:pointer}
+  .sortsel:focus{border-color:rgba(62,186,244,.5)}
+
+  /* 卡片网格 */
+  .grid{display:grid; gap:var(--gap); padding:14px var(--pad) 72px;
+    grid-template-columns:repeat(auto-fill, minmax(232px,1fr))}
+
+  .card{position:relative; display:flex; flex-direction:column; border:1px solid var(--line);
+    border-radius:var(--radius); background:linear-gradient(180deg,rgba(19,19,19,.92),rgba(9,9,9,.95));
+    overflow:hidden; box-shadow:0 6px 20px -14px rgba(0,0,0,.9);
+    transition:border-color .18s, box-shadow .18s, transform .18s}
+  .card:hover{border-color:rgba(62,186,244,.42); transform:translateY(-2px);
+    box-shadow:0 16px 30px -22px rgba(0,0,0,.95), 0 0 22px -14px rgba(62,186,244,.75)}
+  .card.hl{border-color:rgba(62,186,244,.6); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+
+  /* 封面：等比填充，固定比例避免不同图尺寸把网格撑乱 */
+  .card-cover{aspect-ratio:16/9; overflow:hidden; background:#0b0b0b; border-bottom:1px solid var(--line-soft)}
+  .card-cover img{width:100%; height:100%; object-fit:cover; display:block; opacity:.92;
+    transition:opacity .18s, transform .3s}
+  .card:hover .card-cover img{opacity:1; transform:scale(1.03)}
+  .card-title{padding:9px 13px 0; font-size:12.5px; line-height:1.45; color:var(--text);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .card-actors{padding:8px 13px 0; display:flex; flex-wrap:wrap; gap:5px}
+  .actor-chip{font:inherit; font-size:10.5px; padding:2px 8px; border-radius:999px; cursor:pointer;
+    color:var(--violet); border:1px solid rgba(201,163,255,.28); background:rgba(201,163,255,.07)}
+  .actor-chip:hover{border-color:rgba(201,163,255,.6); background:rgba(201,163,255,.14)}
+  .tag.rate{color:#ffd479; border-color:rgba(255,212,121,.3); background:rgba(255,212,121,.07)}
+
+  .card-head{display:flex; align-items:flex-start; gap:9px; padding:13px 13px 0}
+  .series{font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--faint); padding-top:3px; flex:none; max-width:38%;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .code{margin-left:auto; font-family:var(--mono); font-size:16.5px; font-weight:800;
+    letter-spacing:-.015em; line-height:1.3; color:var(--text); text-align:right;
+    overflow-wrap:anywhere; text-shadow:0 0 20px rgba(62,186,244,.22)}
+  .card-body{padding:6px 13px 0; display:flex; flex-wrap:wrap; gap:6px; align-items:center}
+  .tag{font-family:var(--mono); font-size:10.5px; letter-spacing:.02em; padding:2.5px 7px;
+    border-radius:5px; border:1px solid var(--line-soft); background:rgba(255,255,255,.03); color:var(--muted)}
+  .tag.vid{color:var(--cyan); border-color:rgba(62,186,244,.32); background:rgba(62,186,244,.07)}
+  .tag.img{color:var(--violet); border-color:rgba(201,163,255,.3); background:rgba(201,163,255,.06)}
+  .tag.warn{color:#ffc98a; border-color:rgba(255,201,138,.3); background:rgba(255,201,138,.06)}
+  .card-foot{display:flex; align-items:center; gap:8px; margin-top:auto;
+    padding:10px 13px 11px; border-top:1px solid var(--line-soft); font-family:var(--mono); font-size:10.5px;
+    color:var(--dim)}
+  .card-foot .time{font-variant-numeric:tabular-nums}
+  .card-foot a{margin-left:auto; color:var(--cyan); text-decoration:none; font-weight:600;
+    padding:1px 0; white-space:nowrap}
+  .card-foot a:hover{text-decoration:underline}
+  .card-foot .nolink{margin-left:auto; color:var(--faint)}
+  .card-del{font:inherit; font-family:var(--mono); font-size:10px; padding:2px 8px; cursor:pointer;
+    border-radius:5px; border:1px solid transparent; background:transparent; color:var(--faint);
+    transition:color .15s, border-color .15s, background .15s}
+  .card-del:hover{color:#ff8a8a; border-color:rgba(255,138,138,.4); background:rgba(255,138,138,.09)}
+
+  .empty{margin:26px var(--pad) 60px; padding:44px 22px; color:var(--muted); text-align:center;
+    border:1px dashed var(--line); border-radius:var(--radius)}
+  .empty b{display:block; color:var(--text-2); font-size:15px; margin-bottom:6px}
+  .empty span{font-size:12.5px; color:var(--dim)}
+
+  /* ───────────────────────── 新建下载面板 */
+  .panel{margin:14px var(--pad) 0; padding:13px 14px; border:1px solid rgba(62,186,244,.28);
+    border-radius:var(--radius); background:linear-gradient(160deg,rgba(16,20,22,.95),rgba(9,9,9,.96));
+    box-shadow:0 18px 40px -30px rgba(62,186,244,.8)}
+  .ghostbtn{display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:8px;
+    border:1px solid var(--line); background:transparent; color:var(--muted); cursor:pointer; font:inherit;
+    font-size:12px}
+  .ghostbtn:hover{border-color:rgba(62,186,244,.4); color:var(--text)}
+  .ghostbtn svg{width:14px; height:14px; flex:none}
+  .subs-head{display:flex; flex-direction:column; gap:9px}
+  .subs-kind{display:flex; gap:4px}
+  .subs-kind button{flex:none; font:inherit; font-size:11.5px; padding:5px 13px; cursor:pointer;
+    border-radius:7px; border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
+  .subs-kind button.on{color:var(--cyan); border-color:rgba(62,186,244,.45); background:rgba(62,186,244,.1)}
+  .subs-kind button:hover{border-color:rgba(62,186,244,.35)}
+
+  .subs-opts{display:flex; gap:14px; align-items:center; font-size:11.5px; color:var(--muted);
+    font-family:var(--mono)}
+  .subs-opts input{width:62px; padding:5px 7px; border-radius:6px; border:1px solid var(--line);
+    background:rgba(0,0,0,.6); color:var(--text); font:inherit; font-family:var(--mono)}
+  .subs-list{margin-top:10px; display:flex; flex-direction:column; gap:6px}
+  .sub-row{display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:8px;
+    border:1px solid var(--line-soft); background:rgba(255,255,255,.02); font-size:12px}
+  .sub-row.off{opacity:.5}
+  .sub-row .nm{font-weight:600; color:var(--text-2)}
+  .sub-row .meta{font-family:var(--mono); font-size:10.5px; color:var(--dim)}
+  .sub-row .r{margin-left:auto; display:flex; gap:5px}
+  .sub-row button{font:inherit; font-size:10.5px; padding:3px 8px; border-radius:5px; cursor:pointer;
+    border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
+  .sub-row button:hover{color:var(--text); border-color:rgba(62,186,244,.4)}
+  .subs-tip{margin-top:9px; font-size:11px; color:var(--faint); line-height:1.6}
+
+  .panel input[type=text]{width:100%; padding:10px 12px; border-radius:8px; font-family:var(--mono);
+    font-size:12.5px; border:1px solid var(--line); background:rgba(0,0,0,.6); color:var(--text);
+    outline:none; transition:border-color .16s, box-shadow .16s}
+  .panel input[type=text]::placeholder{color:var(--faint)}
+  .panel input[type=text]:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+  .panel-actions{display:flex; align-items:center; gap:9px; margin-top:10px; flex-wrap:wrap}
+  .chk{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);
+    cursor:pointer; user-select:none}
+  .chk input{accent-color:var(--cyan); width:13px; height:13px; margin:0; cursor:pointer}
+  .hint{font-family:var(--mono); font-size:11px; color:var(--dim); flex:1; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .hint.err{color:#ff9b9b}
+  .hint.ok{color:var(--green)}
+
+  .preview{margin-top:11px; padding-top:11px; border-top:1px solid var(--line); display:flex;
+    gap:12px; align-items:flex-start}
+  .preview .meta{flex:1; min-width:0}
+  .preview .meta b{display:block; font-size:13px; font-weight:700; margin-bottom:3px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .preview .meta span{font-family:var(--mono); font-size:11px; color:var(--dim)}
+  .shots{display:flex; gap:5px; flex:none}
+  .shots img{width:92px; height:52px; object-fit:cover; border-radius:5px;
+    border:1px solid var(--line); background:#0a0a0a}
+
+  /* ───────────────────────── 下载队列（内容区的右侧栏，展开时挤压卡片而不是盖住） */
+  .queue{position:sticky; top:0; height:100vh; flex:none; width:0; overflow:hidden;
+    display:flex; flex-direction:column; border-left:1px solid transparent;
+    background:linear-gradient(180deg,rgba(12,12,12,.97),rgba(6,6,6,.98));
+    transition:width .26s cubic-bezier(.22,1,.36,1), border-color .26s}
+  .queue.open{width:var(--bar-w); border-left-color:var(--line)}
+  .queue > *{min-width:calc(var(--bar-w) - 2px)}
+  .queue-head{display:flex; align-items:center; gap:8px; padding:15px 16px 11px; flex:none;
+    border-bottom:1px solid var(--line)}
+  .queue-head h3{margin:0; font-size:13.5px; font-weight:700; letter-spacing:-.01em}
+  .queue-head .r{margin-left:auto; display:flex; gap:6px}
+  .iconbtn{width:26px; height:26px; display:grid; place-items:center; border-radius:7px;
+    border:1px solid var(--line); background:none; color:var(--dim); transition:color .14s, border-color .14s}
+  .iconbtn:hover{color:var(--text); border-color:rgba(255,255,255,.2)}
+  .iconbtn svg{width:12px; height:12px}
+  .dlayer{position:fixed; inset:0; background:rgba(0,0,0,.72); display:flex; align-items:center;
+    justify-content:center; z-index:200; padding:20px; animation:fadein .12s ease-out}
+  @keyframes fadein{from{opacity:0} to{opacity:1}}
+  .dpanel{background:var(--panel,#141414); border:1px solid var(--line); border-radius:12px;
+    max-width:min(860px, 94vw); max-height:88vh; overflow:auto; padding:16px}
+  .dhead{display:flex; align-items:center; gap:10px; margin-bottom:12px}
+  .dcode{font-family:var(--mono); font-size:14px; font-weight:700; color:var(--text); margin-right:auto}
+  .dtop{display:flex; gap:14px; align-items:flex-start}
+  .dcover{width:220px; border-radius:8px; flex:none}
+  .dmeta{display:flex; flex-direction:column; gap:5px; min-width:0}
+  .dtitle{font-size:13px; line-height:1.5; color:var(--text); margin-bottom:4px}
+  .drow{display:flex; gap:8px; font-size:11.5px; line-height:1.5}
+  .dk{font-family:var(--mono); color:var(--faint); flex:none; min-width:56px}
+  .dv{color:var(--text); word-break:break-word}
+  .dsub{margin:14px 0 8px; font-family:var(--mono); font-size:11px; color:var(--faint)}
+  .dwall{display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:8px}
+  .dthumb{display:block; aspect-ratio:16/9; overflow:hidden; border-radius:6px; border:1px solid var(--line)}
+  .dthumb img{width:100%; height:100%; object-fit:cover}
+  .dactions{display:flex; gap:8px; margin-top:14px}
+  .findcard{display:flex; gap:10px; padding:8px; margin:4px 0 8px; border:1px solid var(--line);
+    border-radius:9px; background:rgba(17,17,17,.85); cursor:pointer; position:relative;
+    transition:border-color .14s, background .14s}
+  .findcard:hover{border-color:var(--muted); background:rgba(30,30,30,.95)}
+  .findmore{flex:none; align-self:center; font-family:var(--mono); font-size:11px; color:var(--faint);
+    white-space:nowrap}
+  .findcard:hover .findmore{color:var(--text)}
+  .findcover{width:96px; height:auto; border-radius:6px; object-fit:cover; flex:none}
+  .findbody{display:flex; flex-direction:column; gap:5px; min-width:0}
+  .findtitle{font-size:12.5px; color:var(--text); line-height:1.45;
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden}
+  .findmeta{font-family:var(--mono); font-size:10.5px; color:var(--faint); line-height:1.5}
+  .queue-foot{padding:8px 12px 12px; border-top:1px solid var(--line)}
+  .queue-foot .ghostbtn{width:100%; justify-content:center}
+  .queue-list{flex:1; overflow-y:auto; padding:10px 12px 20px; display:flex; flex-direction:column; gap:7px}
+  .queue-empty{margin:28px 8px; text-align:center; font-size:12.5px; color:var(--dim); line-height:1.8}
+  .job{padding:9px 10px; border:1px solid var(--line); border-radius:9px; background:rgba(17,17,17,.85);
+    display:flex; flex-direction:column; gap:6px}
+  .job .jtop{display:flex; align-items:center; gap:7px; min-width:0}
+  .job .jcode{font-family:var(--mono); font-size:11.5px; font-weight:700; color:var(--text);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .job .jst{font-family:var(--mono); font-size:10px; padding:1.5px 6px; border-radius:4px;
+    color:var(--cyan); background:var(--cyan-dim); flex:none}
+  .job .jacts{margin-left:auto; display:flex; gap:6px}
+  .job .jacts .jstop{margin-left:0}
+  .job .jstop{margin-left:auto; flex:none; border:0; background:none; color:var(--faint); font-size:11px;
+    padding:2px 3px; line-height:1}
+  .job .jstop:hover{color:#ff9b9b}
+  .job .jbar{height:3px; border-radius:2px; background:rgba(255,255,255,.08); overflow:hidden}
+  .job .jbar i{display:block; height:100%; width:0; background:var(--cyan); transition:width .35s}
+  .job .jmeta{display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:10px;
+    color:var(--dim)}
+  .job .jmeta .sp{flex:1}
+  .job .jmeta a{color:var(--cyan); text-decoration:none}
+  .job.failed{border-color:rgba(239,106,106,.3)}
+  .job.failed .jst{color:#ff9b9b; background:rgba(239,106,106,.1)}
+  .job.failed .jbar i{background:var(--red)}
+  .job.done{border-color:rgba(95,211,141,.26)}
+  .job.done .jst{color:var(--green); background:rgba(95,211,141,.1)}
+  .job.done .jbar i{background:var(--green)}
+
+  /* 遮罩：抽屉/侧栏在窄屏展开时用 */
+  .scrim{position:fixed; inset:0; z-index:25; background:rgba(0,0,0,.62); backdrop-filter:blur(2px)}
+  #sidebtn{display:none}
+
+  /* ───────────────────────── 响应式 */
+  @media(max-width:1180px){
+    :root{--side:236px; --bar-w:286px}
+    .grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+  }
+  @media(max-width:960px){
+    :root{--pad:16px; --gap:12px}
+    .side{position:fixed; transform:translateX(-101%); transition:transform .26s cubic-bezier(.22,1,.36,1);
+      box-shadow:24px 0 60px -40px rgba(0,0,0,.95); width:276px; z-index:30}
+    .side.open{transform:none}
+    .shell{margin-left:0}
+    #sidebtn{display:grid}
+    /* 窄屏队列改成覆盖式，避免把卡片压成一条 */
+    .queue{position:fixed; right:0; top:0; z-index:35; width:min(320px,88vw);
+      border-left-color:var(--line); box-shadow:-24px 0 60px -40px rgba(0,0,0,.95);
+      transform:translateX(101%); transition:transform .26s cubic-bezier(.22,1,.36,1)}
+    .queue.open{width:min(320px,88vw); transform:none}
+    .queue > *{min-width:0}
+    .grid{grid-template-columns:repeat(auto-fill,minmax(168px,1fr))}
+  }
+  @media(max-width:620px){
+    :root{--pad:12px; --gap:10px}
+    .toolbar{padding:10px var(--pad) 9px; gap:8px}
+    .tb-row{gap:7px}
+    /* 搜索独占一行，第二行放：菜单 / 类型 / 新建 / 队列 */
+    .tb-row:first-child{flex-wrap:wrap}
+    .tb-search{order:-1; flex-basis:100%}
+    .tb-search input{padding-top:9px; padding-bottom:9px}
+    .tb-seg button{padding:5px 9px; font-size:12px}
+    .primary{padding:7px 11px; font-size:12.5px; margin-left:auto}
+    .primary .lbl{display:none}
+    .queuebtn .n{display:none}
+    .resultbar{padding-top:12px}
+    .card-head{padding:11px 11px 0}
+    .card-body{padding:5px 11px 0}
+    .card-foot{padding:9px 11px 10px}
+    .code{font-size:15px}
+    .panel{margin:12px var(--pad) 0}
+    .shots img{width:72px; height:41px}
+  }
+  @media(prefers-reduced-motion:reduce){
+    *{transition:none !important; animation:none !important}
+  }
+</style>
+</head>
+<body>
+
+<!-- ───────── 侧栏 -->
+<aside class="side" id="side">
+  <div class="brand">
+    <span class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3v11"/><path d="m7.5 11.5 4.5 4 4.5-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+      </svg>
+    </span>
+    <span>x-<i>drive</i></span>
+  </div>
+
+  <div class="stat">
+    <div><b id="s-tasks">0</b><span>已归档番号</span></div>
+    <div><b id="s-series">0</b><span>系列数</span></div>
+    <div><b id="s-files">0</b><span>文件数</span></div>
+    <div><b id="s-size">—</b><span>总容量</span></div>
+  </div>
+
+  <div class="side-block series">
+    <div class="side-h"><span id="dim-label">系列</span>
+      <button id="clear-series" type="button" hidden>清除</button></div>
+    <div class="dimtabs" id="dimtabs">
+      <button type="button" data-dim="series" class="on">系列</button>
+      <button type="button" data-dim="actor">演员</button>
+      <button type="button" data-dim="maker">片商</button>
+    </div>
+    <nav class="nav" id="nav-series"></nav>
+  </div>
+
+  <div class="side-block month">
+    <div class="side-h">月份 <button id="clear-month" type="button" hidden>清除</button></div>
+    <nav class="nav" id="nav-month"></nav>
+  </div>
+
+  <div class="side-foot">
+    <div class="status"><span class="dot" id="dot"></span><span id="health">连接中…</span></div>
+    <div class="side-actions">
+      <button class="ghost" id="refresh" type="button" title="刷新列表">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>
+        </svg>
+        <span>刷新</span>
+      </button>
+      <button class="ghost" id="logout" type="button" title="退出登录" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/>
+          <path d="M21 12H9"/>
+        </svg>
+        <span>退出</span>
+      </button>
+    </div>
+    <div id="updated"></div>
+  </div>
+</aside>
+
+<!-- ───────── 内容区 -->
+<div class="shell">
+<div class="main">
+  <div class="toolbar">
+    <div class="tb-row">
+      <button class="iconbtn" id="sidebtn" type="button" aria-label="打开侧栏">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="tb-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round">
+          <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
+        </svg>
+        <input id="q" type="search" placeholder="搜索番号 / 系列 / 文件名   ( / )" autocomplete="off">
+      </div>
+      <div class="tb-seg" id="kindseg">
+        <button type="button" data-filter="all" class="on">全部</button>
+        <button type="button" data-filter="video">视频</button>
+        <button type="button" data-filter="image">图片</button>
+      </div>
+      <button class="primary" id="new-task" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2.6" stroke-linecap="round">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+        <span class="lbl">新建下载</span>
+      </button>
+      <button class="ghostbtn" id="subs-open" type="button" title="订阅自动化">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.7 21a2 2 0 0 1-3.4 0"/>
+        </svg>
+        <span class="lbl">订阅</span>
+      </button>
+      <button class="ghostbtn" id="norm-btn" type="button" title="智能整理：收编未分类 + 按规范改名">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 7h9M4 12h6M4 17h9"/><path d="m17 9 3 3-3 3"/>
+        </svg>
+        <span class="lbl">规范名</span>
+      </button>
+      <button class="queuebtn" id="queuebtn" type="button" title="下载队列">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 6h11M3 12h11M3 18h7"/><path d="m16 12 3 3 3-3"/><path d="M19 15V6"/>
+        </svg>
+        <span class="n" id="queue-n"></span>
+      </button>
+    </div>
+    <div class="tb-row filters" id="activefilters"></div>
+  </div>
+
+  <section class="panel" id="panel" hidden>
+    <input id="dl-text" type="text" placeholder="粘贴磁力或直链，可带番号：SSIS-123 magnet:?xt=urn:btih:…"
+           autocomplete="off" spellcheck="false">
+    <div class="panel-actions">
+      <button class="primary" id="dl-submit" type="button">开始下载</button>
+      <button class="ghost" id="dl-peek" type="button">预览信息</button>
+      <button class="ghost" id="dl-find" type="button" title="按面板里的番号搜磁力">搜磁力</button>
+      <label class="chk"><input type="checkbox" id="dl-dedupe" checked>按番号去重</label>
+      <button class="ghost" id="dl-cancel" type="button">关闭</button>
+      <span class="hint" id="dl-hint"></span>
+    </div>
+    <div class="preview" id="dl-preview" hidden></div>
+    <div class="preview" id="dl-finds" hidden></div>
+  </section>
+
+  <section class="panel" id="subpanel" hidden>
+    <div class="subs-head">
+      <div class="subs-kind" id="sub-kind">
+        <button type="button" data-kind="actor" class="on">演员</button>
+        <button type="button" data-kind="series">番号系列</button>
+      </div>
+      <input id="sub-actor" type="text" autocomplete="off" spellcheck="false"
+             placeholder="演员页 ID 或链接，例如 YnZ1K 或 https://javdb.com/actors/YnZ1K">
+      <div class="subs-opts">
+        <label>每次最多 <input id="sub-max" type="number" min="1" max="5" value="1"></label>
+        <label>单片上限 <input id="sub-size" type="number" min="0" step="0.5" value="8">GB</label>
+      </div>
+    </div>
+    <div class="panel-actions">
+      <button class="primary" id="sub-add" type="button">添加订阅</button>
+      <button class="ghost" id="sub-run" type="button">立即检查全部</button>
+      <button class="ghost" id="sub-close" type="button">关闭</button>
+      <span class="hint" id="sub-hint"></span>
+    </div>
+    <div class="subs-list" id="subs-list"></div>
+    <div class="subs-tip">订阅只会抓「添加之后」新出的片，不会回填历史。每轮受条数和体积上限约束。</div>
+  </section>
+
+  <div class="resultbar">
+    <h2 id="result-title">全部归档</h2>
+    <span class="sub" id="result-sub"></span>
+    <span class="right">
+      <select class="sortsel" id="sortsel" aria-label="排序">
+        <option value="new">最新优先</option>
+        <option value="old">最早优先</option>
+        <option value="size">容量从大到小</option>
+        <option value="code">番号 A → Z</option>
+      </select>
+    </span>
+  </div>
+
+  <div class="grid" id="feed"></div>
+  <div id="empty-slot"></div>
+</div>
+
+  <!-- ───────── 下载队列 -->
+  <aside class="queue" id="queue" aria-label="下载队列">
+    <div class="queue-head">
+      <h3>下载队列</h3>
+      <div class="r">
+        <button class="iconbtn" id="queue-clear" type="button" title="清空已完成">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+        </button>
+        <button class="iconbtn" id="queue-close" type="button" title="收起">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="queue-list" id="jobs"></div>
+    <div class="queue-foot">
+      <button class="ghostbtn" id="panel-clean" type="button" title="清理迅雷面板里多天前的失败任务记录">
+        清理失败任务
+      </button>
+    </div>
+  </aside>
+</div>
+
+<div class="scrim" id="scrim" hidden></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+const fmt = iso => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d)) return iso.slice(0, 16).replace("T", " ");
+  return d.toLocaleString("zh-CN", {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"});
+};
+const gb = n => {
+  if (!n) return "0B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i += 1; }
+  return v.toFixed(v < 10 && i > 1 ? 1 : 0) + u[i];
+};
+const fmtMonth = m => {
+  if (!/^\d{4}-\d{2}$/.test(m || "")) return m || "";
+  const [y, mo] = m.split("-");
+  return `${y} 年 ${Number(mo)} 月`;
+};
+
+// 若通过 http://user:pass@host 打开，浏览器会把凭据留在 location，
+// 直接 fetch 相对地址会抛 "URL that includes credentials"。这里取出凭据并抹掉地址栏。
+const BASE = location.origin;
+const AUTH_HEADER = (() => {
+  const m = location.href.match(/^(https?:\/\/)([^/@]+)@/);
+  if (!m) return null;
+  const creds = m[2];
+  try { history.replaceState(null, "", location.href.replace(m[0], m[1])); } catch (e) {}
+  try { return "Basic " + btoa(decodeURIComponent(creds)); } catch (e) { return null; }
+})();
+function authInit(init) {
+  init = init || {};
+  if (AUTH_HEADER) init.headers = Object.assign({}, init.headers, {Authorization: AUTH_HEADER});
+  return init;
+}
+
+// ── 视图状态
+const view = {q: "", kind: "all", series: "", month: "", sort: "new",
+  // 分类浏览的维度：系列 / 演员 / 片商。三者共用一个侧栏位，省地方。
+  dim: "series"};
+let sideExpanded = false;   // 系列列表是否展开全部
+const allTasks = new Map();
+
+const KIND_LABEL = {all: "全部归档", video: "只看视频", image: "只看图片"};
+
+function matches(t) {
+  if (view.kind === "video" && t.cat !== "video") return false;
+  if (view.kind === "image" && t.cat !== "image") return false;
+  if (view.series) {
+    const v = dimValues(t, view.dim);
+    if (!v.includes(view.series)) return false;
+  }
+  if (view.month && t.month !== view.month) return false;
+  const q = norm(view.q);
+  if (!q) return true;
+  // 原文 + 去掉分隔符的两份文本都比一遍，SSIS123 / fc2ppv4422 都能搜到
+  const m = t.meta || {};
+  const hay = [t.code, t.series, t.source, t.path, (t.files || []).join(" "),
+               m.title, m.maker, m.director, (m.actors || []).join(" "),
+               (m.categories || []).join(" "), m.date]
+    .map(v => (v || "").toLowerCase()).join(" ");
+  return hay.includes(view.q.trim().toLowerCase()) || strip(hay).includes(q);
+}
+
+// 一个归档在某个维度上有哪些取值（演员/片商可能多个）
+function dimValues(t, dim) {
+  const m = t.meta || {};
+  if (dim === "actor") return (m.actors || []).length ? m.actors : ["未知演员"];
+  if (dim === "maker") return m.maker ? [m.maker] : ["未知片商"];
+  return [t.series || "其他"];
+}
+
+const DIM_LABEL = {series: "系列", actor: "演员", maker: "片商"};
+
+const norm = s => (s || "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "");
+const strip = s => (s || "").replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "");
+
+const SORTS = {
+  new: (a, b) => String(b.at).localeCompare(String(a.at)),
+  old: (a, b) => String(a.at).localeCompare(String(b.at)),
+  size: (a, b) => (b.size || 0) - (a.size || 0),
+  code: (a, b) => String(a.code).localeCompare(String(b.code), "zh"),
+};
+
+// ── 侧栏：系列 / 月份
+function renderSidebar() {
+  const bySeries = new Map(), byMonth = new Map();
+  for (const t of allTasks.values()) {
+    // 按当前维度累加；一个归档挂多个演员时每个演员都算一次
+    for (const name of dimValues(t, view.dim)) {
+      bySeries.set(name, (bySeries.get(name) || 0) + 1);
+    }
+    if (t.month) byMonth.set(t.month, (byMonth.get(t.month) || 0) + 1);
+  }
+  const fill = (box, entries, key) => {
+    box.textContent = "";
+    if (!entries.length) {
+      box.append(el("div", "it", "暂无"));
+      return;
+    }
+    for (const [name, count] of entries) {
+      const b = el("button", "it" + (view[key] === name ? " on" : ""));
+      b.type = "button";
+      b.dataset.key = name;
+      b.append(el("span", "t", key === "month" ? fmtMonth(name) : name));
+      b.append(el("span", "n", count));
+      b.addEventListener("click", () => {
+        view[key] = view[key] === name ? "" : name;
+        renderSidebar();
+        applyFilter();
+      });
+      box.append(b);
+    }
+  };
+  const seriesEntries = [...bySeries.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  // 系列很多时先列前 12 个，避免侧栏被几十行占满
+  const shown = sideExpanded ? seriesEntries : seriesEntries.slice(0, 12);
+  fill($("nav-series"), shown, "series");
+  if (seriesEntries.length > shown.length) {
+    const more = el("button", "it more", `展开其余 ${seriesEntries.length - shown.length} 个${DIM_LABEL[view.dim]}`);
+    more.type = "button";
+    more.addEventListener("click", () => { sideExpanded = true; renderSidebar(); });
+    $("nav-series").append(more);
+  } else if (sideExpanded && seriesEntries.length > 12) {
+    const less = el("button", "it more", "收起");
+    less.type = "button";
+    less.addEventListener("click", () => { sideExpanded = false; renderSidebar(); });
+    $("nav-series").append(less);
+  }
+  fill($("nav-month"), [...byMonth.entries()].sort((a, b) => b[0].localeCompare(a[0])), "month");
+  $("dim-label").textContent = DIM_LABEL[view.dim];
+  for (const b of $("dimtabs").children) b.classList.toggle("on", b.dataset.dim === view.dim);
+  $("clear-series").hidden = !view.series;
+  $("clear-month").hidden = !view.month;
+}
+
+// ── 已生效筛选（工具条第二行）
+function renderActiveFilters() {
+  const box = $("activefilters");
+  box.textContent = "";
+  const chips = [];
+  if (view.kind !== "all") chips.push(["类型：" + (view.kind === "video" ? "视频" : "图片"), () => { view.kind = "all"; syncKindSeg(); }]);
+  if (view.series) chips.push([DIM_LABEL[view.dim] + "：" + view.series, () => { view.series = ""; renderSidebar(); }]);
+  if (view.month) chips.push([fmtMonth(view.month), () => { view.month = ""; renderSidebar(); }]);
+  if (view.q.trim()) chips.push(["“" + view.q.trim() + "”", () => { view.q = ""; $("q").value = ""; }]);
+
+  if (!chips.length) {
+    box.append(el("span", "lb", "筛选"));
+    box.append(el("span", "lb", "在左侧选择系列或月份"));
+    return;
+  }
+  box.append(el("span", "lb", "已筛选"));
+  for (const [label, drop] of chips) {
+    const b = el("button", "pill on");
+    b.type = "button";
+    b.append(el("span", null, label));
+    b.append(el("span", "x", "✕"));
+    b.addEventListener("click", () => { drop(); applyFilter(); });
+    box.append(b);
+  }
+  const reset = el("button", "pill", "清空全部");
+  reset.type = "button";
+  reset.addEventListener("click", () => {
+    view.kind = "all"; view.series = ""; view.month = ""; view.q = "";
+    $("q").value = "";
+    syncKindSeg(); renderSidebar(); applyFilter();
+  });
+  box.append(reset);
+}
+
+// ── 卡片
+function card(t) {
+  const m = t.meta || {};
+  const node = el("article", "card");
+  const head = el("div", "card-head");
+  head.append(el("span", "series", t.series || "—"));
+  head.append(el("span", "code", t.code));
+  node.append(head);
+
+  // 封面：走同源代理，避免浏览器直连图床被拦
+  if (m.cover) {
+    const wrap = el("div", "card-cover");
+    const img = el("img");
+    img.loading = "lazy";
+    img.src = BASE + "/proxy?u=" + encodeURIComponent(m.cover);
+    img.alt = "";
+    wrap.append(img);
+    node.append(wrap);
+  }
+
+  // 标题是元数据里最有用的信息，放不下就截断
+  if (m.title) {
+    const ti = el("div", "card-title", m.title);
+    ti.title = m.title;
+    node.append(ti);
+  }
+
+  const body = el("div", "card-body");
+  const kind = el("span", "tag " + (t.cat === "video" ? "vid" : "img"), t.kind);
+  body.append(kind);
+  body.append(el("span", "tag", t.size_text));
+  if (m.maker) body.append(el("span", "tag", m.maker));
+  if (m.rating) body.append(el("span", "tag rate", "★ " + m.rating));
+  node.append(body);
+
+  // 演员单独一行，点了能当筛选条件
+  const actors = m.actors || [];
+  if (actors.length) {
+    const row = el("div", "card-actors");
+    for (const name of actors.slice(0, 4)) {
+      const a = el("button", "actor-chip", name);
+      a.addEventListener("click", e => {
+        e.stopPropagation();
+        view.q = name;
+        $("q").value = name;
+        applyFilter();
+      });
+      row.append(a);
+    }
+    node.append(row);
+  }
+
+  const foot = el("div", "card-foot");
+  foot.append(el("span", "time", fmt(t.at)));
+  const ren = el("button", "card-del", "改名");
+  ren.type = "button";
+  ren.title = "改番号：Drive 目录与归档记录一起改";
+  ren.addEventListener("click", e => {
+    e.stopPropagation();
+    askRename(t);
+  });
+  foot.append(ren);
+  const del = el("button", "card-del", "删除");
+  del.type = "button";
+  del.title = "删除 Drive 目录与归档记录";
+  del.addEventListener("click", e => {
+    e.stopPropagation();
+    askDelete(t);
+  });
+  foot.append(del);
+  if (t.link) {
+    const a = el("a", null, "Drive ↗");
+    a.href = t.link; a.target = "_blank"; a.rel = "noopener";
+    foot.append(a);
+  } else {
+    foot.append(el("span", "nolink", "无链接"));
+  }
+  node.append(foot);
+
+  node.addEventListener("click", e => {
+    if (e.target.closest("a")) return;
+    if (t.link) window.open(t.link, "_blank", "noopener");
+  });
+  return node;
+}
+
+// 删除归档：两段式。先问服务端「将删什么」，把番号和体积摆给用户看，
+// 再让用户确认；确认后才带 confirm=true 真删。删除不可逆，不做一键删。
+// 按规范批量改名：先出清单（改名 N 条、跳过 M 条），确认后才搬 Drive。
+async function askNormalize() {
+  // 先收编未分类：从文件名认番号，查到元数据才按规范改名
+  let adopt = null;
+  try {
+    const r = await fetch(BASE + "/api/archive/adopt", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"}, body: "{}",
+    }));
+    adopt = await r.json();
+  } catch (e) { adopt = null; }
+  const adoptList = (adopt && adopt.adopt) || [];
+  if (adoptList.length) {
+    const preview = adoptList.slice(0, 8).map(i => `${i.code} → ${i.to}`).join("\n");
+    if (confirm(`有 ${adoptList.length} 个未分类归档能认出番号：\n\n${preview}\n\n先收编它们？（会查元数据后改名）`)) {
+      try {
+        const r2 = await fetch(BASE + "/api/archive/adopt", authInit({
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({confirm: true}),
+        }));
+        const res = await r2.json().catch(() => ({}));
+        flash(`收编 ${(res.renamed || []).length} 个` + ((res.failed || []).length ? `，失败 ${res.failed.length} 个` : ""),
+              (res.failed || []).length > 0);
+      } catch (e) {
+        flash("收编失败：" + (e.message || e), true);
+      }
+    }
+  }
+
+  let plan = null;
+  try {
+    const r = await fetch(BASE + "/api/archive/normalize", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"}, body: "{}",
+    }));
+    plan = await r.json();
+  } catch (e) {
+    flash("取改名清单失败：" + e.message, true);
+    return;
+  }
+  if (!plan || !plan.ok) {
+    flash((plan && plan.error) || "取改名清单失败", true);
+    return;
+  }
+  const todo = plan.rename || [];
+  const skip = plan.skipped || [];
+  if (!todo.length && !skip.length) {
+    flash(`已全部符合规范（共 ${plan.total} 条）`);
+    return;
+  }
+  const lines = todo.slice(0, 12).map(i => `${i.code} → ${i.to}`);
+  if (todo.length > 12) lines.push(`… 另有 ${todo.length - 12} 条`);
+  if (skip.length) lines.push(`跳过 ${skip.length} 条（目标名已被占用）`);
+  const ok = confirm(`按规范改名 ${todo.length} 条？\n\n${lines.join("\n")}\n\n`
+    + `会移动 Drive 目录并同步归档记录，已上传的文件不会重传。`);
+  if (!ok || !todo.length) return;
+  try {
+    const r2 = await fetch(BASE + "/api/archive/normalize", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({confirm: true}),
+    }));
+    const res = await r2.json().catch(() => ({}));
+    if (!r2.ok || !res.ok) {
+      flash((res && res.error) || `改名失败（HTTP ${r2.status}）`, true);
+      return;
+    }
+    const bad = res.failed || [];
+    flash(`已改名 ${(res.renamed || []).length} 条` + (bad.length ? `，失败 ${bad.length} 条` : ""), bad.length > 0);
+    load();
+  } catch (e) {
+    flash("改名失败：" + (e.message || e), true);
+  }
+}
+
+// 归档改名：Drive 目录与 state 一起改。名字会用作目录名，只留字母数字与连字符，
+// 所以先在本地验一遍，免得服务端返回一句泛泛的错误。
+async function askRename(t) {
+  const input = prompt(`把 ${t.code} 改成：`, t.code);
+  if (input === null) return;
+  const to = input.trim();
+  if (!to || to === t.code) return;
+  if (!/^[0-9A-Za-z-]{3,}$/.test(to)) {
+    flash("新番号只允许字母、数字、连字符，至少 3 位", true);
+    return;
+  }
+  const ok = confirm(`确定把 ${t.code} 改名为 ${to}？\n\n`
+    + `将移动 Drive 目录：X-Drive/${t.code} → X-Drive/${to}\n`
+    + `并更新归档记录。已上传的文件不会重新传。`);
+  if (!ok) return;
+  try {
+    const r = await fetch(BASE + "/api/archive/rename", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code: t.code, to}),
+    }));
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok || !res.ok) {
+      flash((res && res.error) || `改名失败（HTTP ${r.status}）`, true);
+      return;
+    }
+    flash(`${t.code} → ${res.code}`);
+    load();
+  } catch (e) {
+    flash("改名失败：" + (e.message || e), true);
+  }
+}
+
+async function askDelete(t) {
+  let info = null;
+  try {
+    const r = await fetch(BASE + "/api/archive/delete", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code: t.code}),
+    }));
+    info = await r.json();
+  } catch (e) {
+    flash("查询删除目标失败：" + e.message, true);
+    return;
+  }
+  if (!info || !info.ok) {
+    flash((info && info.error) || "无法删除", true);
+    return;
+  }
+  const size = t.size_text || "";
+  const n = (info.files || []).length;
+  const ok = confirm(`确定删除 ${t.code}？\n\n`
+    + `将删除 Drive 目录：X-Drive/${t.code}\n`
+    + `包含 ${n} 个文件 · ${size}\n\n`
+    + `此操作不可撤销。`);
+  if (!ok) return;
+  try {
+    const r2 = await fetch(BASE + "/api/archive/delete", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code: t.code, confirm: true}),
+    }));
+    const res = await r2.json();
+    if (res && res.ok) {
+      flash(`${t.code} 已删除`);
+      allTasks.delete(t.id);
+      mounted.get(t.id)?.node.remove();
+      mounted.delete(t.id);
+      load();
+    } else {
+      flash((res && res.error) || "删除失败", true);
+    }
+  } catch (e) {
+    flash("删除失败：" + e.message, true);
+  }
+}
+
+// 增量渲染：按 id 复用已有卡片，轮询时只重排、不重建
+const mounted = new Map();
+let inflight = null;
+const sigOf = t => [t.at, t.code, t.kind, t.size_text, t.link, t.series,
+  (t.meta && (t.meta.title || "") + "|" + (t.meta.cover || "")) || ""].join("~");
+
+function syncFeed(tasks) {
+  const feed = $("feed");
+  if (!tasks.length) {
+    feed.textContent = "";
+    mounted.clear();
+    return;
+  }
+  const seen = new Set();
+  for (const t of tasks) {
+    seen.add(t.id);
+    const sig = sigOf(t);
+    const cur = mounted.get(t.id);
+    if (cur && cur.sig === sig) continue;
+    const node = card(t);
+    if (cur) cur.node.replaceWith(node);
+    mounted.set(t.id, {node, sig});
+  }
+  let cursor = feed.firstElementChild;
+  for (const t of tasks) {
+    const node = mounted.get(t.id).node;
+    if (node === cursor) cursor = cursor.nextElementSibling;
+    else feed.insertBefore(node, cursor);
+  }
+  for (const [id, item] of [...mounted]) {
+    if (!seen.has(id)) { item.node.remove(); mounted.delete(id); }
+  }
+}
+
+function applyFilter() {
+  const tasks = [...allTasks.values()].filter(matches).sort(SORTS[view.sort] || SORTS.new);
+  syncFeed(tasks);
+  renderActiveFilters();
+
+  const total = allTasks.size;
+  const size = tasks.reduce((s, t) => s + (t.size || 0), 0);
+  const bytes = b => b >= 1073741824 ? (b / 1073741824).toFixed(2) + "GB" : (b / 1048576).toFixed(0) + "MB";
+  $("result-title").textContent = KIND_LABEL[view.kind] || "全部归档";
+  $("result-sub").textContent = tasks.length
+    ? `${tasks.length} / ${total} 个番号 · ${bytes(size)}`
+    : `${total} 个番号`;
+
+  const slot = $("empty-slot");
+  slot.textContent = "";
+  if (!tasks.length) {
+    const box = el("div", "empty");
+    if (!total) {
+      box.append(el("b", null, "还没有归档记录"));
+      box.append(el("span", null, "点右上角「新建下载」粘贴磁力，或在 Telegram 里直接发给机器人。"));
+    } else {
+      box.append(el("b", null, "没有匹配的番号"));
+      box.append(el("span", null, "试试更短的关键词，或清空筛选条件。"));
+    }
+    slot.append(box);
+  }
+}
+
+// ── 顶栏类型切换
+function syncKindSeg() {
+  for (const b of $("kindseg").children) b.classList.toggle("on", b.dataset.filter === view.kind);
+}
+$("kindseg").addEventListener("click", e => {
+  const b = e.target.closest("button[data-filter]");
+  if (!b) return;
+  view.kind = b.dataset.filter;
+  syncKindSeg();
+  applyFilter();
+});
+$("sortsel").addEventListener("change", e => { view.sort = e.target.value; applyFilter(); });
+$("clear-series").addEventListener("click", () => { view.series = ""; renderSidebar(); applyFilter(); });
+$("dimtabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-dim]");
+  if (!b) return;
+  view.dim = b.dataset.dim;
+  view.series = "";      // 换维度时旧的选择已无意义
+  renderSidebar();
+  applyFilter();
+});
+$("clear-month").addEventListener("click", () => { view.month = ""; renderSidebar(); applyFilter(); });
+
+let qTimer = null;
+$("q").addEventListener("input", e => {
+  view.q = e.target.value;
+  clearTimeout(qTimer);
+  qTimer = setTimeout(applyFilter, 160);
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) {
+    e.preventDefault();
+    $("q").focus();
+  }
+  if (e.key === "Escape") {
+    if ($("panel").hidden === false) closePanel();
+    closeQueue();
+    closeSide();
+  }
+});
+
+// ── 侧栏 / 队列开合
+function openSide() { $("side").classList.add("open"); syncScrim(); }
+function closeSide() { $("side").classList.remove("open"); syncScrim(); }
+function openQueue() {
+  $("queue").classList.add("open");
+  $("queuebtn").classList.add("on");
+  try { localStorage.setItem("xd_queue", "1"); } catch (e) {}
+}
+function closeQueue() {
+  $("queue").classList.remove("open");
+  $("queuebtn").classList.remove("on");
+  try { localStorage.setItem("xd_queue", "0"); } catch (e) {}
+}
+// 窄屏侧栏打开时压暗内容，点空白处收起
+function syncScrim() {
+  $("scrim").hidden = !($("side").classList.contains("open") && window.innerWidth <= 960);
+}
+$("sidebtn").addEventListener("click", () => $("side").classList.contains("open") ? closeSide() : openSide());
+$("scrim").addEventListener("click", closeSide);
+$("queuebtn").addEventListener("click", () => $("queue").classList.contains("open") ? closeQueue() : openQueue());
+$("queue-close").addEventListener("click", closeQueue);
+
+// ── 列表数据
+// 轻量提示：直接写左下角状态行，3 秒后恢复。不引第三方 toast。
+let flashTimer = null;
+function flash(msg, isError) {
+  const health = $("health");
+  if (!health) return;
+  if (!health.dataset.orig) health.dataset.orig = health.textContent;
+  health.textContent = msg;
+  $("dot").className = isError ? "dot off" : "dot";
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    health.textContent = health.dataset.orig || "";
+    $("dot").className = "dot";
+    delete health.dataset.orig;
+  }, 3000);
+}
+
+async function load() {
+  if (inflight) return inflight;
+  inflight = (async () => {
+    try {
+      const r = await fetch(BASE + "/api/tasks", authInit({cache: "no-store"}));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      $("dot").className = "dot";
+      $("health").textContent = `${d.stats.tasks} 个番号 · ${d.stats.files} 文件`;
+      $("s-tasks").textContent = d.stats.tasks;
+      $("s-series").textContent = d.stats.series != null ? d.stats.series : "—";
+      $("s-files").textContent = d.stats.files;
+      $("s-size").textContent = d.stats.size_text || "0B";
+      allTasks.clear();
+      for (const t of d.tasks) allTasks.set(t.id, t);
+      renderSidebar();
+      applyFilter();
+      $("updated").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN");
+      $("refresh").classList.remove("on");
+    } catch (e) {
+      $("dot").className = "dot off";
+      $("health").textContent = "刷新失败（显示的是上次结果）";
+      $("refresh").classList.remove("on");
+    } finally {
+      inflight = null;
+    }
+  })();
+  return inflight;
+}
+
+$("refresh").addEventListener("click", () => {
+  $("refresh").classList.add("on");
+  load();
+});
+
+$("logout").addEventListener("click", async () => {
+  try { await fetch(BASE + "/api/logout", {method: "POST", cache: "no-store"}); } catch (e) {}
+  location.replace("/");
+});
+
+// ── 新建下载
+// ── 订阅自动化
+let subKind = "actor";
+const KIND_NAME = {actor: "演员", series: "系列"};
+const KIND_PLACEHOLDER = {
+  actor: "JavBus 演员 ID 或链接，例如 w5a 或 https://javbus.com/star/w5a",
+  series: "JavBus 系列 ID 或链接，例如 https://javbus.com/series/xxxx",
+};
+$("sub-kind").addEventListener("click", e => {
+  const b = e.target.closest("button[data-kind]");
+  if (!b) return;
+  subKind = b.dataset.kind;
+  for (const x of $("sub-kind").children) x.classList.toggle("on", x.dataset.kind === subKind);
+  $("sub-actor").placeholder = KIND_PLACEHOLDER[subKind];
+});
+
+// 建议：按已归档元数据统计常看的人与系列，有 ID 的一键订阅。
+// 没 ID 的按钮禁用 — 订阅必须落到站内 actor/series ID，猜不得。
+function renderSuggest(box, suggest, subs) {
+  const rows = [...(suggest.actors || []), ...(suggest.series || [])];
+  if (!rows.length) return;
+  const have = new Set((subs || []).map(s => `${s.kind}:${(s.name || "").toLowerCase()}`));
+  const head = el("div", "meta", "看得出你常看（按归档统计）");
+  box.append(head);
+  for (const row of rows.slice(0, 8)) {
+    if (have.has(`${row.kind}:${row.name.toLowerCase()}`)) continue;
+    const line = el("div", "sub-row");
+    line.append(el("span", "tag", row.kind === "series" ? "系列" : "演员"));
+    line.append(el("span", "nm", `${row.name} · ${row.count} 部`));
+    const r = el("div", "r");
+    const add = el("button", null, row.id ? "订阅" : "填 ID");
+    add.title = row.id ? `javdb ID ${row.id}` : "自动解析不到，手填 javdb 演员页/系列页 ID 或链接";
+    add.addEventListener("click", async () => {
+      let id = "";
+      if (!row.id) {
+        const typed = prompt(`「${row.name}」的 javdb ${row.kind === "series" ? "系列页" : "演员页"} ID 或链接：`, "");
+        if (typed === null) return;
+        id = typed.trim();
+        if (!id) return;
+      }
+      const body = {kind: row.kind, name: row.name};
+      if (id) body.id = id;
+      const res = await subsApi("/api/subs/suggest/apply", body);
+      setSubHint(res.ok ? `已订阅 ${row.name}` : (res.error || "订阅失败"), res.ok ? "ok" : "err");
+      renderSubs();
+    });
+    r.append(add);
+    line.append(r);
+    box.append(line);
+  }
+}
+
+function setSubHint(text, kind) {
+  const h = $("sub-hint");
+  h.textContent = text || "";
+  h.className = "hint" + (kind ? " " + kind : "");
+}
+
+async function subsApi(path, body) {
+  const opts = body === undefined ? {cache: "no-store"}
+    : {method: "POST", headers: {"Content-Type": "application/json"},
+       body: JSON.stringify(body)};
+  const r = await fetch(BASE + path, authInit(opts));
+  return r.json();
+}
+
+async function renderSubs() {
+  const box = $("subs-list");
+  let data;
+  try {
+    data = await subsApi("/api/subs");
+  } catch (e) {
+    box.textContent = "";
+    box.append(el("div", "meta", "读取订阅失败：" + e.message));
+    return;
+  }
+  box.textContent = "";
+  const subs = (data && data.subs) || [];
+  renderSuggest(box, (data && data.suggest) || {}, subs);
+  if (!subs.length) {
+    box.append(el("div", "meta", "还没有订阅。粘贴演员页链接后点「添加订阅」。"));
+    return;
+  }
+  for (const sub of subs) {
+    const row = el("div", "sub-row" + (sub.enabled ? "" : " off"));
+    const kindTag = el("span", "tag", KIND_NAME[sub.kind] || "演员");
+    row.append(kindTag);
+    row.append(el("span", "nm", sub.name || sub.id));
+    const meta = [`游标 ${sub.cursor || "—"}`, `每次 ${sub.max_per_run || 1} 部`];
+    if (sub.max_size_gb) meta.push(`单片≤${sub.max_size_gb}GB`);
+    if (sub.last_result) meta.push(sub.last_result);
+    row.append(el("span", "meta", meta.join(" · ")));
+    const r = el("div", "r");
+    const tog = el("button", null, sub.enabled ? "暂停" : "启用");
+    tog.addEventListener("click", async () => {
+      await subsApi("/api/subs/toggle", {id: sub.key || sub.id, enabled: !sub.enabled});
+      renderSubs();
+    });
+    const run = el("button", null, "立即检查");
+    run.addEventListener("click", async () => {
+      setSubHint("检查中…");
+      const res = await subsApi("/api/subs/run", {id: sub.key || sub.id});
+      const n = (res.results || []).reduce((a, x) => a + (x.started || []).length, 0);
+      setSubHint(res.ok ? `新提交 ${n} 个任务` : (res.error || "失败"), res.ok ? "ok" : "err");
+      renderSubs();
+      load();
+    });
+    const del = el("button", null, "删除");
+    del.addEventListener("click", async () => {
+      if (!confirm(`取消对 ${sub.name || sub.id} 的订阅？\n已有的归档不受影响。`)) return;
+      await subsApi("/api/subs/remove", {id: sub.key || sub.id});
+      renderSubs();
+    });
+    r.append(tog, run, del);
+    row.append(r);
+    box.append(row);
+  }
+}
+
+function openSubs() {
+  $("subpanel").hidden = false;
+  $("subs-open").classList.add("on");
+  $("sub-actor").focus();
+  renderSubs();
+}
+function closeSubs() {
+  $("subpanel").hidden = true;
+  $("subs-open").classList.remove("on");
+  setSubHint("");
+}
+
+$("subs-open").addEventListener("click", () => $("subpanel").hidden ? openSubs() : closeSubs());
+$("sub-close").addEventListener("click", closeSubs);
+$("sub-add").addEventListener("click", async () => {
+  const actor = $("sub-actor").value.trim();
+  if (!actor) { setSubHint("先填演员页 ID 或链接", "err"); return; }
+  setSubHint("添加中…");
+  const res = await subsApi("/api/subs/add", {
+    actor,
+    kind: subKind,
+    max_per_run: parseInt($("sub-max").value || "1", 10),
+    max_size_gb: parseFloat($("sub-size").value || "0"),
+  });
+  if (res && res.ok) {
+    $("sub-actor").value = "";
+    setSubHint("已添加", "ok");
+    renderSubs();
+  } else {
+    setSubHint((res && res.error) || "添加失败", "err");
+  }
+});
+$("sub-run").addEventListener("click", async () => {
+  setSubHint("检查全部订阅…");
+  const res = await subsApi("/api/subs/run", {});
+  const n = (res.results || []).reduce((a, x) => a + (x.started || []).length, 0);
+  setSubHint(res.ok ? `新提交 ${n} 个任务` : (res.error || "失败"), res.ok ? "ok" : "err");
+  renderSubs();
+  load();
+});
+
+function openPanel() {
+  $("panel").hidden = false;
+  $("new-task").classList.add("on");
+  $("dl-text").focus();
+}
+function closePanel() {
+  $("panel").hidden = true;
+  $("new-task").classList.remove("on");
+  $("dl-hint").textContent = "";
+  $("dl-hint").className = "hint";
+}
+$("new-task").addEventListener("click", () => $("panel").hidden ? openPanel() : closePanel());
+$("dl-cancel").addEventListener("click", closePanel);
+
+function setHint(text, kind) {
+  const h = $("dl-hint");
+  h.textContent = text;
+  h.className = "hint" + (kind ? " " + kind : "");
+}
+
+function showProbePreview(info) {
+  const box = $("dl-preview");
+  if (!info) { box.hidden = true; return; }
+  box.textContent = "";
+  const meta = el("div", "meta");
+  meta.append(el("b", null, info.name || "未命名"));
+  const size = info.size ? (info.size / 1073741824 >= 1
+    ? (info.size / 1073741824).toFixed(2) + "GB"
+    : (info.size / 1048576).toFixed(0) + "MB") : "—";
+  meta.append(el("span", null, [size, info.count ? info.count + " 个文件" : "", info.file_type].filter(Boolean).join(" · ")));
+  box.append(meta);
+  const shots = el("div", "shots");
+  for (const src of (info.screenshots || []).slice(0, 4)) {
+    const img = new Image();
+    img.loading = "lazy";
+    img.referrerPolicy = "no-referrer";
+    img.src = BASE + "/proxy?u=" + encodeURIComponent(src);
+    shots.append(img);
+  }
+  if (shots.childElementCount) box.append(shots);
+  box.hidden = false;
+}
+
+$("dl-peek").addEventListener("click", async () => {
+  const magnet = ($("dl-text").value.match(/magnet:\?[^\s"']+/) || [""])[0];
+  if (!magnet) { setHint("先粘贴磁力链接", "err"); return; }
+  $("dl-peek").disabled = true;
+  setHint("查询中…");
+  try {
+    const r = await fetch(BASE + "/api/peek?magnet=" + encodeURIComponent(magnet), authInit({cache: "no-store"}));
+    const d = await r.json();
+    if (r.ok && d.info) {
+      showProbePreview(d.info);
+      setHint("已获取磁力信息", "ok");
+    } else {
+      setHint("查不到信息（磁力可能无人做种或格式不完整）", "err");
+    }
+  } catch (e) {
+    setHint("查询失败：" + e.message, "err");
+  } finally {
+    $("dl-peek").disabled = false;
+  }
+});
+
+$("dl-submit").addEventListener("click", async () => {
+  const text = $("dl-text").value.trim();
+  if (!text) { setHint("先粘贴磁力或直链", "err"); return; }
+  $("dl-submit").disabled = true;
+  setHint("提交中…");
+  try {
+    const r = await fetch(BASE + "/api/download", authInit({
+      method: "POST", cache: "no-store",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text, dedupe: $("dl-dedupe").checked}),
+    }));
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      setHint(`已提交 ${d.count} 个任务` + (d.code ? ` · 番号 ${d.code}` : ""), "ok");
+      if (d.preview) showProbePreview(d.preview);
+      $("dl-text").value = "";
+      openQueue();
+      loadJobs();
+    } else {
+      setHint(d.error || "提交失败", "err");
+    }
+  } catch (e) {
+    setHint("提交失败：" + e.message, "err");
+  } finally {
+    $("dl-submit").disabled = false;
+  }
+});
+
+// ── 任务队列
+const STAGE_TEXT = {queued: "等空间", downloading: "下载中", organizing: "整理中",
+  uploading: "上传中", deferred: "额度等待", done: "完成", cancelled: "已停止",
+  failed: "失败"};
+const ACTIVE = new Set(["queued", "downloading", "organizing", "uploading"]);
+let lastJobs = [];
+
+function jobNode(j) {
+  const node = el("div", "job " + (j.stage === "failed" ? "failed"
+    : j.stage === "done" ? "done" : j.stage === "cancelled" ? "failed" : ""));
+  const top = el("div", "jtop");
+  top.append(el("span", "jcode", j.code || j.name || (j.source || "").slice(0, 22) || j.id));
+  top.append(el("span", "jst", STAGE_TEXT[j.stage] || j.stage || "—"));
+  if (ACTIVE.has(j.stage)) {
+    const stop = el("button", "jstop", "停止");
+    stop.type = "button";
+    stop.title = "停止这个任务";
+    stop.addEventListener("click", async () => {
+      stop.disabled = true;
+      try { await fetch(BASE + "/api/job/stop", authInit({method: "POST",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: j.id})})); } catch (e) {}
+      loadJobs();
+    });
+    top.append(stop);
+  }
+  node.append(top);
+
+  const bar = el("div", "jbar");
+  const fill = el("i");
+  fill.style.width = (j.stage === "done" ? 100 : (j.percent || 0)) + "%";
+  bar.append(fill);
+  node.append(bar);
+
+  const meta = el("div", "jmeta");
+  const bits = [];
+  if (ACTIVE.has(j.stage) && j.downloaded) bits.push(gb(j.downloaded) + " 已落盘");
+  if (ACTIVE.has(j.stage) && j.percent) bits.push((j.percent).toFixed(0) + "%");
+  if (j.speed) bits.push((j.speed / 1048576).toFixed(1) + "MB/s");
+  if (j.stage === "done" && j.link) bits.push("已上传");
+  // 排队中的任务：把位置和还差多少空间说清楚，否则只看到「等空间」不知道在等什么
+  if (j.stage === "queued" && j.queued_position) bits.push(`第 ${j.queued_position} 位`);
+  if (j.error) bits.push(j.error);
+  meta.append(el("span", null, bits.join(" · ") || fmt(j.at)));
+  meta.append(el("span", "sp"));
+  if (j.link) {
+    const a = el("a", null, "Drive ↗");
+    a.href = j.link; a.target = "_blank"; a.rel = "noopener";
+    meta.append(a);
+  }
+  node.append(meta);
+  return node;
+}
+
+const PHASE_TEXT = {
+  PHASE_TYPE_PENDING: "排队", PHASE_TYPE_RUNNING: "下载中", PHASE_TYPE_PAUSED: "已暂停",
+  PHASE_TYPE_COMPLETE: "完成", PHASE_TYPE_ERROR: "失败",
+};
+
+// 番号详情：封面大图 + 全部字段 + 预览图墙（javbus 的「樣品圖像」）
+function showDetail(code, info) {
+  const old = document.getElementById("detail-layer");
+  if (old) old.remove();
+  const layer = el("div", "dlayer");
+  layer.id = "detail-layer";
+  layer.addEventListener("click", e => { if (e.target === layer) layer.remove(); });
+  const onKey = e => { if (e.key === "Escape") { layer.remove(); document.removeEventListener("keydown", onKey); } };
+  document.addEventListener("keydown", onKey);
+
+  const panel = el("div", "dpanel");
+  const head = el("div", "dhead");
+  head.append(el("span", "dcode", code));
+  const close = el("button", "iconbtn", "关闭");
+  close.type = "button";
+  close.addEventListener("click", () => layer.remove());
+  head.append(close);
+  panel.append(head);
+
+  const top = el("div", "dtop");
+  if (info.cover) {
+    const img = el("img", "dcover");
+    img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
+    img.alt = code;
+    top.append(img);
+  }
+  const metaBox = el("div", "dmeta");
+  if (info.title) metaBox.append(el("div", "dtitle", info.title));
+  const rows = [
+    ["日期", info.date], ["时长", info.duration], ["片商", info.maker],
+    ["发行商", info.publisher], ["导演", info.director], ["系列", info.series],
+    ["封面尺寸", info.cover_size], ["评分", info.review],
+    ["想看", info.want ? String(info.want) : ""], ["收藏", info.liked ? String(info.liked) : ""],
+    ["演员", (info.actors || []).join(" / ")],
+    ["类别", (info.categories || []).join("、")],
+    ["来源", info.source],
+  ].filter(r => r[1]);
+  for (const [k, v] of rows) {
+    const row = el("div", "drow");
+    row.append(el("span", "dk", k));
+    row.append(el("span", "dv", v));
+    metaBox.append(row);
+  }
+  top.append(metaBox);
+  panel.append(top);
+
+  if ((info.previews || []).length) {
+    panel.append(el("div", "dsub", `预览图 · ${info.previews.length}`));
+    const wall = el("div", "dwall");
+    for (const src of info.previews) {
+      const a = el("a", "dthumb");
+      a.href = BASE + "/proxy?u=" + encodeURIComponent(src);
+      a.target = "_blank";
+      a.rel = "noopener";
+      const img = el("img");
+      img.src = a.href;
+      img.loading = "lazy";
+      img.alt = "预览";
+      a.append(img);
+      wall.append(a);
+    }
+    panel.append(wall);
+  }
+
+  const actions = el("div", "dactions");
+  if (info.url) {
+    const a = el("a", "ghost", "javbus 原页 ↗");
+    a.href = info.url; a.target = "_blank"; a.rel = "noopener";
+    actions.append(a);
+  }
+  panel.append(actions);
+  layer.append(panel);
+  document.body.append(layer);
+}
+
+// 单条磁力预览：按需查询，不批量打外部接口
+async function showMagnetPreview(item, btn) {
+  const old = document.getElementById("preview-layer");
+  if (old) old.remove();
+  if (btn) btn.disabled = true;
+  let data = null;
+  try {
+    const r = await fetch(BASE + "/api/magnet/preview?magnet=" + encodeURIComponent(item.magnet),
+                          authInit({cache: "no-store"}));
+    data = await r.json();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    alert("预览失败：" + (e.message || e));
+    return;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+  const info = (data && data.info) || {};
+  const layer = el("div", "dlayer");
+  layer.id = "preview-layer";
+  layer.addEventListener("click", e => { if (e.target === layer) layer.remove(); });
+  const panel = el("div", "dpanel");
+  const head = el("div", "dhead");
+  head.append(el("span", "dcode", "磁力预览"));
+  const close = el("button", "iconbtn", "关闭");
+  close.type = "button";
+  close.addEventListener("click", () => layer.remove());
+  head.append(close);
+  panel.append(head);
+
+  if (!data || !data.ok) {
+    panel.append(el("div", "meta", (data && data.error) || "预览失败"));
+  } else if (!data.found) {
+    panel.append(el("div", "meta", "whatslink 还没有这条磁力的索引（新种子常见），稍后再试"));
+  } else {
+    const rows = [
+      ["文件名", info.name], ["体积", info.size ? gb(info.size) : ""],
+      ["文件数", info.count ? String(info.count) : ""],
+      ["类型", [info.type, info.file_type].filter(Boolean).join(" · ")],
+    ].filter(r2 => r2[1]);
+    const box = el("div", "dmeta");
+    for (const [k, v] of rows) {
+      const row = el("div", "drow");
+      row.append(el("span", "dk", k));
+      row.append(el("span", "dv", v));
+      box.append(row);
+    }
+    panel.append(box);
+    if ((info.screenshots || []).length) {
+      panel.append(el("div", "dsub", `截图 · ${info.screenshots.length}`));
+      const wall = el("div", "dwall");
+      for (const src of info.screenshots) {
+        const a = el("a", "dthumb");
+        a.href = BASE + "/proxy?u=" + encodeURIComponent(src);
+        a.target = "_blank"; a.rel = "noopener";
+        const img = el("img"); img.src = a.href; img.loading = "lazy"; img.alt = "截图";
+        a.append(img); wall.append(a);
+      }
+      panel.append(wall);
+    }
+  }
+  layer.append(panel);
+  document.body.append(layer);
+}
+
+async function panelControl(id, action, btn) {
+  const label = {pause: "暂停", resume: "继续", delete: "删除任务记录"}[action] || action;
+  if (action === "delete" && !confirm(`删除迅雷任务记录？\n\n只删任务条目，已下载的文件留在下载目录里。`)) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(BASE + "/api/xunlei/control", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({id, action}),
+    }));
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.ok) alert(`${label}失败：${data.error || ("HTTP " + r.status)}`);
+  } catch (e) {
+    alert(`${label}失败：${e.message || e}`);
+  } finally {
+    if (btn) btn.disabled = false;
+    loadJobs();
+  }
+}
+
+// 迅雷面板里的任务：本程序之外下的东西也能在这里看到，不用另开 2345
+async function appendPanelTasks(box) {
+  let data = null;
+  try {
+    const r = await fetch(BASE + "/api/xunlei", authInit({cache: "no-store"}));
+    if (r.ok) data = await r.json();
+  } catch (e) { return; }
+  const tasks = (data && data.tasks) || [];
+  if (!tasks.length) return;
+  const head = el("div", "queue-empty", data.error ? `迅雷面板不可用：${data.error}` : "迅雷面板");
+  box.append(head);
+  for (const t of tasks.slice(0, 20)) {
+    const node = el("div", "job" + (t.phase === "PHASE_TYPE_ERROR" ? " failed" : ""));
+    const top = el("div", "jtop");
+    top.append(el("span", "jcode", t.name || t.id));
+    top.append(el("span", "jst", PHASE_TEXT[t.phase] || t.phase));
+    const acts = el("span", "jacts");
+    if (t.phase === "PHASE_TYPE_RUNNING" || t.phase === "PHASE_TYPE_PENDING") {
+      const b = el("button", "jstop", "暂停");
+      b.type = "button"; b.title = "暂停这个迅雷任务";
+      b.addEventListener("click", () => panelControl(t.id, "pause", b));
+      acts.append(b);
+    } else if (t.phase === "PHASE_TYPE_PAUSED") {
+      const b = el("button", "jstop", "继续");
+      b.type = "button"; b.title = "继续这个迅雷任务";
+      b.addEventListener("click", () => panelControl(t.id, "resume", b));
+      acts.append(b);
+    }
+    const del = el("button", "jstop", "删除");
+    del.type = "button"; del.title = "删除这条任务记录（不动已下载的文件）";
+    del.addEventListener("click", () => panelControl(t.id, "delete", del));
+    acts.append(del);
+    top.append(acts);
+    node.append(top);
+    const bar = el("div", "jbar");
+    const fill = el("i");
+    fill.style.width = Math.max(0, Math.min(100, t.percent)) + "%";
+    bar.append(fill);
+    node.append(bar);
+    const bits = [];
+    if (t.percent) bits.push(t.percent.toFixed(0) + "%");
+    if (t.speed) bits.push((t.speed / 1048576).toFixed(1) + "MB/s");
+    if (t.error) bits.push(t.error);
+    node.append(el("div", "jmeta", bits.join(" · ") || "—"));
+    box.append(node);
+  }
+}
+
+async function loadJobs() {
+  try {
+    const r = await fetch(BASE + "/api/jobs", authInit({cache: "no-store"}));
+    if (!r.ok) return;
+    const {jobs} = await r.json();
+    lastJobs = jobs || [];
+
+    const active = lastJobs.filter(j => ACTIVE.has(j.stage)).length;
+    const bad = lastJobs.filter(j => j.stage === "failed").length;
+    const n = $("queue-n");
+    n.textContent = active ? `${active} 进行中` : (lastJobs.length ? `${lastJobs.length} 条` : "");
+    $("queuebtn").classList.toggle("busy", active > 0);
+
+    const box = $("jobs");
+    box.textContent = "";
+    if (!lastJobs.length) {
+      const empty = el("div", "queue-empty");
+      empty.append(el("div", null, "队列是空的"));
+      empty.append(el("div", null, "新建下载后进度会显示在这里"));
+      box.append(empty);
+      await appendPanelTasks(box);
+      return;
+    }
+    for (const j of lastJobs) box.append(jobNode(j));
+    await appendPanelTasks(box);
+
+    // 有任务从进行中变成完成，顺手刷新一次列表
+    if (active === 0 && lastJobs.some(j => j.stage === "done") && !loadJobs._done) {
+      loadJobs._done = true;
+      load();
+    }
+    if (active > 0) loadJobs._done = false;
+  } catch (e) { /* 静默 */ }
+}
+
+// 搜磁力：按输入框里的番号查 javbus，列候选；点一条就填进输入框，不自动下载
+$("dl-find").addEventListener("click", async () => {
+  const box = $("dl-finds");
+  const text = ($("dl-text").value || "").trim();
+  // FC2 是「字母-字母-数字」三段，普通番号两段；先试长的，别把 FC2-PPV-4519894 截成 PPV-45198
+  const code = (text.match(/FC2[-_ ]?PPV[-_ ]?\d{6,8}/i)
+    || text.match(/[A-Za-z]{2,6}[-_ ]?\d{2,5}/) || [""])[0];
+  if (!code) { $("dl-hint").textContent = "先写上番号，例如 SSIS-123"; return; }
+  $("dl-find").disabled = true;
+  $("dl-hint").textContent = "搜索中…";
+  try {
+    const r = await fetch(BASE + "/api/magnets?code=" + encodeURIComponent(code), authInit({cache: "no-store"}));
+    const data = await r.json().catch(() => ({}));
+    box.textContent = "";
+    box.hidden = false;
+    if (!data.ok) {
+      $("dl-hint").textContent = data.error || "搜索失败";
+      return;
+    }
+    const items = data.items || [];
+    if (!items.length) {
+      $("dl-hint").textContent = `${data.code} 没搜到磁力`;
+      return;
+    }
+    $("dl-hint").textContent = `${data.code} 共 ${items.length} 条候选 · 点上方信息卡看详情`;
+    const info = data.info || {};
+    if (info.title || info.cover) {
+      // 资源信息：封面 + 标题 + 日期/时长/片商/演员 + 系列/类别/评分；点卡片看预览图
+      const card = el("div", "findcard");
+      card.title = "点开看详情与预览图";
+      card.addEventListener("click", () => showDetail(data.code, info));
+      if (info.cover) {
+        const img = el("img", "findcover");
+        img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
+        img.alt = data.code;
+        img.loading = "lazy";
+        card.append(img);
+      }
+      const body = el("div", "findbody");
+      body.append(el("div", "findtitle", info.title || data.code));
+      const bits = [info.date, info.duration, info.maker].filter(Boolean);
+      if (info.cover_size) bits.push(info.cover_size);
+      if (bits.length) body.append(el("div", "findmeta", bits.join(" · ")));
+      if (info.actors && info.actors.length) {
+        body.append(el("div", "findmeta", "演员 " + info.actors.slice(0, 4).join(" / ")));
+      }
+      const extra = [info.series ? "系列 " + info.series : "",
+                     (info.categories || []).slice(0, 5).join(" / "),
+                     info.review ? "评分 " + info.review : "",
+                     info.want ? info.want + " 想看" : ""].filter(Boolean);
+      if (extra.length) body.append(el("div", "findmeta", extra.join(" · ")));
+      card.append(body);
+      card.append(el("span", "findmore", "详情 ›"));
+      box.append(card);
+    }
+    for (const item of items) {
+      const row = el("div", "sub-row");
+      row.append(el("span", "tag", item.has_subtitle ? "字幕" : (item.is_hd ? "高清" : "磁力")));
+      row.append(el("span", "nm", item.size_text || "体积未知"));
+      const r2 = el("div", "r");
+      const info2 = el("button", null, "详情");
+      info2.addEventListener("click", () => showDetail(data.code, data.info || {}));
+      r2.append(info2);
+      const pv = el("button", null, "预览");
+      pv.title = "用 whatslink 查这条磁力的文件名/体积/截图（按 infohash 缓存）";
+      pv.addEventListener("click", () => showMagnetPreview(item, pv));
+      r2.append(pv);
+      const use = el("button", null, "用这条");
+      use.addEventListener("click", () => {
+        $("dl-text").value = `${data.code} ${item.magnet}`;
+        $("dl-hint").textContent = "已填入，点「开始下载」提交";
+      });
+      r2.append(use);
+      row.append(r2);
+      box.append(row);
+    }
+  } catch (e) {
+    $("dl-hint").textContent = "搜索失败：" + (e.message || e);
+  } finally {
+    $("dl-find").disabled = false;
+  }
+});
+
+$("norm-btn").addEventListener("click", askNormalize);
+
+// 面板里多天前的失败任务：只删任务记录，不动下载目录
+$("panel-clean").addEventListener("click", async () => {
+  let plan = null;
+  try {
+    const r = await fetch(BASE + "/api/xunlei/cleanup", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"}, body: "{}",
+    }));
+    plan = await r.json();
+  } catch (e) {
+    flash("取清理清单失败：" + e.message, true);
+    return;
+  }
+  const list = (plan && plan.delete) || [];
+  if (!list.length) {
+    flash("没有超过 7 天的失败任务");
+    return;
+  }
+  const names = list.slice(0, 10).map(i => i.name).join("\n");
+  if (!confirm(`删除 ${list.length} 条失败任务记录？\n\n${names}\n\n只删任务条目，已下载的文件留在下载目录里。`)) return;
+  try {
+    const r2 = await fetch(BASE + "/api/xunlei/cleanup", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({confirm: true, days: 7}),
+    }));
+    const res = await r2.json().catch(() => ({}));
+    flash(`已清理 ${(res.deleted || []).length} 条` + ((res.failed || []).length ? `，失败 ${res.failed.length} 条` : ""),
+          (res.failed || []).length > 0);
+    loadJobs();
+  } catch (e) {
+    flash("清理失败：" + (e.message || e), true);
+  }
+});
+
+$("queue-clear").addEventListener("click", async () => {
+  try { await fetch(BASE + "/api/jobs/clear", authInit({method: "POST"})); } catch (e) {}
+  loadJobs();
+});
+
+// 记住队列展开状态；窄屏默认收起，桌面默认展开（队列是内容区右侧栏）
+(function initQueue() {
+  let saved = null;
+  try { saved = localStorage.getItem("xd_queue"); } catch (e) {}
+  const wide = window.innerWidth > 1180;
+  const open = saved === null ? wide : saved === "1";
+  if (open && (!wide || window.innerWidth > 960)) openQueue();
+})();
+
+load();
+loadJobs();
+setInterval(load, 30000);
+setInterval(loadJobs, 3000);
+
+fetch(BASE + "/api/session", {cache: "no-store"})
+  .then(r => r.ok ? r.json() : null)
+  .then(d => {
+    if (!d) { location.replace("/"); return; }
+    $("logout").hidden = !d.auth;
+  })
+  .catch(() => {});
+</script>
+</body>
+</html>

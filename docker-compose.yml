@@ -1,0 +1,56 @@
+services:
+  bot:
+    image: ${BOT_IMAGE:-ghcr.io/cloudcranes/x-drive:latest}
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    env_file: .env
+    environment:
+      # 迅雷容器跑在宿主机网络里，从容器访问要打宿主机地址
+      XUNLEI_URL: "${XUNLEI_URL:-http://host.docker.internal:2345}"
+      # 整理工作区：与迅雷下载目录分开，失败不动原件
+      STATE_DIR: "/work"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${RCLONE_CONFIG_HOST:?在 .env 里设置 RCLONE_CONFIG_HOST 指向 rclone.conf}:/config/rclone/rclone.conf:ro
+      - ./data:/data
+      - ./work:/work
+      # 必须和迅雷容器里 /downloads 指向同一份目录，否则看不见下好的文件
+      - ${XUNLEI_DOWNLOADS_HOST:?在 .env 里设置 XUNLEI_DOWNLOADS_HOST 指向迅雷的下载目录}:/downloads
+    healthcheck:
+      # 自检要访问 Telegram + 迅雷 + Google Drive，Drive 慢的时候整体能到 30s 上下，
+      # 所以超时给到 120s，避免正常运行时被反复判成 unhealthy。
+      test: ["CMD", "python", "-m", "app.main", "--check"]
+      interval: 180s
+      timeout: 120s
+      retries: 3
+      start_period: 90s
+
+  web:
+    image: ${BOT_IMAGE:-ghcr.io/cloudcranes/x-drive:latest}
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.web"]
+    env_file: .env
+    environment:
+      WEB_PORT: "8080"
+      XUNLEI_URL: "${XUNLEI_URL:-http://host.docker.internal:2345}"
+      # 整理工作区：与迅雷下载目录分开，失败不动原件
+      STATE_DIR: "/work"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/data
+      - ./work:/work
+      - ${XUNLEI_DOWNLOADS_HOST:?在 .env 里设置 XUNLEI_DOWNLOADS_HOST 指向迅雷的下载目录}:/downloads
+      - ${RCLONE_CONFIG_HOST:?在 .env 里设置 RCLONE_CONFIG_HOST 指向 rclone.conf}:/config/rclone/rclone.conf:ro
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

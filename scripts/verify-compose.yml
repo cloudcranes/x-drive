@@ -1,0 +1,29 @@
+# 验收专用 compose：与正式 docker-compose.yml 隔离。
+#
+# 为什么不复用正式文件：
+#   · 正式文件挂 ./data 与 ./work，验收会读写真实任务状态与工作区；
+#   · 镜像写成固定标签，验收构建会覆盖正在运行的镜像；
+#   · 项目名凑巧相同（或用户覆盖 PROJECT）时，收尾的 down -v 会停掉正式部署。
+# 这里用独立镜像标签、临时目录、仅本项目网络，收尾也只清本轮资源。
+#
+# 构建目标 test 会装上 pytest 并拷入 tests/：以前脚本在容器里跑 pytest，
+# 而运行镜像根本没有 tests 目录，那一项永远是假的「通过」。
+services:
+  web:
+    image: ${TAG:?验收脚本会注入唯一标签}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: ${BUILD_TARGET:-runtime}
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      WEB_PORT: "8080"
+      XUNLEI_URL: "${XUNLEI_URL:-http://host.docker.internal:2345}"
+      STATE_DIR: "/work"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${DATA_DIR:?验收脚本会注入临时 data 目录}:/data
+      - ${WORK_DIR:?验收脚本会注入临时 work 目录}:/work
+      - ${XUNLEI_DOWNLOADS_HOST:?在 .env 里设置 XUNLEI_DOWNLOADS_HOST}:/downloads
+      - ${RCLONE_CONFIG_HOST:?在 .env 里设置 RCLONE_CONFIG_HOST}:/config/rclone/rclone.conf:ro

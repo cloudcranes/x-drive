@@ -1,0 +1,123 @@
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 装依赖和跑测试必须在「同一个容器」里：两条独立的 docker run 是两个容器，
+      # 前一条装的 pytest 随容器销毁而消失，后一条就会报
+      # "No module named pytest"。用 sh -c 把两步串在同一次运行里。
+      - name: 单元测试
+        run: |
+          docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim sh -c "
+            python -m pip install --no-cache-dir -q -r requirements.txt pytest &&
+            python -m pytest tests -q -p no:cacheprovider
+          "
+
+      # 失败诊断：Actions 日志需要认证才能读，把关键一行编码进 artifact 名称
+      # （artifacts 列表公开可读），正文同时留在 Job Summary。
+      - name: 失败诊断
+        if: failure()
+        run: |
+          set +e
+          OUT=$(docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim sh -c "
+            python -m pip install --no-cache-dir -q -r requirements.txt pytest &&
+            python -m pytest tests -p no:cacheprovider --tb=line -q
+          " 2>&1)
+          echo "$OUT" > /tmp/ci-failure.txt
+          {
+            echo "### 测试失败诊断"
+            echo '```'
+            printf '%s\n' "$OUT" | tail -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          KEY=$(printf '%s\n' "$OUT" | grep -E "^(FAILED|ERROR)" | head -1)
+          [ -z "$KEY" ] && KEY=$(printf '%s\n' "$OUT" | grep -iE "(error|exception|assert)" | tail -1)
+          [ -z "$KEY" ] && KEY=$(printf '%s\n' "$OUT" | tail -1)
+          SAFE=$(printf '%s' "$KEY" | tr -cs 'A-Za-z0-9._-' '_' | cut -c1-100)
+          [ -z "$SAFE" ] && SAFE="unknown"
+          echo "ARTNAME=ci-fail-${SAFE}" >> "$GITHUB_ENV"
+
+      - name: 上传诊断
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTNAME }}
+          path: /tmp/ci-failure.txt
+          retention-days: 3
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.title=x-drive
+            org.opencontainers.image.description=Telegram 机器人：把 x.com 推文媒体转存到 Google Drive
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 摘要
+        run: |
+          {
+            echo "### 镜像已构建"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
