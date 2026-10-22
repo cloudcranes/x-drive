@@ -334,14 +334,17 @@ class Store:
         web 与 bot 是两个进程，重启恢复、延期到期、手动重试三条路径都可能
         同时指向同一条记录。以前只靠内存里的线程状态判断，进程一重启就失效，
         两个执行者会对同一个目录各下一份。
+
+        「同 owner 可以再领」那条分支必须去掉：发起方还在跑（心跳在跳），
+        同 owner 再领等于放第二个执行者进来；而 beat 超时只说明心跳停了，
+        不代表原执行者已退出，所以只有空租约或心跳过期才允许接管。
         """
         now = time.time() if now is None else now
         with self._lock, self._conn() as conn:
             cur = conn.execute(
                 "UPDATE jobs SET exec_owner=?, exec_beat=?, updated_at=?"
-                " WHERE id=? AND (exec_owner='' OR exec_owner=?"
-                "   OR exec_beat < ?)",
-                (owner, now, now, job_id, owner, now - STALE_BEAT))
+                " WHERE id=? AND (exec_owner='' OR exec_beat < ?)",
+                (owner, now, now, job_id, now - STALE_BEAT))
             return bool(cur.rowcount)
 
     def beat(self, job_id: str, owner: str, now: float | None = None) -> bool:

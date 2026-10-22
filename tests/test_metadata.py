@@ -239,6 +239,44 @@ def test_verify_archive_size_mismatch(tmp_path, monkeypatch):
     assert out["size_mismatch"][0] == {"name": "a.mp4", "local": 10, "remote": 9}
 
 
+def test_verify_archive_remote_zero_byte_is_mismatch(tmp_path, monkeypatch):
+    """远端 0 字节而本地有大小：上传残缺，必须判异常，不能算通过。"""
+    core, web = _scrape_env(tmp_path, monkeypatch)
+    core.save_state(web.STATE, {"SSIS-11": {
+        "code": "SSIS-11", "manifest": {"files": [{"name": "a.mp4", "size": 100}]}}})
+    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0: [
+        {"name": "a.mp4", "size": 0}])
+    out = web.verify_archive("SSIS-11")
+    assert out["state"] == "大小异常"
+    assert out["size_mismatch"] == [{"name": "a.mp4", "local": 100, "remote": 0}]
+    assert out.get("hint") is None, "默认不补传、不删除"
+
+
+def test_verify_archive_unknown_local_size_is_not_pass(tmp_path, monkeypatch):
+    """本地大小不明（0 或没记）：不做大小断言，但要说「大小未知」，不能算通过。"""
+    core, web = _scrape_env(tmp_path, monkeypatch)
+    core.save_state(web.STATE, {"SSIS-12": {
+        "code": "SSIS-12", "manifest": {"files": [{"name": "a.mp4", "size": 0},
+                                                  {"name": "b.nfo"}]}}})
+    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0: [
+        {"name": "a.mp4", "size": 100}, {"name": "b.nfo", "size": 5}])
+    out = web.verify_archive("SSIS-12")
+    assert out["state"] == "大小未知"
+    assert out["size_unknown"] == ["a.mp4", "b.nfo"]
+    assert out["size_mismatch"] == [], "大小未知不做断言"
+    assert "大小未知" in out["note"]
+
+
+def test_verify_archive_records_without_sizes_still_ok(tmp_path, monkeypatch):
+    """记录里只有文件名（无清单）、远端非空：大小未知但不许谎报通过。"""
+    core, web = _scrape_env(tmp_path, monkeypatch)
+    core.save_state(web.STATE, {"SSIS-13": {"code": "SSIS-13", "files": ["a.mp4"]}})
+    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0: [
+        {"name": "a.mp4", "size": 100}])
+    out = web.verify_archive("SSIS-13")
+    assert out["state"] == "大小未知" and out["size_unknown"] == ["a.mp4"]
+
+
 def test_verify_archive_ls_failure_is_reported_not_raised(tmp_path, monkeypatch):
     core, web = _scrape_env(tmp_path, monkeypatch)
     core.save_state(web.STATE, {"SSIS-9": {"code": "SSIS-9", "files": ["a.mp4"]}})

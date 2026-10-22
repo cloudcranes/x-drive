@@ -25,6 +25,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 import httpx
 
@@ -420,7 +421,9 @@ def _upload_loop(job_id: str, work: Path, folder: str, size: int,
                  clock: dict, policy) -> str | None:
     """把工作区推到 Drive，可重试；返回分享链接。"""
     up_policy = retry.RetryPolicy(retries=RETRIES, base_delay=RETRY_BASE_DELAY)
+    require_lease(job_id, folder)                # 上传前
     while True:
+        require_lease(job_id, folder)            # 每次重试前
         job_update(job_id, stage="uploading", folder=folder, size=size, percent=100.0,
                    retries=policy.attempts + up_policy.attempts)
         phase = time.monotonic()
@@ -446,23 +449,54 @@ def _upload_loop(job_id: str, work: Path, folder: str, size: int,
 def _finish(job_id: str, work: Path, folder: str, files: list[Path], size: int,
             link: str | None, source: str, clock: dict, policy) -> None:
     """记账：元数据查不到也写归档，不能因为刮削失败丢掉已上传的记录。"""
+    require_lease(job_id, folder)                # 写归档前
     info = None
     try:
         info = asyncio.run(meta.lookup(folder))
     except Exception as exc:
         log.warning("查 %s 的元数据失败：%s", folder, exc)
-    core.update_state(STATE, {
-        folder: {
-            "code": folder,
-            "path": f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}",
-            "link": link or "",
-            "files": [f.name for f in files],
-            "size": size,
-            "source": source[:300],
-            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "meta": info or {},
-        }
-    })
+    # 刮削结果在上传前的任务 extra 里（scraped/files/scrape_pending/locked/infohash）：
+    # 归档记录要按它补齐，否则之后的 scrape/verify/dup_check 都无据可依。
+    try:
+        extra = ( _store().get(job_id) or {}).get("extra") or {}
+        if isinstance(extra, str):            # 兜底：万一还是序列化过的
+            extra = json.loads(extra or "{}")
+    except Exception as exc:                  # 记不清就留空，别把记账搞挂
+        log.warning("读任务 %s 的刮削记录失败：%s", job_id, exc)
+        extra = {}
+    from_extra = extra.get("files") or []
+    names = ([f.name for f in files] + [str(n) for n in from_extra if n and str(n) not in
+                                        [f.name for f in files]])
+    # 清单按工作区实际文件生成；文件已不在工作区（如被清理）就保留条目、大小记 0
+    entries = []
+    for name in names:
+        path = work / name
+        try:
+            st = path.stat()
+            entries.append({"name": name, "size": st.st_size, "ext": path.suffix.lower()})
+        except OSError:
+            entries.append({"name": name, "size": 0, "ext": Path(name).suffix.lower()})
+    # 清单写自身就是自引用：manifest.json 不进清单，其余附件照常列
+    media_entries = [e for e in entries if e["name"] != metadata.MANIFEST_NAME]
+    record = {
+        "code": folder,
+        "path": f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}",
+        "link": link or "",
+        "files": names,
+        "size": size,
+        "source": source[:300],
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "meta": info or extra.get("scraped") or {},
+        "manifest": {**metadata.manifest([], extra.get("scraped") or {}, code=folder),
+                     "files": media_entries,
+                     "total_size": sum(e["size"] for e in media_entries)},
+        "scrape_pending": bool(extra.get("scrape_pending")),
+    }
+    if extra.get("infohash"):                 # 有才写，没有不编
+        record["infohash"] = str(extra["infohash"])
+    if extra.get("locked"):
+        record["locked"] = sorted(set(extra["locked"]))
+    core.update_state(STATE, {folder: record})
     job_update(job_id, stage="done", link=link or "", code=folder, size=size,
                retries=policy.attempts, error="", resume_from="",
                timing={k: round(v, 2) for k, v in clock.items()},
@@ -473,16 +507,100 @@ def _finish(job_id: str, work: Path, folder: str, files: list[Path], size: int,
 # 进程身份：租约写在任务记录里，谁持租谁执行；进程重启后 id 变了，
 # 旧租约自然会被判为过期（STALE_BEAT）而允许接手。
 PROC_ID = f"web-{os.getpid()}-{int(time.time())}"
+# 心跳间隔：取租约过期阈值的三分之一，漏两次都不会被误判为失联
+HEARTBEAT_INTERVAL = store.STALE_BEAT / 3
+# job_id -> 本次执行的租约 token。同一条记录可能被重试/恢复重新领取，
+# 每次真正开始执行都换一个新 token，旧线程再 beat/release 就自然打不中。
+LEASES: dict[str, str] = {}
+# 心跳线程还在跑的任务；beat 失败即置 False，各阶段据此停手
+_lease_live: dict[str, bool] = {}
+_lease_lock = threading.Lock()
 
 
 def lease_owner(job_id: str) -> str:
-    """本进程对这个任务的租约名。按期续租，续不上就说明已被别人接管。"""
-    return f"{PROC_ID}:{job_id}"
+    """本次执行对这个任务的租约名（不存在就创建）。
+
+    token 唯一：以前是 f"{PROC_ID}:{job_id}"，同一 job 重领两次字符串完全相同，
+    旧线程还能继续 beat，两个执行者就在同一目录上并行。
+    """
+    with _lease_lock:
+        token = LEASES.get(job_id)
+        if not token:
+            token = f"{PROC_ID}:{job_id}:{uuid4().hex[:12]}"
+            LEASES[job_id] = token
+        return token
+
+
+def lease_alive(job_id: str) -> bool:
+    """本次执行的租约是否还有效：暂停过心跳（还没起心跳）也算在场。"""
+    if not _lease_live.get(job_id, True):
+        return False
+    owner = LEASES.get(job_id)
+    if not owner:
+        return False
+    try:
+        return bool(_store().beat(job_id, owner))
+    except Exception as exc:      # 库暂时不可用不等于失租，别把任务误杀
+        log.warning("检查任务 %s 的租约失败：%s", job_id, exc)
+        return True
+
+
+def lease_begin(job_id: str, token: str | None = None) -> str:
+    """开始一次执行，起心跳线程，返回 token。
+
+    token 省略就铸一个新的（本端自己 claim 的路径）；调用方已经用某个 token
+    claim_owner 了就把它传进来 —— 领取用的 owner 必须和心跳用的同一个字符串，
+    否则第一次 beat 就打空、被误判失租。
+    """
+    with _lease_lock:
+        if token:
+            LEASES[job_id] = token
+        else:
+            LEASES.pop(job_id, None)
+    owner = token or lease_owner(job_id)
+    # 先续一次：顺带把「这次持有的租约真的在库里属于我」验证一遍
+    if not _store().beat(job_id, owner):
+        log.warning("任务 %s 的租约不在本线程手里，按失租处理", job_id)
+        with _lease_lock:
+            _lease_live[job_id] = False
+
+    def pulse() -> None:
+        while _lease_live.get(job_id, False):
+            time.sleep(HEARTBEAT_INTERVAL)
+            if not _lease_live.get(job_id, False):
+                break
+            try:
+                ok = _store().beat(job_id, owner)
+            except Exception as exc:
+                log.warning("任务 %s 续租出错：%s", job_id, exc)
+                continue
+            if not ok:
+                with _lease_lock:
+                    _lease_live[job_id] = False
+                log.warning("任务 %s 的租约已被他人持有，停止续租", job_id)
+                break
+
+    with _lease_lock:
+        _lease_live[job_id] = True
+    threading.Thread(target=pulse, daemon=True, name=f"lease-{job_id}").start()
+    return owner
+
+
+def lease_end(job_id: str) -> None:
+    """结束一次执行：停心跳、让出租约。"""
+    with _lease_lock:
+        _lease_live.pop(job_id, None)
+        owner = LEASES.pop(job_id, None)
+    if owner:
+        try:
+            _store().release(job_id, owner)
+        except Exception as exc:
+            log.warning("释放任务 %s 的租约失败：%s", job_id, exc)
 
 
 def require_lease(job_id: str, code: str = "") -> None:
     """执行前确认租约仍属于自己；被接管就停手，绝不和另一个执行者抢同一目录。"""
-    if not _store().beat(job_id, lease_owner(job_id)):
+    if not lease_alive(job_id):
         raise Cancelled(f"任务 {code or job_id} 已由另一个执行者接手，本线程停止")
     if cancel_requested(job_id):
         raise Cancelled("已停止")
@@ -494,9 +612,12 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
     下载目录（迅雷建）与工作区（我们整理）分开：
     下载原件只读，改名挑主体都在工作区做，失败时原件还在，便于续传。
     """
-    if not _store().beat(job_id, lease_owner(job_id)):
+    owner = lease_owner(job_id)
+    if not _store().beat(job_id, owner):
         log.warning("任务 %s 的租约已被接管，不再启动", job_id)
         return
+    # 真正开始执行：沿用领取时的 token 起心跳（同一字符串，否则首跳就打空）
+    lease_begin(job_id, owner)
     key = workspace.key_of(code or job_id)
     download_dir = workspace.staging(TMP_ROOT, key)
     work = workspace.workspace(STATE_DIR, key)
@@ -553,6 +674,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         if resumed:
             folder, files, size = resumed
             done_code, done_size = folder, size
+            require_lease(job_id, code)          # downloading→uploading 前
             job_update(job_id, stage="uploading", folder=folder, size=size, error="")
             link = _upload_loop(job_id, work, folder, size, clock, policy)
             _finish(job_id, work, folder, files, size, link, source, clock, policy)
@@ -587,6 +709,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
 
         if cancel_requested(job_id):
             raise Cancelled("已停止")
+        require_lease(job_id, code)              # downloading→organizing 前
 
         job_update(job_id, stage="organizing")
         phase = time.monotonic()
@@ -617,6 +740,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
                                       "files": [f.name for f in scraped["files"]]})
 
         # ── 上传（可重试）：网络中断、Drive 5xx 都可以再推一次
+        require_lease(job_id, code)              # organizing→uploading 前
         link = _upload_loop(job_id, work, folder, size, clock, policy)
         _finish(job_id, work, folder, files, size, link, source, clock, policy)
         uploaded = True
@@ -645,15 +769,18 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         # drop() 只删带本任务标记的目录，相邻的外部目录不受影响
         stored = _store().get(job_id)
         real_dir = Path(stored.get("keep_dir") or "") if stored.get("keep_dir") else None
-        if uploaded:
+        # 清理前必须确认目录仍归自己：失租时另一个执行者可能正在用同一目录
+        if uploaded and lease_alive(job_id):
             # 只有全流程成功才删：失败留着原件，重试与人工排查都要用
             workspace.drop_workspace(work, key, "上传成功")
             workspace.drop(download_dir, key, "上传成功")
             if real_dir and real_dir != download_dir:
                 workspace.drop(real_dir, key, "上传成功")
+        elif uploaded:
+            log.warning("任务 %s 已失租，跳过目录清理：%s %s", job_id, work, download_dir)
         else:
             job_update(job_id, kept=str(real_dir or download_dir))
-        _store().release(job_id, lease_owner(job_id))
+        lease_end(job_id)
 
 
 def record_timing(job_id: str, code: str, size: int, clock: dict, outcome: str, started: float) -> None:
@@ -2453,28 +2580,6 @@ def serve(host: str = BIND, port: int = PORT) -> ThreadingHTTPServer:
     return httpd
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    httpd = serve()
-    # 磁盘空间调度线程：排队任务要能被自动放行，不能只靠提交时那一次判断
-    threading.Thread(target=_queue_loop, daemon=True, name="disk-queue").start()
-    # 重启对账：上次没跑完的任务重新入队，不从头再下
-    threading.Thread(target=_resume_loop, daemon=True, name="resume").start()
-    threading.Thread(target=_defer_loop, daemon=True, name="defer").start()
-    # 订阅轮询线程：定时查演员页，有新的自动提交
-    threading.Thread(target=_subs_loop, daemon=True, name="subs").start()
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        httpd.server_close()
-
-
-if __name__ == "__main__":
-    main()
-
-
 # ─────────────────────────────────────────── 刮削补全（上传后的元数据维护）
 
 def scrape_status() -> dict:
@@ -2599,8 +2704,21 @@ def sync_attachments(code: str, record: dict) -> dict:
     try:
         rec = (record or {}).get("meta") or {}
         locks = set((record or {}).get("locked") or [])
+        # 补刮只该刷新附件，不能把清单里的视频项弄丢：旧清单（或 files）里的
+        # 媒体项原样带进新清单，大小沿用记录里的，附件项按本次生成的实际大小。
+        sidecar = {metadata.JSON_NAME, metadata.NFO_NAME, metadata.POSTER_NAME,
+                   metadata.MANIFEST_NAME}
+        kept = []
+        for entry in ((record or {}).get("manifest") or {}).get("files") or []:
+            name = str((entry or {}).get("name") or "")
+            if name and name not in sidecar:
+                kept.append({"name": name, "size": int((entry or {}).get("size") or 0),
+                             "ext": Path(name).suffix.lower()})
+        if not kept:                              # 没有清单就退回记录里的文件清单
+            kept = [{"name": str(n), "size": 0, "ext": Path(str(n)).suffix.lower()}
+                    for n in ((record or {}).get("files") or []) if n and str(n) not in sidecar]
         out = metadata.write_sidecar(work, rec, [], code=code, locks=locks,
-                                     want_nfo=NFO_ON)
+                                     want_nfo=NFO_ON, keep=kept)
         target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
         pushed, failed = [], []
         for name in out["written"]:
@@ -2652,21 +2770,28 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
 
     missing = sorted(n for n in local if n not in remote)
     extra = sorted(n for n in remote if local and n not in local)
-    sized = sorted(n for n in local if n in remote and local[n] and remote[n]
-                   and local[n] != remote[n])
+    # 本地记了大小就跟远端比：远端 0 字节（上传残缺）也算大小异常。
+    # 本地大小不明（0 或没记）就不做大小断言，但要标出来 —— 不能当成通过。
+    sized = sorted(n for n in local if n in remote and local[n] and local[n] != remote[n])
+    unknown = sorted(n for n in local if n in remote and not local[n])
     if missing:
         verdict = "缺文件"
     elif sized:
         verdict = "大小异常"
     elif not local:
         verdict = "无清单"
+    elif unknown:
+        verdict = "大小未知"
     else:
         verdict = "校验通过"
     out = {"ok": True, "code": code, "state": verdict, "missing": missing,
            "extra": extra, "size_mismatch": [
                {"name": n, "local": local[n], "remote": remote[n]} for n in sized],
+           "size_unknown": unknown,
            "local_count": len(local), "remote_count": len(remote),
            "confirmed": bool(confirm)}
+    if unknown:
+        out["note"] = f"以下文件本地大小未知，未做大小校验：{'、'.join(unknown)}"
     if confirm:
         out["hint"] = "确认只记录结论，不会自动补传或删除远端文件"
     return out
@@ -2819,3 +2944,25 @@ def restore_apply(source: str, confirm: bool = False) -> dict:
     return {"ok": True, "restored_from": source, "safety": safety["path"],
             "stats": _store().stats(),
             "hint": "先对账：对照任务列表与迅雷面板，再让调度继续跑"}
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    httpd = serve()
+    # 磁盘空间调度线程：排队任务要能被自动放行，不能只靠提交时那一次判断
+    threading.Thread(target=_queue_loop, daemon=True, name="disk-queue").start()
+    # 重启对账：上次没跑完的任务重新入队，不从头再下
+    threading.Thread(target=_resume_loop, daemon=True, name="resume").start()
+    threading.Thread(target=_defer_loop, daemon=True, name="defer").start()
+    # 订阅轮询线程：定时查演员页，有新的自动提交
+    threading.Thread(target=_subs_loop, daemon=True, name="subs").start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+
+
+if __name__ == "__main__":
+    main()

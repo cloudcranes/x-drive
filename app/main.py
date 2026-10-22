@@ -14,11 +14,13 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 from telegram import Message, Update
@@ -223,6 +225,89 @@ def finish_task(cfg: Config, job_id: str, stage: str, error: str = "") -> None:
         task_store(cfg).finish(job_id, stage, error)
 
 
+# ── 执行租约：与网页端同一套（store.claim_owner / beat / release），
+# 心跳间隔同样取过期阈值的三分之一，漏两次也不会被误判失联。
+PROC_ID = f"bot-{os.getpid()}-{int(time.time())}"
+HEARTBEAT_INTERVAL = store.STALE_BEAT / 3
+LEASES: dict[str, str] = {}
+_lease_live: dict[str, bool] = {}
+
+
+def lease_owner(job_id: str) -> str:
+    """本次执行对这个任务的租约名（不存在就创建）。token 每次执行都不同。"""
+    token = LEASES.get(job_id)
+    if not token:
+        token = f"{PROC_ID}:{job_id}:{uuid4().hex[:12]}"
+        LEASES[job_id] = token
+    return token
+
+
+def lease_begin(cfg: Config, job_id: str) -> bool:
+    """开始执行：铸新 token → 领取 → 起心跳；领不到租约返回 False。
+
+    顺序不能反：领取用的 owner 与心跳用的 owner 必须是同一个字符串，
+    否则第一次 beat 就落空、表现为「刚拿到就被判失租」。
+    """
+    store_ = task_store(cfg)
+    LEASES.pop(job_id, None)
+    token = lease_owner(job_id)
+    if not store_.claim_owner(job_id, token):
+        LEASES.pop(job_id, None)
+        return False
+    # 占位：心跳线程每 HEARTBEAT_INTERVAL 才跳一次，起跳前也要算「在场」，
+    # 否则紧随其后的 require_lease 会把它当成没起心跳而过不去
+    _lease_live[job_id] = True
+
+    def pulse() -> None:
+        while _lease_live.get(job_id, False):
+            time.sleep(HEARTBEAT_INTERVAL)
+            if not _lease_live.get(job_id, False):
+                break
+            try:
+                ok = store_.beat(job_id, token)
+            except Exception as exc:
+                log.warning("任务 %s 续租出错：%s", job_id, exc)
+                continue
+            if not ok:
+                _lease_live[job_id] = False
+                log.warning("任务 %s 的租约已被他人持有，停止续租", job_id)
+                break
+
+    threading.Thread(target=pulse, daemon=True, name=f"bot-lease-{job_id}").start()
+    return True
+
+
+def lease_alive(cfg: Config, job_id: str) -> bool:
+    """本次执行的租约是否仍有效；心跳失败过就直接判定失租。"""
+    if not _lease_live.get(job_id, True):
+        return False
+    owner = LEASES.get(job_id)
+    if not owner:
+        return False
+    try:
+        return bool(task_store(cfg).beat(job_id, owner))
+    except Exception as exc:      # 库暂时不可用不等于失租
+        log.warning("检查任务 %s 的租约失败：%s", job_id, exc)
+        return True
+
+
+def require_lease(cfg: Config, job_id: str) -> None:
+    """关键节点自查：失租就停手，绝不和另一个执行者抢同一目录。"""
+    if job_id and not lease_alive(cfg, job_id):
+        raise RuntimeError(f"任务 {job_id} 已由另一个执行者接手，本端停止")
+
+
+def lease_end(cfg: Config, job_id: str) -> None:
+    """结束执行：停心跳并让出租约。"""
+    _lease_live.pop(job_id, None)
+    owner = LEASES.pop(job_id, None)
+    if owner:
+        try:
+            task_store(cfg).release(job_id, owner)
+        except Exception as exc:
+            log.warning("释放任务 %s 的租约失败：%s", job_id, exc)
+
+
 def defer_task(cfg: Config, job_id: str, reason: str = "") -> float:
     """配额类：写明确的唤醒时间。与网页端同一个 Store.defer()，两边语义一致。
 
@@ -307,6 +392,11 @@ async def run_task(
                     f"{time.strftime('%m-%d %H:%M', time.localtime(until))} 自动重试")
                 continue
 
+        # 与网页端同一套执行租约：领不到就说明已有执行者在跑，绝不进同一目录
+        if not lease_begin(cfg, job_id):
+            failures.append(f"{key} 已由另一个执行者接手，跳过")
+            continue
+
         # 下载目录（迅雷建）与工作区（我们整理）分开，失败不动原件
         key_safe = workspace.key_of(key)
         download_dir = workspace.staging(cfg.tmp_root, key_safe)
@@ -352,6 +442,7 @@ async def run_task(
             retried["download"] = policy.attempts
 
             phase = time.monotonic()
+            require_lease(cfg, job_id)          # downloading→organizing 前
             workspace.drop_workspace(work, key_safe, "整理前清空")
             pipeline.stage_copy(Path(handle.get("dir") or download_dir), work, key_safe)
             found = fetcher.media_files(work) or fetcher.media_files(work, types=fetcher.MEDIA_EXT)
@@ -366,6 +457,7 @@ async def run_task(
                     f"今日上传量已达 {cfg.daily_upload_gb}GB 上限，文件留在 /downloads 可明天重试"
                 )
 
+            require_lease(cfg, job_id)          # organizing→uploading 前
             target = f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
             await progress(f"⏳ 上传 {folder}（{core.human_size(total)}）…")
 
@@ -395,6 +487,7 @@ async def run_task(
             add_usage(cfg, total)
 
             link = await folder_link(cfg, target)
+            require_lease(cfg, job_id)          # 写归档前
             state[folder] = {
                 "code": folder,
                 "path": target,
@@ -437,16 +530,20 @@ async def run_task(
             # 只看「这一个任务」是否成功：之前用累计的 failures 判断，
             # 前面失败过一次，后面成功任务的目录就再也不会被清，磁盘一路涨。
             # 失败时保留目录，方便 /retry 续传，但整体有容量上限。
-            if uploaded:
+            # 清理前必须确认目录仍归自己：失租时另一个执行者可能正在用同一目录。
+            if uploaded and lease_alive(cfg, job_id):
                 workspace.drop_workspace(work, key_safe, "上传成功")
                 workspace.drop(download_dir, key_safe, "上传成功")
                 # 迅雷重名时真实目录是 <键>-N，预设的 dest 删了也不代表原件清掉了
                 real_dir = Path(handle.get("dir") or "")
                 if real_dir and real_dir != download_dir:
                     workspace.drop(real_dir, key_safe, "上传成功")
+            elif uploaded:
+                log.warning("任务 %s 已失租，跳过目录清理：%s %s", job_id, work, download_dir)
             else:
                 # 失败两份都留着：原件可续传，工作区便于排查
                 log.info("失败任务保留在原地：%s", handle.get("dir") or download_dir)
+            lease_end(cfg, job_id)
 
     parts = results + [f"⚠️ {len(failures)} 项失败：" + "；".join(failures)] if failures else results
     return "\n".join(parts) or "❌ 没有任何结果"

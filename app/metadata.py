@@ -149,10 +149,14 @@ def write_atomic(path: Path, text: str) -> None:
 
 def write_sidecar(work: Path, record: dict, files: list[Path], code: str = "",
                   locks: set[str] | None = None, poster: bytes | None = None,
-                  media: dict | None = None, want_nfo: bool = True) -> dict:
+                  media: dict | None = None, want_nfo: bool = True,
+                  keep: list[dict] | None = None) -> dict:
     """把附件写进工作区，返回「写了哪些、失败哪些」。
 
     任何一步失败都只记在返回里：视频照样能传，缺的附件之后单独补。
+
+    keep 是「清单里必须保留」的条目（视频等不在工作区的文件）：补刮时工作区里
+    没有视频，不带上它，新清单就会把云端清单覆盖成只剩附件。
     """
     written, failed = [], []
     try:
@@ -180,9 +184,14 @@ def write_sidecar(work: Path, record: dict, files: list[Path], code: str = "",
     try:
         names = [p for p in files if p.parent == work] + [
             work / n for n in (JSON_NAME, NFO_NAME, POSTER_NAME) if (work / n).exists()]
-        write_atomic(work / MANIFEST_NAME,
-                     json.dumps(manifest(names, record, code=code, media=media),
-                                ensure_ascii=False, indent=1))
+        blob = manifest(names, record, code=code, media=media)
+        if keep:
+            have = {e["name"] for e in blob["files"]}
+            blob["files"] = sorted(blob["files"] + [{**e} for e in keep
+                                                    if e.get("name") not in have],
+                                   key=lambda e: e["name"])
+            blob["total_size"] = sum(e.get("size") or 0 for e in blob["files"])
+        write_atomic(work / MANIFEST_NAME, json.dumps(blob, ensure_ascii=False, indent=1))
         written.append(MANIFEST_NAME)
     except OSError as exc:
         failed.append({"name": MANIFEST_NAME, "error": str(exc)[:200]})

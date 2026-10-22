@@ -11,7 +11,11 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 ENV_FILE="${ENV_FILE:-.env}"
 PROJECT="${PROJECT:-xdverify-$$}"
-TAG="xdverify:$$"
+# 基础标签只算一次：以前在第 2 步把 TAG 覆盖成 "<base>-runtime" 并 export，
+# 后面又追加 "-runtime"，实际镜像名变成 "<base>-runtime-runtime"，清理也跟着错。
+TAG_BASE="xdverify:$$"
+TAG_RUNTIME="${TAG_BASE}-runtime"
+TAG_TEST="${TAG_BASE}-test"
 COMPOSE_FILE="scripts/verify-compose.yml"
 DATA_DIR="$(mktemp -d)"
 WORK_DIR="$(mktemp -d)"
@@ -26,17 +30,17 @@ bad() { printf '✗ %s\n' "$*" >&2; fail=1; }
 
 # 三个临时值必须导出：compose 的 ${...} 插值读的是环境变量，不是 .env 里的内容
 export ENV_FILE PROJECT TAG DATA_DIR WORK_DIR
-compose() { docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
+compose() { TAG="${TAG:-$TAG_RUNTIME}" docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
 
 cleanup() {
   compose down -v --remove-orphans >/dev/null 2>&1
-  docker rmi -f "${TAG}-runtime" "${TAG}-test" >/dev/null 2>&1
+  docker rmi -f "$TAG_RUNTIME" "$TAG_TEST" >/dev/null 2>&1
   rm -rf "$DATA_DIR" "$WORK_DIR"
 }
 trap cleanup EXIT
 
 say "== 0. 环境"
-say "   project=$PROJECT  tag=$TAG"
+say "   project=$PROJECT  tag=$TAG_RUNTIME"
 say "   data=$DATA_DIR  work=$WORK_DIR"
 docker info >/dev/null 2>&1 || { bad "docker daemon 不可达"; exit 1; }
 
@@ -44,13 +48,16 @@ say "== 1. 配置可解析"
 if compose config >/dev/null 2>&1; then ok "compose config"; else bad "compose config 失败"; fi
 
 say "== 2. 运行镜像可构建"
-export TAG="${TAG}-runtime"
-if compose build web >/dev/null 2>&1; then ok "运行镜像已构建"; else bad "运行镜像构建失败"; exit 1; fi
+if TAG="$TAG_RUNTIME" BUILD_TARGET=runtime compose build web >/dev/null 2>&1; then
+  ok "运行镜像已构建"
+else
+  bad "运行镜像构建失败"; exit 1
+fi
 
 say "== 3. 容器内单元测试（测试阶段镜像，带 pytest 与 tests/）"
 # 以前这里跑的是运行镜像，里面既没有 pytest 也没有 tests，那一项永远是假的通过
-if BUILD_TARGET=test TAG="${TAG}-test" compose build web >/dev/null 2>&1; then
-  if BUILD_TARGET=test TAG="${TAG}-test" compose run --rm --no-deps web \
+if TAG="$TAG_TEST" BUILD_TARGET=test compose build web >/dev/null 2>&1; then
+  if TAG="$TAG_TEST" compose run --rm --no-deps web \
        python -m pytest tests -q -p no:cacheprovider >/tmp/xdverify-tests.log 2>&1; then
     ok "单元测试通过（$(grep -oE '[0-9]+ passed' /tmp/xdverify-tests.log | tail -1)）"
   else
@@ -61,8 +68,7 @@ else
 fi
 
 say "== 4. 容器内自检（telegram / 迅雷 / 挂载 / 权限 / rclone）"
-export TAG="${TAG}-runtime"
-if compose run --rm --no-deps web python -m app.main --check; then
+if TAG="$TAG_RUNTIME" compose run --rm --no-deps web python -m app.main --check; then
   ok "自检通过"
 else
   bad "自检未通过：重点看「迅雷」「下载目录」「工作区」三行"
@@ -115,12 +121,13 @@ print("store-ok", st.migrate())
 PY
 then ok "状态库与备份可用"; else bad "状态库写入/备份失败"; fi
 
-say "== 8. 工作区归属与清理隔离（离线）"
-if compose run --rm --no-deps web python -m pytest tests/test_workspace.py tests/test_store.py \
+say "== 8. 归属与迁移测试（测试镜像，运行镜像里没有 pytest 与 tests）"
+if TAG="$TAG_TEST" compose run --rm --no-deps web python -m pytest \
+     tests/test_workspace.py tests/test_store.py tests/test_lease.py \
      -q -p no:cacheprovider >/dev/null 2>&1; then
-  ok "归属与迁移测试通过"
+  ok "归属、迁移与租约测试通过"
 else
-  bad "归属或迁移测试失败"
+  bad "归属、迁移或租约测试失败"
 fi
 
 say ""

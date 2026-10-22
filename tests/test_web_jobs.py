@@ -13,6 +13,19 @@ import pytest
 from app import core, meta, pipeline, store, web, workspace
 
 
+@pytest.fixture(autouse=True)
+def clean_leases():
+    """每个用例清空进程级的 LEASES / 心跳标志。
+
+    这里只做清理，不预置租约：租约该由 claim_owner 真正领，测试不许绕过去。
+    """
+    web.LEASES.clear()
+    web._lease_live.clear()
+    yield
+    web.LEASES.clear()
+    web._lease_live.clear()
+
+
 @pytest.fixture
 def server(tmp_path, monkeypatch):
     state_file = tmp_path / "state.json"
@@ -881,7 +894,7 @@ def _e2e_env(tmp_path, monkeypatch, upload_fails=False):
     monkeypatch.setattr(web, "series_median", lambda code, state: 2 << 20)
 
     def fake_admit(job_id):
-        # 与真实 admit() 一致：放行时授予执行租约，否则线程会被自己的租约挡住
+        # 与真实 admit() 一致：放行时用 lease_owner() 铸的 token 真正领取
         web.STORE.claim_owner(job_id, web.lease_owner(job_id))
         return True
 
@@ -899,7 +912,9 @@ def test_end_to_end_success_cleans_up(tmp_path, monkeypatch):
     job = web.STORE.get(job_id)
     state = core.load_state(web.STATE)
     assert job["stage"] == "done" and job["folder"] == "SSIS-999"
-    assert state["SSIS-999"]["files"] == ["SSIS-999.mp4"], "取的是迅雷上报的 -1 目录"
+    # 取的是迅雷上报的 -1 目录里的视频；刮削附件（nfo/manifest 等）一并进归档清单
+    assert "SSIS-999.mp4" in state["SSIS-999"]["files"], "取的是迅雷上报的 -1 目录"
+    assert state["SSIS-999"]["files"][0] == "SSIS-999.mp4", "视频排在清单首位"
     assert state["SSIS-999"]["meta"]["title"] == "标题"
     assert not (tmp_path / "dl" / "SSIS999").exists(), "成功后清下载原件"
     assert not (tmp_path / "dl" / "SSIS999-1").exists(), "真实落盘目录（-1）也要清掉"
