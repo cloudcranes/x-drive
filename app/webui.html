@@ -186,6 +186,17 @@
     color:var(--faint); flex:none; margin-right:1px}
   .filters .div{width:1px; height:16px; background:var(--line); flex:none; margin:0 3px}
 
+  /* 网络资源结果（搜索框 → 搜番号） */
+  .res-head{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+  .res-head h3{margin:0; font-size:13px; font-weight:700; letter-spacing:-.01em}
+  .res-head .hint{flex:1}
+  .res-meta{display:flex; gap:11px; align-items:flex-start; margin-top:10px}
+  .res-meta img{width:104px; border-radius:6px; flex:none; background:#0a0a0a}
+  .res-meta .t{font-size:12.5px; line-height:1.5; color:var(--text)}
+  .res-meta .m{font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:3px}
+  .res-list{margin-top:9px; display:flex; flex-direction:column; gap:6px}
+  .res-list .seed{font-family:var(--mono); font-size:10px; color:var(--faint)}
+
   /* 结果条 */
   .resultbar{display:flex; align-items:baseline; gap:10px; padding:16px var(--pad) 0; min-height:34px}
   .resultbar h2{margin:0; font-size:14.5px; font-weight:700; letter-spacing:-.01em;
@@ -593,6 +604,9 @@
     .code{font-size:15px}
     .panel{margin:12px var(--pad) 0}
     .shots img{width:72px; height:41px}
+    /* 窄屏结果条塞不下三个元素：标题会被挤成「全部…」。
+       手机上交由搜索框回车 / 空态按钮触发搜资源，这里藏掉按钮保全标题。 */
+    #resbtn{display:none}
     /* 详情/磁力预览弹层：封面 220px 固定宽会把右边字段挤成一条，窄屏改成上下排 */
     .dtop{flex-direction:column}
     .dcover{width:100%; max-height:190px; object-fit:cover}
@@ -724,7 +738,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round">
           <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
         </svg>
-        <input id="q" type="search" placeholder="搜索番号 / 系列 / 文件名   ( / )" autocomplete="off">
+        <input id="q" type="search" placeholder="搜索番号 / 系列 / 文件名；输入番号回车可搜网络资源   ( / )" autocomplete="off">
       </div>
       <div class="tb-seg" id="kindseg">
         <button type="button" data-filter="all" class="on">全部</button>
@@ -883,6 +897,8 @@
     <h2 id="result-title">全部归档</h2>
     <span class="sub" id="result-sub"></span>
     <span class="right">
+      <button class="pill" id="resbtn" type="button" hidden
+              title="拿这个番号去网上找磁力（不下载，先看候选）">搜资源</button>
       <select class="sortsel" id="sortsel" aria-label="排序">
         <option value="new">最新优先</option>
         <option value="old">最早优先</option>
@@ -891,6 +907,9 @@
       </select>
     </span>
   </div>
+
+  <!-- 搜索框直接搜网络资源的结果：本地没有这条番号时的出口 -->
+  <section class="panel res" id="resource-slot" hidden aria-label="网络资源"></section>
 
   <div class="grid" id="feed"></div>
   <div id="empty-slot"></div>
@@ -1420,6 +1439,10 @@ function applyFilter() {
     ? `${tasks.length} / ${total} 个番号 · ${bytes(size)}`
     : `${total} 个番号`;
 
+  // 输入像番号时，结果条右侧给「搜资源」：本地没有也能直接去网上找
+  const resCode = codeOfQuery(view.q);
+  if ($("resbtn")) $("resbtn").hidden = !resCode;
+
   const slot = $("empty-slot");
   slot.textContent = "";
   if (!tasks.length) {
@@ -1427,12 +1450,181 @@ function applyFilter() {
     if (!total) {
       box.append(el("b", null, "还没有归档记录"));
       box.append(el("span", null, "点「新建下载」粘贴磁力，或在 Telegram 里直接发给机器人。"));
+      const go = el("button", "primary", "去搜资源");
+      go.type = "button";
+      go.style.marginTop = "14px";
+      go.addEventListener("click", () => { if (resCode) searchResources(resCode); else openPanel(); });
+      box.append(go);
+    } else if (resCode && resState.code === resCode && resState.items > 0) {
+      // 上方就是这批资源候选，别再摆一个「搜网络资源」按钮让人以为没搜到
+      box.append(el("b", null, "站内没有 " + resCode));
+      box.append(el("span", null, "上面的网络资源就是搜到的候选：点「下载」才会进队列。"));
+    } else if (resCode) {
+      // 站内没有这条番号：直接在原地给「去网上找」的出口，不用再进「新建下载」
+      box.append(el("b", null, "站内没有 " + resCode));
+      box.append(el("span", null, `本地 ${total} 个番号里没有它。搜一下网络资源，找到磁力再决定下不下。`));
+      const go = el("button", "primary", "搜网络资源");
+      go.type = "button";
+      go.style.marginTop = "14px";
+      go.addEventListener("click", () => searchResources(resCode));
+      box.append(go);
     } else {
       box.append(el("b", null, "没有匹配的番号"));
       box.append(el("span", null, "试试更短的关键词，或清空筛选条件。"));
     }
     slot.append(box);
   }
+}
+
+// ───────────────────────────────── 搜索框 → 网络资源
+// 顶部搜索框默认只筛本地归档（秒出、离线可用）。输入完整番号后，结果条右侧
+// 出现「搜资源」；站内查不到时，空态直接给按钮。搜到的是候选磁力，点「下载」
+// 才进队列 —— 搜索本身不落任何任务。
+const RES_CODE_RE = /^(?:FC2[-_ ]?PPV[-_ ]?\d{6,8}|[A-Za-z]{2,6}[-_ ]?\d{2,5})$/;
+
+function codeOfQuery(text) {
+  const t = (text || "").trim();
+  if (!t || !RES_CODE_RE.test(t)) return "";
+  const fc2 = t.match(/FC2[-_ ]?PPV[-_ ]?(\d{6,8})/i);
+  if (fc2) return "FC2-PPV-" + fc2[1];
+  const m = t.match(/^([A-Za-z]{2,6})[-_ ]?(\d{2,5})$/);
+  return m ? `${m[1].toUpperCase()}-${m[2]}` : "";
+}
+
+const resState = {code: "", seq: 0, items: 0};
+
+function closeResources() {
+  resState.seq += 1;           // 丢弃还没回来的响应
+  resState.code = "";
+  resState.items = 0;
+  $("resource-slot").hidden = true;
+  $("resource-slot").textContent = "";
+  if (!$("feed").hidden) applyFilter();
+}
+
+function setResHint(text, kind) {
+  const h = $("res-hint");
+  if (!h) return;
+  h.textContent = text || "";
+  h.className = "hint" + (kind ? " " + kind : "");
+}
+
+function resMetaCard(code, info) {
+  if (!info || !(info.title || info.cover)) return null;
+  const box = el("div", "res-meta");
+  if (info.cover) {
+    const img = el("img");
+    img.alt = code;
+    img.loading = "lazy";
+    img.addEventListener("error", () => img.remove());
+    img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
+    box.append(img);
+  }
+  const meta = el("div");
+  meta.append(el("div", "t", info.title || code));
+  const bits = [info.date, info.duration, info.maker].filter(Boolean);
+  if (info.actors && info.actors.length) bits.push("演员 " + info.actors.slice(0, 4).join(" / "));
+  if (bits.length) meta.append(el("div", "m", bits.join(" · ")));
+  box.append(meta);
+  return box;
+}
+
+// 提交一条候选：与「新建下载 / 用这条」同一条 /api/download 通道，按番号去重
+async function downloadCandidate(code, item, btn) {
+  if (btn) btn.disabled = true;
+  setResHint(`提交 ${item.size_text || "这条"}…`);
+  try {
+    const r = await fetch(BASE + "/api/download", authInit({
+      method: "POST", cache: "no-store",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text: `${code} ${item.magnet}`, dedupe: true}),
+    }));
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) {
+      setResHint((d && d.error) || `提交失败（HTTP ${r.status}）`, "err");
+      return;
+    }
+    setResHint(`已提交 ${d.count || 1} 个任务 · ${code}`, "ok");
+    openQueue();
+    loadJobs();
+  } catch (e) {
+    setResHint("提交失败：" + (e.message || e), "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function searchResources(code) {
+  if (!code) return;
+  const slot = $("resource-slot");
+  const seq = ++resState.seq;
+  resState.code = code;
+  resState.items = 0;
+  slot.hidden = false;
+  slot.textContent = "";
+  const head = el("div", "res-head");
+  head.append(el("h3", null, `网络资源 · ${code}`));
+  const hint = el("span", "hint", "搜索中…");
+  hint.id = "res-hint";
+  head.append(hint);
+  const close = el("button", "ghost", "关闭");
+  close.type = "button";
+  close.addEventListener("click", closeResources);
+  head.append(close);
+  slot.append(head);
+
+  let data = null;
+  try {
+    const r = await fetch(BASE + "/api/magnets?code=" + encodeURIComponent(code),
+                          authInit({cache: "no-store"}));
+    data = await r.json().catch(() => ({}));
+  } catch (e) {
+    if (seq !== resState.seq) return;
+    setResHint("搜索失败：" + (e.message || e), "err");
+    return;
+  }
+  if (seq !== resState.seq) return;      // 又搜了别的番号，这条响应整条丢掉
+  const got = (data && data.code) || code;
+  const items = (data && data.items) || [];
+  const info = (data && data.info) || {};
+  if (data && data.ok === false) {
+    setResHint("搜索失败：" + (data.error || "未知错误"), "err");
+    return;
+  }
+  const meta = resMetaCard(got, info);
+  if (meta) slot.append(meta);
+  if (!items.length) {
+    setResHint(`${got} 没搜到磁力：可能没有源收录，或番号不对`, "err");
+    applyFilter();            // 空态里的按钮该留着，让人重试
+    return;
+  }
+  resState.items = items.length;
+  applyFilter();              // 有结果就把空态里那个重复的按钮收掉
+  setResHint(`${got} 找到 ${items.length} 条候选 · 点「下载」才进队列`, "ok");
+  const list = el("div", "res-list");
+  for (const item of items) {
+    const row = el("div", "sub-row");
+    row.append(el("span", "tag " + (item.has_subtitle ? "vid" : ""),
+                  item.has_subtitle ? "字幕" : (item.is_hd ? "高清" : "磁力")));
+    row.append(el("span", "nm", item.size_text || "体积未知"));
+    const seed = Number(item.seeders);
+    if (seed > 0) row.append(el("span", "seed", `种子 ${seed}`));
+    const acts = el("div", "r");
+    const detail = el("button", null, "详情");
+    detail.addEventListener("click", () => showDetail(got, info));
+    acts.append(detail);
+    const pv = el("button", null, "预览");
+    pv.title = "查这条磁力的文件名 / 体积 / 截图（按 infohash 缓存）";
+    pv.addEventListener("click", () => showMagnetPreview(item, pv));
+    acts.append(pv);
+    const dl = el("button", null, "下载");
+    dl.title = "提交到下载队列（按番号去重）";
+    dl.addEventListener("click", () => downloadCandidate(got, item, dl));
+    acts.append(dl);
+    row.append(acts);
+    list.append(row);
+  }
+  slot.append(list);
 }
 
 // ── 顶栏类型切换
@@ -1447,6 +1639,19 @@ $("kindseg").addEventListener("click", e => {
   applyFilter();
 });
 $("sortsel").addEventListener("change", e => { view.sort = e.target.value; applyFilter(); });
+// 结果条右侧「搜资源」：拿搜索框里的番号去网上找磁力
+$("resbtn").addEventListener("click", () => {
+  const code = codeOfQuery(view.q);
+  if (code) searchResources(code);
+});
+// 搜索框回车 = 直接搜这个番号的资源（筛本地是即时的，不用回车）
+$("q").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  const code = codeOfQuery(view.q);
+  if (!code) return;
+  e.preventDefault();
+  searchResources(code);
+});
 $("clear-series").addEventListener("click", () => { view.series = ""; renderSidebar(); applyFilter(); });
 $("dimtabs").addEventListener("click", e => {
   const b = e.target.closest("button[data-dim]");
@@ -1461,6 +1666,8 @@ $("clear-month").addEventListener("click", () => { view.month = ""; renderSideba
 let qTimer = null;
 $("q").addEventListener("input", e => {
   view.q = e.target.value;
+  // 关键词换了，上一次的资源结果就过期了（别让人对着 A 的候选去下 B）
+  if (resState.code && codeOfQuery(view.q) !== resState.code) closeResources();
   // 在设置/元数据/订阅界面里搜索：先回到归档列表再筛，
   // 否则输入半天看不到任何变化，像搜索框坏了。
   if ($("q").value && $("feed").hidden) showView("archive");
@@ -1855,8 +2062,11 @@ $("sub-run").addEventListener("click", async () => {
 // 下载队列仍是右侧抽屉、智能整理仍是弹确认的动作，不占主内容区视图。
 function showView(name) {
   const isArchive = name === "archive";
+  const resBox = $("resource-slot");
   const views = [
     ["resultbar", isArchive], ["feed", isArchive], ["empty-slot", isArchive],
+    // 资源结果面板只在归档视图、且真的搜过（有内容）时才显示
+    ["resource-slot", isArchive && !!resBox && resBox.childElementCount > 0],
     ["panel", name === "download"], ["subpanel", name === "subs"],
     ["metapanel", name === "meta"], ["healthpanel", name === "health"],
     ["settingspanel", name === "settings"],

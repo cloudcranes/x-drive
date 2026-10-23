@@ -122,3 +122,38 @@ def test_non_archive_views_hide_filter_bar():
     body = js[js.index("function showView"):js.index("function showArchive")]
     assert 'activefilters' in body, "切走归档视图时筛选条要一起收起"
     assert "closeSide()" in body, "窄屏选完视图要收起抽屉，否则抽屉挡住整个界面"
+
+
+# ---------------------------------------------------------------- 9. 搜索框搜资源
+
+def test_search_box_can_search_online_resources():
+    """搜索框不再只筛本地：输入番号回车 / 「搜资源」能去网上找磁力。"""
+    page = html()
+    js = script(page)
+    assert 'id="resbtn"' in page, "结果条要有「搜资源」入口"
+    assert "function searchResources" in js
+    assert '"/api/magnets?code="' in js, "资源搜索走磁力搜索接口"
+    assert 'codeOfQuery' in js, "要从关键词里认出番号"
+    body = js[js.index('$("q").addEventListener("keydown"'):]
+    assert "searchResources(" in body, "回车要直接搜资源"
+
+
+def test_resource_results_hidden_outside_archive():
+    js = script(html())
+    body = js[js.index("function showView"):js.index("function showArchive")]
+    assert "resource-slot" in body, "切到设置/元数据时资源面板要跟着收起"
+
+
+def test_resource_rows_offer_explicit_download():
+    """搜到候选不等于开下：必须点「下载」才进队列。"""
+    js = script(html())
+    body = js[js.index("async function searchResources"):js.index("// ── 顶栏类型切换")]
+    assert "downloadCandidate(" in body, "每条候选要有下载入口"
+    assert "点「下载」才进队列" in js, "提示要说明搜索本身不落任务"
+
+
+def test_code_of_query_normalizes():
+    """SSIS123 / ssis_123 / FC2 PPV 4519894 都要认成标准番号。"""
+    js = script(html())
+    body = js[js.index("function codeOfQuery"):js.index("const resState")]
+    assert "FC2-PPV-" in body and "toUpperCase()" in body
