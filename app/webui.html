@@ -49,11 +49,15 @@
     background:linear-gradient(180deg,rgba(12,12,12,.96),rgba(6,6,6,.98));
     border-right:1px solid var(--line); overflow:hidden;   /* 只让筛选区滚动，页脚钉底 */
   }
-  /* 品牌 + 统计固定，系列/月份各自可滚动，页脚永远可见 */
-  .side > .brand, .side > .stat{flex:none}
+  /* 品牌 + 统计 + 功能导航固定，系列/月份各自可滚动，页脚永远可见 */
+  .side > .brand, .side > .stat, .side > .navmain{flex:none}
   .side-block{display:flex; flex-direction:column; gap:2px; min-height:0}
   .side-block.series{max-height:42%}
   .side-block.month{max-height:30%}
+  /* 功能导航：操作入口，图标 + 完整词组，不随筛选滚动 */
+  .side-block.navmain{margin-top:2px}
+  .navmain .nav{gap:1px}
+  .navmain .it svg{width:14px; height:14px; stroke:currentColor; flex:none}
   .dimtabs{display:flex; gap:3px; padding:0 2px 6px}
   .dimtabs button{flex:1; font:inherit; font-size:10.5px; padding:4px 0; cursor:pointer;
     border-radius:6px; border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
@@ -522,6 +526,47 @@
     <div><b id="s-size">—</b><span>总容量</span></div>
   </div>
 
+  <!-- 功能导航：所有操作入口收进侧栏，顶部工具条只留搜索与筛选。
+       按「下载 / 维护 / 配置」分组，图标 + 完整词组，不再靠悬停猜。 -->
+  <div class="side-block navmain">
+    <div class="side-h">操作</div>
+    <nav class="nav" id="nav-main">
+      <button class="it" id="new-task" type="button" title="粘贴磁力或直链，按番号下载">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round">
+          <path d="M12 5v14M5 12h14"/></svg>
+        <span class="t">新建下载</span></button>
+      <button class="it" id="queuebtn" type="button" title="查看进行中 / 排队 / 失败的任务">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 6h11M3 12h11M3 18h7"/><path d="m16 12 3 3 3-3"/><path d="M19 15V6"/></svg>
+        <span class="t">下载队列</span><span class="n" id="queue-n"></span></button>
+      <button class="it" id="subs-open" type="button" title="订阅演员 / 系列，自动追新">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        <span class="t">订阅</span></button>
+      <button class="it" id="norm-btn" type="button" title="智能整理：收编未分类 + 按规范改名">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 7h9M4 12h6M4 17h9"/><path d="m17 9 3 3-3 3"/></svg>
+        <span class="t">智能整理</span></button>
+      <button class="it" id="health-open" type="button" title="归档校验：核对本地清单与远端，只报告不删">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 13h4l2.5 5 5-11L17 13h4"/></svg>
+        <span class="t">归档校验</span></button>
+      <button class="it" id="metatool-open" type="button" title="元数据维护：补刮、对照、手工纠正">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 6h16M4 12h16M4 18h10"/><path d="m16.5 16.5 1.5 1.5 3-3"/></svg>
+        <span class="t">元数据维护</span></button>
+      <button class="it" id="settings-open" type="button" title="设置：配额、重试、并发、刮削开关等，改了立即生效">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span class="t">设置</span></button>
+    </nav>
+  </div>
+
   <div class="side-block series">
     <div class="side-h"><span id="dim-label">系列</span>
       <button id="clear-series" type="button" hidden>清除</button></div>
@@ -581,54 +626,6 @@
         <button type="button" data-filter="video">视频</button>
         <button type="button" data-filter="image">图片</button>
       </div>
-      <button class="primary" id="new-task" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2.6" stroke-linecap="round">
-          <path d="M12 5v14M5 12h14"/>
-        </svg>
-        <span class="lbl">新建下载</span>
-      </button>
-      <button class="ghostbtn" id="subs-open" type="button" title="订阅自动化">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
-          <path d="M13.7 21a2 2 0 0 1-3.4 0"/>
-        </svg>
-        <span class="lbl">订阅</span>
-      </button>
-      <button class="ghostbtn" id="norm-btn" type="button" title="智能整理：收编未分类 + 按规范改名">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 7h9M4 12h6M4 17h9"/><path d="m17 9 3 3-3 3"/>
-        </svg>
-        <span class="lbl">规范名</span>
-      </button>
-      <button class="ghostbtn" id="health-open" type="button" title="归档健康：只报告，不自动补传或删除">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 13h4l2.5 5 5-11L17 13h4"/>
-        </svg>
-        <span class="lbl">健康</span>
-      </button>
-      <button class="ghostbtn" id="metatool-open" type="button" title="元数据维护：补刮、对照、手工纠正">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 6h16M4 12h16M4 18h10"/><path d="m16.5 16.5 1.5 1.5 3-3"/>
-        </svg>
-        <span class="lbl">元数据</span>
-      </button>
-      <button class="ghostbtn" id="settings-open" type="button" title="设置：配额、重试、并发、刮削开关等，改了立即生效">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-        </svg>
-        <span class="lbl">设置</span>
-      </button>
-      <button class="queuebtn" id="queuebtn" type="button" title="下载队列">
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 6h11M3 12h11M3 18h7"/><path d="m16 12 3 3 3-3"/><path d="M19 15V6"/>
-        </svg>
-        <span class="n" id="queue-n"></span>
-      </button>
     </div>
     <div class="tb-row filters" id="activefilters"></div>
   </div>
@@ -1285,7 +1282,7 @@ function applyFilter() {
     const box = el("div", "empty");
     if (!total) {
       box.append(el("b", null, "还没有归档记录"));
-      box.append(el("span", null, "点右上角「新建下载」粘贴磁力，或在 Telegram 里直接发给机器人。"));
+      box.append(el("span", null, "点左侧「新建下载」粘贴磁力，或在 Telegram 里直接发给机器人。"));
     } else {
       box.append(el("b", null, "没有匹配的番号"));
       box.append(el("span", null, "试试更短的关键词，或清空筛选条件。"));
