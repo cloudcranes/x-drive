@@ -1,0 +1,1839 @@
+// CloudDrive2 gRPC 接口定义（原样取自官方发布、经 python-clouddrive2 分发的那一份）。
+//
+// 来源：https://github.com/iLay1678/python-clouddrive2 → clouddrive/proto/CloudDrive.proto
+//       （与 CloudDrive2 官方 gRPC 指南 v1.1.x 对应；官方仓库只发布生成的文档）
+// 用途：生成 app/storage/proto/CloudDrive_pb2.py，供 app/storage/cd2_grpc.py 拼消息。
+// 维护：CD2 升级导致字段变化时重跑 scripts/gen-cd2-proto.sh 并提交生成结果。
+// 注意：这里只 vendor 了 .proto 与 pb2；官方的 _pb2_grpc.py（319KB、带 grpc 版本断言）
+//       没有带进来，方法桩在 cd2_grpc.py 里自己写（不到 40 行）。
+
+syntax = "proto3";
+package clouddrive;
+
+option csharp_namespace = "CloudDriveSrv.Protos";
+
+import "google/protobuf/descriptor.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+extend google.protobuf.FileOptions {
+  string version = 50001;
+}
+
+option (version) = "2.1.0.0-beta";
+
+service CloudDriveFileSrv {
+  rpc APIAddLocalFolder(AddLocalFolderRequest) returns (APILoginResult);
+  rpc APILogin115Editthiscookie(Login115EditthiscookieRequest) returns (APILoginResult);
+  rpc APILogin115OpenOAuth(Login115OpenOAuthRequest) returns (APILoginResult);
+  rpc APILogin115OpenQRCode(google.protobuf.Empty) returns (stream QRCodeScanMessage);
+  rpc APILogin115QRCode(Login115QrCodeRequest) returns (stream QRCodeScanMessage);
+  rpc APILogin189QRCode(google.protobuf.Empty) returns (stream QRCodeScanMessage);
+  rpc APILoginAliyunDriveQRCode(LoginAliyundriveQRCodeRequest) returns (stream QRCodeScanMessage);
+  rpc APILoginAliyundriveOAuth(LoginAliyundriveOAuthRequest) returns (APILoginResult);
+  rpc APILoginAliyundriveRefreshtoken(LoginAliyundriveRefreshtokenRequest) returns (APILoginResult);
+  rpc APILoginBaiduPanOAuth(LoginBaiduPanOAuthRequest) returns (APILoginResult);
+  rpc APILoginCloudDrive(LoginCloudDriveRequest) returns (APILoginResult);
+  rpc APILoginOneDriveOAuth(LoginOneDriveOAuthRequest) returns (APILoginResult);
+  rpc APILoginWebDav(LoginWebDavRequest) returns (APILoginResult);
+  rpc ActivatePlan(StringValue) returns (JoinPlanResult);
+  rpc AddDavUser(AddDavUserRequest) returns (google.protobuf.Empty);
+  rpc AddMountPoint(MountOption) returns (MountPointResult);
+  rpc AddOfflineFiles(AddOfflineFileRequest) returns (FileOperationResult);
+  rpc AddSharedLink(AddSharedLinkRequest) returns (google.protobuf.Empty);
+  rpc AddWebhookConfig(WebhookRequest) returns (google.protobuf.Empty);
+  rpc ApiLogin123panOAuth(Login123panOAuthRequest) returns (APILoginResult);
+  rpc ApiLoginGoogleDriveOAuth(LoginGoogleDriveOAuthRequest) returns (APILoginResult);
+  rpc ApiLoginGoogleDriveRefreshToken(LoginGoogleDriveRefreshTokenRequest) returns (APILoginResult);
+  rpc ApiLoginXunleiOAuth(LoginXunleiOAuthRequest) returns (APILoginResult);
+  rpc ApiLoginXunleiOpenOAuth(LoginXunleiOpenOAuthRequest) returns (APILoginResult);
+  rpc BackupAdd(Backup) returns (google.protobuf.Empty);
+  rpc BackupAddDestination(BackupModifyRequest) returns (google.protobuf.Empty);
+  rpc BackupGetAll(google.protobuf.Empty) returns (BackupList);
+  rpc BackupGetStatus(StringValue) returns (BackupStatus);
+  rpc BackupRemove(StringValue) returns (google.protobuf.Empty);
+  rpc BackupRemoveDestination(BackupModifyRequest) returns (google.protobuf.Empty);
+  rpc BackupRestartWalkingThrough(StringValue) returns (google.protobuf.Empty);
+  rpc BackupSetEnabled(BackupSetEnabledRequest) returns (google.protobuf.Empty);
+  rpc BackupSetFileSystemWatchEnabled(BackupModifyRequest) returns (google.protobuf.Empty);
+  rpc BackupUpdate(Backup) returns (google.protobuf.Empty);
+  rpc BackupUpdateStrategies(BackupModifyRequest) returns (google.protobuf.Empty);
+  rpc BindCloudAccount(BindCloudAccountRequest) returns (google.protobuf.Empty);
+  rpc CanAddMoreBackups(google.protobuf.Empty) returns (FileOperationResult);
+  rpc CanAddMoreCloudApis(google.protobuf.Empty) returns (FileOperationResult);
+  rpc CanAddMoreMountPoints(google.protobuf.Empty) returns (FileOperationResult);
+  rpc CanMountBothLocalAndCloud(google.protobuf.Empty) returns (BoolResult);
+  rpc CancelAllUploadFiles(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc CancelCopyTask(CopyTaskRequest) returns (google.protobuf.Empty);
+  rpc CancelMergeTask(CancelMergeTaskRequest) returns (google.protobuf.Empty);
+  rpc CancelUploadFiles(MultpleUploadFileKeyRequest) returns (google.protobuf.Empty);
+  rpc ChangeEmail(ChangeEmailRequest) returns (google.protobuf.Empty);
+  rpc ChangeEmailAndPassword(ChangeEmailAndPasswordRequest) returns (google.protobuf.Empty);
+  rpc ChangePassword(ChangePasswordRequest) returns (FileOperationResult);
+  rpc ChangeWebhookConfig(WebhookRequest) returns (google.protobuf.Empty);
+  rpc CheckActivationCode(StringValue) returns (CheckActivationCodeResult);
+  rpc CheckCouponCode(CheckCouponCodeRequest) returns (CouponCodeResult);
+  rpc CheckUpdate(google.protobuf.Empty) returns (UpdateResult);
+  rpc ClearOfflineFiles(ClearOfflineFileRequest) returns (google.protobuf.Empty);
+  rpc CloseFile(CloseFileRequest) returns (FileOperationResult);
+  rpc ConfirmEmail(ConfirmEmailRequest) returns (google.protobuf.Empty);
+  rpc CopyFile(CopyFileRequest) returns (FileOperationResult);
+  rpc CreateEncryptedFolder(CreateEncryptedFolderRequest) returns (CreateFolderResult);
+  rpc CreateFile(CreateFileRequest) returns (CreateFileResult);
+  rpc CreateFolder(CreateFolderRequest) returns (CreateFolderResult);
+  rpc CreateToken(CreateTokenRequest) returns (TokenInfo);
+  rpc DeleteFile(FileRequest) returns (FileOperationResult);
+  rpc DeleteFilePermanently(FileRequest) returns (FileOperationResult);
+  rpc DeleteFiles(MultiFileRequest) returns (FileOperationResult);
+  rpc DeleteFilesPermanently(MultiFileRequest) returns (FileOperationResult);
+  rpc DownloadUpdate(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc FindFileByPath(FindFileByPathRequest) returns (CloudDriveFile);
+  rpc ForceExpireDirCache(FileRequest) returns (google.protobuf.Empty);
+  rpc GetAccountStatus(google.protobuf.Empty) returns (AccountStatusResult);
+  rpc GetAllCloudApis(google.protobuf.Empty) returns (CloudAPIList);
+  rpc GetAllTasksCount(google.protobuf.Empty) returns (GetAllTasksCountResult);
+  rpc GetApiTokenInfo(StringValue) returns (TokenInfo);
+  rpc GetAvailableDriveLetters(google.protobuf.Empty) returns (GetAvailableDriveLettersResult);
+  rpc GetBalanceLog(google.protobuf.Empty) returns (BalanceLogResult);
+  rpc GetCloudAPIConfig(GetCloudAPIConfigRequest) returns (CloudAPIConfig);
+  rpc GetCloudDrive1UserData(google.protobuf.Empty) returns (StringResult);
+  rpc GetCloudDrivePlans(google.protobuf.Empty) returns (GetCloudDrivePlansResult);
+  rpc GetCloudMemberships(FileRequest) returns (CloudMemberships);
+  rpc GetCopyTasks(google.protobuf.Empty) returns (GetCopyTaskResult);
+  rpc GetDavServerConfig(google.protobuf.Empty) returns (DavServerConfig);
+  rpc GetDavUser(StringValue) returns (DavUser);
+  rpc GetDirCacheTable(google.protobuf.Empty) returns (DirCacheTable);
+  rpc GetDownloadFileCount(google.protobuf.Empty) returns (GetDownloadFileCountResult);
+  rpc GetDownloadFileList(google.protobuf.Empty) returns (GetDownloadFileListResult);
+  rpc GetDownloadUrlPath(GetDownloadUrlPathRequest) returns (DownloadUrlPathInfo);
+  rpc GetEffectiveDirCacheTimeSecs(GetEffectiveDirCacheTimeRequest) returns (GetEffectiveDirCacheTimeResult);
+  rpc GetFileDetailProperties(FileRequest) returns (FileDetailProperties);
+  rpc GetMachineId(google.protobuf.Empty) returns (StringResult);
+  rpc GetMergeTasks(google.protobuf.Empty) returns (GetMergeTasksResult);
+  rpc GetMetaData(FileRequest) returns (FileMetaData);
+  rpc GetMountPoints(google.protobuf.Empty) returns (GetMountPointsResult);
+  rpc GetOfflineQuotaInfo(OfflineQuotaRequest) returns (OfflineQuotaInfo);
+  rpc GetOnlineDevices(google.protobuf.Empty) returns (OnlineDevices);
+  rpc GetOpenFileHandles(google.protobuf.Empty) returns (OpenFileHandleList);
+  rpc GetOpenFileTable(GetOpenFileTableRequest) returns (OpenFileTable);
+  rpc GetOriginalPath(FileRequest) returns (StringResult);
+  rpc GetPromotions(google.protobuf.Empty) returns (GetPromotionsResult);
+  rpc GetPromotionsByCloud(CloudAPIRequest) returns (GetPromotionsResult);
+  rpc GetReferencedEntryPaths(FileRequest) returns (StringList);
+  rpc GetReferralCode(google.protobuf.Empty) returns (StringValue);
+  rpc GetRunningInfo(google.protobuf.Empty) returns (RunInfo);
+  rpc GetRuntimeInfo(google.protobuf.Empty) returns (RuntimeInfo);
+  rpc GetSearchResults(SearchRequest) returns (stream SubFilesReply);
+  rpc GetSpaceInfo(FileRequest) returns (SpaceInfo);
+  rpc GetSubFiles(ListSubFileRequest) returns (stream SubFilesReply);
+  rpc GetSystemInfo(google.protobuf.Empty) returns (CloudDriveSystemInfo);
+  rpc GetSystemSettings(google.protobuf.Empty) returns (SystemSettings);
+  rpc GetTempFileTable(google.protobuf.Empty) returns (TempFileTable);
+  rpc GetToken(GetTokenRequest) returns (JWTToken);
+  rpc GetUploadFileCount(google.protobuf.Empty) returns (GetUploadFileCountResult);
+  rpc GetUploadFileList(GetUploadFileListRequest) returns (GetUploadFileListResult);
+  rpc GetWebhookConfigTemplate(google.protobuf.Empty) returns (StringResult);
+  rpc GetWebhookConfigs(google.protobuf.Empty) returns (WebhookList);
+  rpc HasDriveLetters(google.protobuf.Empty) returns (HasDriveLettersResult);
+  rpc HasUpdate(google.protobuf.Empty) returns (UpdateResult);
+  rpc JoinPlan(JoinPlanRequest) returns (JoinPlanResult);
+  rpc KickoutDevice(DeviceRequest) returns (google.protobuf.Empty);
+  rpc ListAllOfflineFiles(OfflineFileListAllRequest) returns (OfflineFileListAllResult);
+  rpc ListLogFiles(google.protobuf.Empty) returns (ListLogFileResult);
+  rpc ListOfflineFilesByPath(FileRequest) returns (OfflineFileListResult);
+  rpc ListTokens(google.protobuf.Empty) returns (ListTokensResult);
+  rpc LocalGetSubFiles(LocalGetSubFilesRequest) returns (stream LocalGetSubFilesResult);
+  rpc LockEncryptedFile(FileRequest) returns (FileOperationResult);
+  rpc Login(UserLoginRequest) returns (FileOperationResult);
+  rpc Logout(UserLogoutRequest) returns (FileOperationResult);
+  rpc ModifyDavUser(ModifyDavUserRequest) returns (google.protobuf.Empty);
+  rpc ModifyToken(ModifyTokenRequest) returns (TokenInfo);
+  rpc Mount(MountPointRequest) returns (MountPointResult);
+  rpc MoveFile(MoveFileRequest) returns (FileOperationResult);
+  rpc PauseAllCopyTasks(PauseAllCopyTasksRequest) returns (BatchOperationResult);
+  rpc PauseAllUploadFiles(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc PauseCopyTask(PauseCopyTaskRequest) returns (google.protobuf.Empty);
+  rpc PauseCopyTasks(PauseCopyTasksRequest) returns (BatchOperationResult);
+  rpc PauseUploadFiles(MultpleUploadFileKeyRequest) returns (google.protobuf.Empty);
+  rpc PushMessage(google.protobuf.Empty) returns (stream CloudDrivePushMessage);
+  rpc PushTaskChange(google.protobuf.Empty) returns (stream GetAllTasksCountResult);
+  rpc Register(UserRegisterRequest) returns (FileOperationResult);
+  rpc RemoteUploadStream(stream RemoteEntryRequest) returns (stream RemoteEntryResponse);
+  rpc RemoveAllCopyTasks(google.protobuf.Empty) returns (BatchOperationResult);
+  rpc RemoveCloudAPI(RemoveCloudAPIRequest) returns (FileOperationResult);
+  rpc RemoveCompletedCopyTasks(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc RemoveCopyTasks(CopyTaskBatchRequest) returns (BatchOperationResult);
+  rpc RemoveDavUser(StringValue) returns (google.protobuf.Empty);
+  rpc RemoveMountPoint(MountPointRequest) returns (MountPointResult);
+  rpc RemoveOfflineFiles(RemoveOfflineFilesRequest) returns (FileOperationResult);
+  rpc RemoveToken(StringValue) returns (google.protobuf.Empty);
+  rpc RemoveWebhookConfig(StringValue) returns (google.protobuf.Empty);
+  rpc RenameFile(RenameFileRequest) returns (FileOperationResult);
+  rpc RenameFiles(RenameFilesRequest) returns (FileOperationResult);
+  rpc ResetAccount(ResetAccountRequest) returns (google.protobuf.Empty);
+  rpc RestartCopyTask(CopyTaskRequest) returns (google.protobuf.Empty);
+  rpc RestartOfflineTask(RestartOfflineFileRequest) returns (google.protobuf.Empty);
+  rpc RestartService(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc ResumeAllCopyTasks(google.protobuf.Empty) returns (BatchOperationResult);
+  rpc ResumeAllUploadFiles(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc ResumeCopyTasks(CopyTaskBatchRequest) returns (BatchOperationResult);
+  rpc ResumeUploadFiles(MultpleUploadFileKeyRequest) returns (google.protobuf.Empty);
+  rpc SendChangeEmailCode(SendChangeEmailCodeRequest) returns (google.protobuf.Empty);
+  rpc SendConfirmEmail(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc SendPromotionAction(SendPromotionActionRequest) returns (google.protobuf.Empty);
+  rpc SendResetAccountEmail(SendResetAccountEmailRequest) returns (google.protobuf.Empty);
+  rpc SetCloudAPIConfig(SetCloudAPIConfigRequest) returns (google.protobuf.Empty);
+  rpc SetDavServerConfig(ModifyDavServerConfigRequest) returns (google.protobuf.Empty);
+  rpc SetDirCacheTimeSecs(SetDirCacheTimeRequest) returns (google.protobuf.Empty);
+  rpc SetSystemSettings(SystemSettings) returns (google.protobuf.Empty);
+  rpc ShutdownService(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc StartCloudEventListener(FileRequest) returns (google.protobuf.Empty);
+  rpc StopCloudEventListener(FileRequest) returns (google.protobuf.Empty);
+  rpc SyncFileChangesFromCloud(FileRequest) returns (FileSystemChangeStatistics);
+  rpc TestUpdate(FileRequest) returns (google.protobuf.Empty);
+  rpc TransferBalance(TransferBalanceRequest) returns (google.protobuf.Empty);
+  rpc UnlockEncryptedFile(UnlockEncryptedFileRequest) returns (FileOperationResult);
+  rpc Unmount(MountPointRequest) returns (MountPointResult);
+  rpc UpdateMountPoint(UpdateMountPointRequest) returns (MountPointResult);
+  rpc UpdatePromotionResult(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc UpdatePromotionResultByCloud(UpdatePromotionResultByCloudRequest) returns (google.protobuf.Empty);
+  rpc UpdateSystem(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc WalkThroughFolderTest(FileRequest) returns (WalkThroughFolderResult);
+  rpc WriteToFile(WriteFileRequest) returns (WriteFileResult);
+  rpc WriteToFileStream(stream WriteFileRequest) returns (WriteFileResult);
+}
+
+enum FileWatchStatus {
+  FileWatchStatus_WatcherIdle = 0;
+  FileWatchStatus_Watching = 1;
+  FileWatchStatus_WatcherError = 2;
+  FileWatchStatus_WatcherDisabled = 3;
+}
+
+enum Status {
+  Status_Idle = 0;
+  Status_WalkingThrough = 1;
+  Status_Error = 2;
+  Status_Disabled = 3;
+  Status_Scanned = 4;
+  Status_Finished = 5;
+}
+
+enum BalancceChangeOperation {
+  BalancceChangeOperation_Unknown = 0;
+  BalancceChangeOperation_Deposit = 1;
+  BalancceChangeOperation_Refund = 2;
+}
+
+enum Filter {
+  Filter_All = 0;
+  Filter_Finished = 1;
+  Filter_Error = 2;
+  Filter_Downloading = 3;
+}
+
+enum FileEncryptionType {
+  FileEncryptionType_None = 0;
+  FileEncryptionType_Encrypted = 1;
+  FileEncryptionType_Unlocked = 2;
+}
+
+enum FileType {
+  FileType_Directory = 0;
+  FileType_File = 1;
+  FileType_Other = 2;
+}
+
+enum HashType {
+  HashType_Unknown = 0;
+  HashType_Md5 = 1;
+  HashType_Sha1 = 2;
+  HashType_PikPakSha1 = 3;
+}
+
+enum MessageType {
+  MessageType_DOWNLOADER_COUNT = 0;
+  MessageType_UPLOADER_COUNT = 1;
+  MessageType_UPDATE_STATUS = 2;
+  MessageType_FORCE_EXIT = 3;
+  MessageType_FILE_SYSTEM_CHANGE = 4;
+  MessageType_MOUNT_POINT_CHANGE = 5;
+  MessageType_COPY_TASK_COUNT = 6;
+  MessageType_LOG_MESSAGE = 7;
+  MessageType_MERGE_TASKS = 8;
+}
+
+enum ConflictPolicy {
+  ConflictPolicy_Overwrite = 0;
+  ConflictPolicy_Rename = 1;
+  ConflictPolicy_Skip = 2;
+}
+
+enum TaskMode {
+  TaskMode_Copy = 0;
+  TaskMode_Move = 1;
+}
+
+enum TaskStatus {
+  TaskStatus_Pending = 0;
+  TaskStatus_Scanning = 1;
+  TaskStatus_Scanned = 2;
+  TaskStatus_Completed = 3;
+  TaskStatus_Failed = 4;
+}
+
+enum ExitReason {
+  ExitReason_UNKNOWN = 0;
+  ExitReason_KICKEDOUT_BY_USER = 1;
+  ExitReason_KICKEDOUT_BY_SERVER = 2;
+  ExitReason_PASSWORD_CHANGED = 3;
+  ExitReason_RESTART = 4;
+  ExitReason_SHUTDOWN = 5;
+}
+
+enum FileCompletionRule {
+  FileCompletionRule_None = 0;
+  FileCompletionRule_DeleteSource = 1;
+  FileCompletionRule_DeleteSourceAndEmptyFolder = 2;
+}
+
+enum FileDeleteRule {
+  FileDeleteRule_Delete = 0;
+  FileDeleteRule_Recycle = 1;
+  FileDeleteRule_Keep = 2;
+  FileDeleteRule_MoveToVersionHistory = 3;
+}
+
+enum FileReplaceRule {
+  FileReplaceRule_Skip = 0;
+  FileReplaceRule_Overwrite = 1;
+  FileReplaceRule_KeepHistoryVersion = 2;
+}
+
+enum ChangeType {
+  ChangeType_CREATE = 0;
+  ChangeType_DELETE = 1;
+  ChangeType_RENAME = 2;
+}
+
+enum HashType_1 {
+  HashType_1_MD5 = 0;
+  HashType_1_SHA1 = 1;
+  HashType_1_PikPakSha1 = 2;
+  HashType_1_PreHash = 3;
+}
+
+enum LogLevel {
+  LogLevel_Trace = 0;
+  LogLevel_Debug = 1;
+  LogLevel_Info = 2;
+  LogLevel_Warn = 3;
+  LogLevel_Error = 4;
+}
+
+enum LogLevel_1 {
+  LogLevel_1_TRACE = 0;
+  LogLevel_1_DEBUG = 1;
+  LogLevel_1_INFO = 2;
+  LogLevel_1_WARN = 3;
+  LogLevel_1_ERROR = 4;
+}
+
+enum OperationType {
+  OperationType_Move = 0;
+  OperationType_Copy = 1;
+}
+
+enum TaskStatus_1 {
+  TaskStatus_1_Pending = 0;
+  TaskStatus_1_Running = 1;
+  TaskStatus_1_Completed = 2;
+  TaskStatus_1_Failed = 3;
+  TaskStatus_1_Cancelled = 4;
+}
+
+enum ActionType {
+  ActionType_MOUNT = 0;
+  ActionType_UNMOUNT = 1;
+}
+
+enum ConflictPolicy_1 {
+  ConflictPolicy_1_Overwrite = 0;
+  ConflictPolicy_1_Rename = 1;
+  ConflictPolicy_1_Skip = 2;
+}
+
+enum OfflineFileStatus {
+  OfflineFileStatus_OFFLINE_INIT = 0;
+  OfflineFileStatus_OFFLINE_DOWNLOADING = 1;
+  OfflineFileStatus_OFFLINE_FINISHED = 2;
+  OfflineFileStatus_OFFLINE_ERROR = 3;
+  OfflineFileStatus_OFFLINE_UNKNOWN = 4;
+}
+
+enum ProxyType {
+  ProxyType_SYSTEM = 0;
+  ProxyType_NOPROXY = 1;
+  ProxyType_HTTP = 2;
+  ProxyType_SOCKS5 = 3;
+}
+
+enum QRCodeScanMessageType {
+  QRCodeScanMessageType_SHOW_IMAGE = 0;
+  QRCodeScanMessageType_SHOW_IMAGE_CONTENT = 1;
+  QRCodeScanMessageType_CHANGE_STATUS = 2;
+  QRCodeScanMessageType_CLOSE = 3;
+  QRCodeScanMessageType_ERROR = 4;
+}
+
+enum Code {
+  Code_HashType = 0;
+  Code_NotSupported = 1;
+  Code_CantRapidUpload = 2;
+  Code_Server = 3;
+  Code_InvalidFilename = 4;
+  Code_FileNameExists = 5;
+  Code_Fatal = 6;
+}
+
+enum UpdateChannel {
+  UpdateChannel_Release = 0;
+  UpdateChannel_Beta = 1;
+}
+
+enum UpdatePhase {
+  UpdatePhase_NO_UPDATE = 0;
+  UpdatePhase_DOWNLOADING = 1;
+  UpdatePhase_READY_TO_UPDATE = 2;
+  UpdatePhase_UPDATING = 3;
+  UpdatePhase_UPDATE_SUCCESS = 4;
+  UpdatePhase_UPDATE_FAILED = 5;
+}
+
+enum OperatorType {
+  OperatorType_Mount = 0;
+  OperatorType_Copy = 1;
+  OperatorType_BackupFile = 2;
+}
+
+enum Status_1 {
+  Status_1_WaitforPreprocessing = 0;
+  Status_1_Preprocessing = 1;
+  Status_1_Cancelled = 2;
+  Status_1_Transfer = 3;
+  Status_1_Pause = 4;
+  Status_1_Finish = 5;
+  Status_1_Skipped = 6;
+  Status_1_Inqueue = 7;
+  Status_1_Ignored = 8;
+  Status_1_Error = 9;
+  Status_1_FatalError = 10;
+}
+
+message APILoginResult {
+  bool success = 1;
+  string errorMessage = 2;
+}
+
+message AccountPlan {
+  string planName = 1;
+  string description = 2;
+  string fontAwesomeIcon = 3;
+  string durationDescription = 4;
+  google.protobuf.Timestamp endTime = 5;
+}
+
+message AccountRole {
+  string roleName = 1;
+  string description = 2;
+  int32 value = 3;
+}
+
+message AccountStatusResult {
+  string userName = 1;
+  string emailConfirmed = 2;
+  double accountBalance = 3;
+  AccountPlan accountPlan = 4;
+  repeated AccountRole accountRoles = 5;
+  AccountPlan secondPlan = 6;
+  string partnerReferralCode = 7;
+  bool trustedDevice = 8;
+  bool userNameIsDeviceId = 9;
+}
+
+message AddDavUserRequest {
+  string userName = 1;
+  string password = 2;
+  string rootPath = 3;
+  bool readOnly = 4;
+  bool enabled = 5;
+  bool guest = 6;
+}
+
+message AddLocalFolderRequest {
+  string localFolderPath = 1;
+}
+
+message AddOfflineFileRequest {
+  string urls = 1;
+  string toFolder = 2;
+}
+
+message AddSharedLinkRequest {
+  string sharedLinkUrl = 1;
+  string sharedPassword = 2;
+  string toFolder = 3;
+}
+
+message Backup {
+  string sourcePath = 1;
+  repeated BackupDestination destinations = 2;
+  repeated FileBackupRule fileBackupRules = 3;
+  FileReplaceRule fileReplaceRule = 4;
+  FileDeleteRule fileDeleteRule = 5;
+  FileCompletionRule fileCompletionRule = 13;
+  bool isEnabled = 6;
+  bool fileSystemWatchEnabled = 7;
+  int64 walkingThroughIntervalSecs = 8;
+  bool forceWalkingThroughOnStart = 9;
+  repeated TimeSchedule timeSchedules = 10;
+  bool isTimeSchedulesEnabled = 11;
+}
+
+message BackupDestination {
+  string destinationPath = 1;
+  bool isEnabled = 2;
+  google.protobuf.Timestamp lastFinishTime = 3;
+}
+
+message BackupList {
+  repeated BackupStatus backups = 1;
+}
+
+message BackupModifyRequest {
+  string sourcePath = 1;
+  repeated BackupDestination destinations = 2;
+  repeated FileBackupRule fileBackupRules = 3;
+  FileReplaceRule fileReplaceRule = 4;
+  FileDeleteRule fileDeleteRule = 5;
+  bool fileSystemWatchEnabled = 6;
+  int64 walkingThroughIntervalSecs = 7;
+}
+
+message BackupSetEnabledRequest {
+  string sourcePath = 1;
+  bool isEnabled = 2;
+}
+
+message BackupStatus {
+  Backup backup = 1;
+  Status status = 2;
+  string statusMessage = 3;
+  FileWatchStatus watcherStatus = 4;
+  string watcherStatusMessage = 5;
+  repeated TaskError errors = 7;
+}
+
+message BalanceLog {
+  double balance_before = 1;
+  double balance_after = 2;
+  double balance_change = 3;
+  BalancceChangeOperation operation = 4;
+  string operation_source = 5;
+  string operation_id = 6;
+  google.protobuf.Timestamp operation_time = 7;
+}
+
+message BalanceLogResult {
+  repeated BalanceLog logs = 1;
+}
+
+message BatchOperationResult {
+  bool success = 1;
+  uint32 affectedCount = 2;
+  string errorMessage = 3;
+}
+
+message BindCloudAccountRequest {
+  string cloudName = 1;
+  string cloudAccountId = 2;
+}
+
+message BoolResult {
+  bool result = 1;
+}
+
+message CancelMergeTaskRequest {
+  string sourcePath = 1;
+  string destPath = 2;
+}
+
+message ChangeEmailAndPasswordRequest {
+  string newEmail = 1;
+  string newPassword = 2;
+  bool syncUserDataWithCloud = 3;
+}
+
+message ChangeEmailRequest {
+  string newEmail = 1;
+  string password = 2;
+  string changeCode = 3;
+}
+
+message ChangePasswordRequest {
+  string oldPassword = 1;
+  string newPassword = 2;
+}
+
+message CheckActivationCodeResult {
+  string planId = 1;
+  string planName = 2;
+  string planDescription = 3;
+}
+
+message CheckCouponCodeRequest {
+  string planId = 1;
+  string couponCode = 2;
+}
+
+message ClearOfflineFileRequest {
+  string cloudName = 1;
+  string cloudAccountId = 2;
+  Filter filter = 3;
+  bool deleteFiles = 4;
+  string path = 5;
+}
+
+message CloseFileRequest {
+  uint64 fileHandle = 1;
+}
+
+message CloseRequest {
+}
+
+message CloseResponse {
+}
+
+message CloudAPI {
+  string name = 1;
+  string userName = 2;
+  string nickName = 3;
+  bool isLocked = 4;
+  bool supportMultiThreadUploading = 5;
+  bool supportQpsLimit = 6;
+  bool isCloudEventListenerRunning = 7;
+  bool hasPromotions = 8;
+  string promotionTitle = 9;
+  string path = 10;
+}
+
+message CloudAPIConfig {
+  uint32 maxDownloadThreads = 1;
+  uint64 minReadLengthKB = 2;
+  uint64 maxReadLengthKB = 3;
+  uint64 defaultReadLengthKB = 4;
+  uint64 maxBufferPoolSizeMB = 5;
+  double maxQueriesPerSecond = 6;
+  bool forceIpv4 = 7;
+  ProxyInfo apiProxy = 8;
+  ProxyInfo dataProxy = 9;
+  string customUserAgent = 10;
+  uint32 maxUploadThreads = 11;
+  bool insecureTls = 12;
+}
+
+message CloudAPIList {
+  repeated CloudAPI apis = 1;
+}
+
+message CloudAPIRequest {
+  string cloudName = 1;
+  string userName = 2;
+}
+
+message CloudDriveFile {
+  string id = 1;
+  string name = 2;
+  string fullPathName = 3;
+  int64 size = 4;
+  FileType fileType = 5;
+  google.protobuf.Timestamp createTime = 6;
+  google.protobuf.Timestamp writeTime = 7;
+  google.protobuf.Timestamp accessTime = 8;
+  CloudAPI CloudAPI = 9;
+  string thumbnailUrl = 10;
+  string previewUrl = 11;
+  string originalPath = 14;
+  bool isDirectory = 30;
+  bool isRoot = 31;
+  bool isCloudRoot = 32;
+  bool isCloudDirectory = 33;
+  bool isCloudFile = 34;
+  bool isSearchResult = 35;
+  bool isForbidden = 36;
+  bool isLocal = 37;
+  bool canMount = 60;
+  bool canUnmount = 61;
+  bool canDirectAccessThumbnailURL = 62;
+  bool canSearch = 63;
+  bool hasDetailProperties = 64;
+  FileDetailProperties detailProperties = 65;
+  bool canOfflineDownload = 66;
+  bool canAddShareLink = 67;
+  uint64 dirCacheTimeToLiveSecs = 68;
+  bool canDeletePermanently = 69;
+  map<uint32, string> fileHashes = 70;
+  FileEncryptionType fileEncryptionType = 71;
+  bool CanCreateEncryptedFolder = 72;
+  bool CanLock = 73;
+  bool CanSyncFileChangesFromCloud = 74;
+  bool supportOfflineDownloadManagement = 75;
+  DownloadUrlPathInfo downloadUrlPath = 76;
+}
+
+message FileHashesEntry {
+  uint32 key = 1;
+  string value = 2;
+}
+
+message CloudDrivePlan {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  double price = 4;
+  int64 duration = 5;
+  string durationDescription = 6;
+  bool isActive = 7;
+  string fontAwesomeIcon = 8;
+  double originalPrice = 9;
+  repeated AccountRole planRoles = 10;
+}
+
+message CloudDrivePushMessage {
+  MessageType messageType = 1;
+  TransferTaskStatus transferTaskStatus = 2;
+  UpdateStatus updateStatus = 3;
+  ExitedMessage exitedMessage = 4;
+  FileSystemChange fileSystemChange = 5;
+  MountPointChange mountPointChange = 6;
+  LogMessage logMessage = 7;
+  MergeTaskUpdate mergeTaskUpdate = 8;
+}
+
+message CloudDriveSystemInfo {
+  bool IsLogin = 1;
+  string UserName = 2;
+  bool SystemReady = 3;
+  string SystemMessage = 4;
+  bool hasError = 5;
+}
+
+message CloudMembership {
+  string identity = 1;
+  google.protobuf.Timestamp expireTime = 2;
+  string level = 3;
+}
+
+message CloudMemberships {
+  repeated CloudMembership memberships = 1;
+}
+
+message ConfirmEmailRequest {
+  string confirmCode = 1;
+}
+
+message CopyFileRequest {
+  repeated string theFilePaths = 1;
+  string destPath = 2;
+  ConflictPolicy conflictPolicy = 3;
+  bool handleConflictRecursively = 5;
+}
+
+message CopyTask {
+  TaskMode taskMode = 2;
+  string sourcePath = 3;
+  string destPath = 4;
+  TaskStatus status = 5;
+  uint64 totalFolders = 6;
+  uint64 totalFiles = 7;
+  uint64 failedFolders = 8;
+  uint64 failedFiles = 9;
+  uint64 uploadedFiles = 10;
+  uint64 cancelledFiles = 11;
+  uint64 skippedFiles = 16;
+  uint64 totalBytes = 12;
+  uint64 uploadedBytes = 13;
+  bool paused = 14;
+  repeated TaskError errors = 15;
+  google.protobuf.Timestamp startTime = 17;
+  google.protobuf.Timestamp endTime = 18;
+}
+
+message CopyTaskBatchRequest {
+  repeated string taskKeys = 1;
+}
+
+message CopyTaskRequest {
+  string sourcePath = 1;
+  string destPath = 2;
+}
+
+message CouponCodeResult {
+  string couponCode = 1;
+  string couponDescription = 2;
+  bool isPercentage = 3;
+  double couponDiscountAmount = 4;
+}
+
+message CreateEncryptedFolderRequest {
+  string parentPath = 1;
+  string folderName = 2;
+  string password = 3;
+  bool savePassword = 4;
+}
+
+message CreateFileRequest {
+  string parentPath = 1;
+  string fileName = 2;
+}
+
+message CreateFileResult {
+  uint64 fileHandle = 1;
+}
+
+message CreateFolderRequest {
+  string parentPath = 1;
+  string folderName = 2;
+}
+
+message CreateFolderResult {
+  CloudDriveFile folderCreated = 1;
+  FileOperationResult result = 2;
+}
+
+message CreateTokenRequest {
+  string rootDir = 1;
+  TokenPermissions permissions = 2;
+  string friendly_name = 3;
+  uint64 expires_in = 4;
+}
+
+message DavServerConfig {
+  bool davServerEnabled = 1;
+  string davServerPath = 2;
+  bool enableClouddriveAccount = 3;
+  string clouddriveAccountRootPath = 4;
+  bool clouddriveAccountReadOnly = 5;
+  bool enableAnonymousAccess = 6;
+  string anonymousRootPath = 7;
+  bool anonymousReadOnly = 8;
+  repeated DavUser users = 9;
+}
+
+message DavUser {
+  string userName = 1;
+  string password = 2;
+  string rootPath = 3;
+  bool readOnly = 4;
+  bool enabled = 5;
+  bool guest = 6;
+}
+
+message DaysOfWeek {
+  repeated uint32 daysOfWeek = 1;
+}
+
+message Device {
+  string deviceId = 1;
+  string deviceName = 2;
+  string osType = 3;
+  string version = 4;
+  string ipAddress = 5;
+  google.protobuf.Timestamp lastUpdateTime = 6;
+}
+
+message DeviceRequest {
+  string deviceId = 1;
+}
+
+message DirCacheItem {
+  google.protobuf.Timestamp insertTime = 1;
+  uint64 timeToLiveSecs = 2;
+  uint64 referencedSubfileLen = 3;
+}
+
+message DirCacheTable {
+  map<string, DirCacheItem> dirCacheTable = 1;
+}
+
+message DownloadFileInfo {
+  string filePath = 1;
+  uint64 fileLength = 2;
+  uint64 totalBufferUsed = 3;
+  uint32 downloadThreadCount = 4;
+  repeated string process = 5;
+  string detailDownloadInfo = 6;
+  string lastDownloadError = 7;
+  double bytesPerSecond = 8;
+}
+
+message DownloadUrlPathInfo {
+  string downloadUrlPath = 1;
+  int64 expiresIn = 2;
+}
+
+message ExitedMessage {
+  ExitReason exitReason = 1;
+  string message = 2;
+}
+
+message FileBackupRule {
+  string extensions = 1;
+  string fileNames = 2;
+  string regex = 3;
+  uint64 minSize = 4;
+  bool isEnabled = 100;
+  bool isBlackList = 101;
+  bool applyToFolder = 102;
+  bool applyToFile = 103;
+}
+
+message FileDetailProperties {
+  int64 totalFileCount = 1;
+  int64 totalFolderCount = 2;
+  int64 totalSize = 3;
+  bool isFaved = 4;
+  bool isShared = 5;
+  string originalPath = 6;
+}
+
+message FileMetaData {
+  map<string, string> metadata = 1;
+}
+
+message FileOperationResult {
+  bool success = 1;
+  string errorMessage = 2;
+  repeated string resultFilePaths = 3;
+}
+
+message FileRequest {
+  string path = 1;
+  bool forceRefresh = 2;
+}
+
+message FileSystemChange {
+  ChangeType changeType = 1;
+  bool isDirectory = 2;
+  string path = 3;
+  string newPath = 4;
+  CloudDriveFile theFile = 5;
+}
+
+message FileSystemChangeStatistics {
+  uint64 createCount = 1;
+  uint64 deleteCount = 2;
+  uint64 renameCount = 3;
+}
+
+message FindFileByPathRequest {
+  string parentPath = 1;
+  string path = 2;
+}
+
+message GetAllTasksCountResult {
+  uint32 downloadCount = 1;
+  uint32 uploadCount = 2;
+  uint32 copyTaskCount = 6;
+  PushMessage pushMessage = 3;
+  bool hasUpdate = 4;
+  repeated UploadFileInfo uploadFileStatusChanges = 5;
+}
+
+message GetAvailableDriveLettersResult {
+  repeated string driveLetters = 1;
+}
+
+message GetCloudAPIConfigRequest {
+  string cloudName = 1;
+  string userName = 2;
+}
+
+message GetCloudDrivePlansResult {
+  repeated CloudDrivePlan plans = 1;
+}
+
+message GetCopyTaskResult {
+  repeated CopyTask copyTasks = 1;
+}
+
+message GetDownloadFileCountResult {
+  uint32 fileCount = 1;
+}
+
+message GetDownloadFileListResult {
+  double globalBytesPerSecond = 1;
+  repeated DownloadFileInfo downloadFiles = 4;
+}
+
+message GetDownloadUrlPathRequest {
+  string path = 1;
+  bool preview = 2;
+}
+
+message GetEffectiveDirCacheTimeRequest {
+  string path = 1;
+}
+
+message GetEffectiveDirCacheTimeResult {
+  uint64 dirCacheTimeSecs = 1;
+}
+
+message GetHashRequest {
+  HashType hashType = 1;
+}
+
+message GetHashResponse {
+  string hashValue = 1;
+}
+
+message GetInfoRequest {
+}
+
+message GetInfoResponse {
+  string name = 1;
+  uint64 size = 2;
+  bool isDirectory = 3;
+  google.protobuf.Timestamp createTime = 4;
+  google.protobuf.Timestamp writeTime = 5;
+  google.protobuf.Timestamp accessTime = 6;
+}
+
+message GetMergeTasksResult {
+  repeated MergeTask mergeTasks = 1;
+}
+
+message GetMountPointsResult {
+  repeated MountPoint mountPoints = 1;
+}
+
+message GetOpenFileTableRequest {
+  bool includeDir = 1;
+}
+
+message GetPromotionsResult {
+  repeated Promotion promotions = 1;
+}
+
+message GetTokenRequest {
+  string userName = 1;
+  string password = 2;
+}
+
+message GetUploadFileCountResult {
+  uint32 fileCount = 1;
+}
+
+message GetUploadFileListRequest {
+  bool getAll = 1;
+  uint32 itemsPerPage = 2;
+  uint32 pageNumber = 3;
+  string filter = 4;
+  Status statusFilter = 5;
+  OperatorType operatorTypeFilter = 6;
+}
+
+message GetUploadFileListResult {
+  uint32 totalCount = 1;
+  repeated UploadFileInfo uploadFiles = 2;
+  double globalBytesPerSecond = 3;
+  uint64 totalBytes = 4;
+  uint64 finishedBytes = 5;
+}
+
+message HasDriveLettersResult {
+  bool hasDriveLetters = 1;
+}
+
+message InitRequest {
+  string entryPath = 1;
+  uint64 fileSize = 2;
+  map<uint32, string> knownHashes = 3;
+}
+
+message KnownHashesEntry {
+  uint32 key = 1;
+  string value = 2;
+}
+
+message InitResponse {
+  string entryId = 1;
+}
+
+message JWTToken {
+  bool success = 1;
+  string errorMessage = 2;
+  string token = 3;
+  google.protobuf.Timestamp expiration = 4;
+}
+
+message JoinPlanRequest {
+  string planId = 1;
+  string couponCode = 2;
+}
+
+message JoinPlanResult {
+  bool success = 1;
+  double balance = 2;
+  string planName = 3;
+  string planDescription = 4;
+  google.protobuf.Timestamp expireTime = 5;
+  PaymentInfo paymentInfo = 6;
+}
+
+message ListLogFileResult {
+  repeated LogFileRecord logFiles = 1;
+}
+
+message ListSubFileRequest {
+  string path = 1;
+  bool forceRefresh = 2;
+  bool checkExpires = 3;
+}
+
+message ListTokensResult {
+  repeated TokenInfo tokens = 1;
+}
+
+message LocalGetSubFilesRequest {
+  string parentFolder = 1;
+  bool folderOnly = 2;
+  bool includeCloudDrive = 3;
+  bool includeAvailableDrive = 4;
+}
+
+message LocalGetSubFilesResult {
+  repeated string subFiles = 1;
+}
+
+message LogFileRecord {
+  string fileName = 1;
+  google.protobuf.Timestamp lastModifiedTime = 2;
+  uint64 fileSize = 3;
+  string signature = 4;
+}
+
+message LogMessage {
+  LogLevel level = 1;
+  string message = 2;
+  string target = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  map<string, string> fields = 6;
+}
+
+message FieldsEntry {
+  string key = 1;
+  string value = 2;
+}
+
+message Login115EditthiscookieRequest {
+  string editThiscookieString = 1;
+}
+
+message Login115OpenOAuthRequest {
+  string refresh_token = 1;
+  string access_token = 2;
+  uint64 expires_in = 3;
+}
+
+message Login115QrCodeRequest {
+  string platformString = 1;
+}
+
+message Login123panOAuthRequest {
+  string refresh_token = 1;
+  string access_token = 2;
+  uint64 expires_in = 3;
+}
+
+message LoginAliyundriveOAuthRequest {
+  string refresh_token = 1;
+  string access_token = 2;
+  uint64 expires_in = 3;
+}
+
+message LoginAliyundriveQRCodeRequest {
+  bool useOpenAPI = 1;
+}
+
+message LoginAliyundriveRefreshtokenRequest {
+  string refreshToken = 1;
+  bool useOpenAPI = 2;
+}
+
+message LoginBaiduPanOAuthRequest {
+  string refresh_token = 1;
+  string access_token = 2;
+  uint64 expires_in = 3;
+}
+
+message LoginCloudDriveRequest {
+  string grpcUrl = 1;
+  string token = 2;
+  bool insecureTls = 3;
+}
+
+message LoginGoogleDriveOAuthRequest {
+  string refresh_token = 1;
+  string access_token = 2;
+  uint64 expires_in = 3;
+}
+
+message LoginGoogleDriveRefreshTokenRequest {
+  string client_id = 1;
+  string client_secret = 2;
+  string refresh_token = 3;
+}
+
+message LoginOneDriveOAuthRequest {
+  string refresh_token = 1;
+  string access_token = 2;
+  uint64 expires_in = 3;
+}
+
+message LoginWebDavRequest {
+  string serverUrl = 1;
+  string userName = 2;
+  string password = 3;
+}
+
+message LoginXunleiOAuthRequest {
+  string refresh_token = 1;
+  string access_token = 2;
+  uint64 expires_in = 3;
+}
+
+message LoginXunleiOpenOAuthRequest {
+  string refresh_token = 1;
+  string access_token = 2;
+  uint64 expires_in = 3;
+}
+
+message MergeTask {
+  string sourcePath = 1;
+  string destPath = 2;
+  TaskStatus status = 3;
+  uint64 mergedFiles = 4;
+  uint64 mergedFolders = 5;
+  google.protobuf.Timestamp startTime = 6;
+  google.protobuf.Timestamp endTime = 7;
+  string errorMessage = 8;
+  ConflictPolicy conflictPolicy = 9;
+  OperationType operationType = 10;
+}
+
+message MergeTaskUpdate {
+  repeated MergeTask mergeTasks = 1;
+  string lastMergedPath = 2;
+  string lastMergedNewPath = 3;
+}
+
+message ModifyDavServerConfigRequest {
+  bool enableDavServer = 1;
+  bool enableClouddriveAccount = 2;
+  string clouddriveAccountRootPath = 3;
+  bool clouddriveAccountReadOnly = 4;
+  bool enableAnonymousAccess = 5;
+  string anonymousRootPath = 6;
+  bool anonymousReadOnly = 7;
+}
+
+message ModifyDavUserRequest {
+  string userName = 1;
+  string password = 2;
+  string rootPath = 3;
+  bool readOnly = 4;
+  bool enabled = 5;
+  bool guest = 6;
+}
+
+message ModifyTokenRequest {
+  string token = 1;
+  string rootDir = 2;
+  TokenPermissions permissions = 3;
+  string friendly_name = 4;
+  uint64 expires_in = 5;
+}
+
+message MountOption {
+  string mountPoint = 1;
+  string sourceDir = 2;
+  bool localMount = 3;
+  bool readOnly = 4;
+  bool autoMount = 5;
+  uint32 uid = 6;
+  uint32 gid = 7;
+  string permissions = 8;
+  string name = 9;
+}
+
+message MountPoint {
+  string mountPoint = 1;
+  string sourceDir = 2;
+  bool localMount = 3;
+  bool readOnly = 4;
+  bool autoMount = 5;
+  uint32 uid = 6;
+  uint32 gid = 7;
+  string permissions = 8;
+  bool isMounted = 9;
+  string failReason = 10;
+}
+
+message MountPointChange {
+  ActionType actionType = 1;
+  string mountPoint = 2;
+  bool success = 3;
+  string failReason = 4;
+}
+
+message MountPointRequest {
+  string MountPoint = 1;
+}
+
+message MountPointResult {
+  bool success = 1;
+  string failReason = 2;
+}
+
+message MoveFileRequest {
+  repeated string theFilePaths = 1;
+  string destPath = 2;
+  ConflictPolicy conflictPolicy = 3;
+  bool moveAcrossClouds = 4;
+  bool handleConflictRecursively = 5;
+}
+
+message MultiFileRequest {
+  repeated string path = 1;
+}
+
+message MultpleUploadFileKeyRequest {
+  repeated string keys = 1;
+}
+
+message OfflineFile {
+  string name = 1;
+  uint64 size = 2;
+  string url = 3;
+  OfflineFileStatus status = 4;
+  string infoHash = 5;
+  string fileId = 6;
+  uint64 add_time = 7;
+  string parentId = 8;
+  double percendDone = 9;
+  uint64 peers = 10;
+}
+
+message OfflineFileListAllRequest {
+  string cloudName = 1;
+  string cloudAccountId = 2;
+  uint32 page = 3;
+  string path = 4;
+}
+
+message OfflineFileListAllResult {
+  uint32 pageNo = 1;
+  uint32 pageRowCount = 2;
+  uint32 pageCount = 3;
+  uint32 totalCount = 4;
+  OfflineStatus status = 5;
+  repeated OfflineFile offlineFiles = 6;
+}
+
+message OfflineFileListResult {
+  repeated OfflineFile offlineFiles = 1;
+  OfflineStatus status = 2;
+}
+
+message OfflineQuotaInfo {
+  int32 total = 1;
+  int32 used = 2;
+  int32 left = 3;
+}
+
+message OfflineQuotaRequest {
+  string cloudName = 1;
+  string cloudAccountId = 2;
+  string path = 3;
+}
+
+message OfflineStatus {
+  uint32 quota = 1;
+  uint32 total = 2;
+}
+
+message OnlineDevices {
+  repeated Device devices = 1;
+}
+
+message OpenFileHandle {
+  uint64 fileHandle = 1;
+  uint64 processId = 2;
+  string processPath = 3;
+  string filePath = 4;
+  bool isDirectory = 5;
+  google.protobuf.Timestamp openTime = 6;
+  string specialCommand = 7;
+}
+
+message OpenFileHandleList {
+  repeated OpenFileHandle openFileHandles = 1;
+}
+
+message OpenFileTable {
+  map<uint64, string> openFileTable = 1;
+  uint64 localOpenFileCount = 2;
+}
+
+message PauseAllCopyTasksRequest {
+  bool pause = 1;
+}
+
+message PauseCopyTaskRequest {
+  string sourcePath = 1;
+  string destPath = 2;
+  bool pause = 3;
+}
+
+message PauseCopyTasksRequest {
+  repeated string taskKeys = 1;
+  bool pause = 2;
+}
+
+message PaymentInfo {
+  string user_id = 1;
+  string plan_id = 2;
+  map<string, string> paymentMethods = 3;
+  string coupon_code = 4;
+  string machine_id = 5;
+  string check_code = 6;
+}
+
+message PaymentMethodsEntry {
+  string key = 1;
+  string value = 2;
+}
+
+message Promotion {
+  string id = 1;
+  string cloudName = 2;
+  string title = 3;
+  string subTitle = 4;
+  string rules = 5;
+  string notice = 6;
+  string url = 7;
+}
+
+message ProxyInfo {
+  ProxyType proxyType = 1;
+  string host = 2;
+  uint32 port = 3;
+  string username = 4;
+  string password = 5;
+}
+
+message PushMessage {
+  string clouddriveVersion = 1;
+}
+
+message QRCodeScanMessage {
+  QRCodeScanMessageType messageType = 1;
+  string message = 2;
+}
+
+message RapidUploadErrorResult {
+  Code code = 1;
+  string message = 2;
+}
+
+message RapidUploadRequest {
+  string fileName = 1;
+  uint64 fileSize = 2;
+}
+
+message RapidUploadResponse {
+  RapidUploadSuccess success = 1;
+  RapidUploadErrorResult rapidError = 2;
+  string otherErrorMessage = 3;
+  Status status = 4;
+}
+
+message RapidUploadSuccess {
+  string fileId = 1;
+}
+
+message ReadDataRequest {
+  uint64 offset = 1;
+  uint64 length = 2;
+  bool lazyRead = 3;
+}
+
+message ReadDataResponse {
+  bytes data = 1;
+  uint64 bytesRead = 2;
+}
+
+message RemoteEntryRequest {
+  string sessionId = 1;
+  InitRequest init = 2;
+  GetInfoRequest getInfo = 3;
+  GetHashRequest getHash = 4;
+  ReadDataResponse readData = 5;
+  RapidUploadRequest rapidUpload = 6;
+  UploadRequest upload = 7;
+  CloseRequest close = 8;
+}
+
+message RemoteEntryResponse {
+  string sessionId = 1;
+  bool success = 2;
+  string errorMessage = 3;
+  InitResponse init = 4;
+  GetInfoResponse getInfo = 5;
+  GetHashResponse getHash = 6;
+  ReadDataRequest readData = 7;
+  RapidUploadResponse rapidUpload = 8;
+  UploadResponse upload = 9;
+  CloseResponse close = 10;
+}
+
+message RemoveCloudAPIRequest {
+  string cloudName = 1;
+  string userName = 2;
+  bool permanentRemove = 3;
+}
+
+message RemoveOfflineFilesRequest {
+  string cloudName = 1;
+  string cloudAccountId = 2;
+  bool deleteFiles = 3;
+  repeated string infoHashes = 4;
+  string path = 5;
+}
+
+message RenameFileRequest {
+  string theFilePath = 1;
+  string newName = 2;
+}
+
+message RenameFilesRequest {
+  repeated RenameFileRequest renameFiles = 1;
+}
+
+message ResetAccountRequest {
+  string resetCode = 1;
+  string newPassword = 2;
+}
+
+message RestartOfflineFileRequest {
+  string cloudName = 1;
+  string cloudAccountId = 2;
+  string infoHash = 3;
+  string url = 4;
+  string parentId = 5;
+  string path = 6;
+}
+
+message RunInfo {
+  double cpuUsage = 1;
+  uint64 memUsageKB = 2;
+  double uptime = 3;
+  uint64 fhTableCount = 4;
+  uint64 dirCacheCount = 5;
+  uint64 tempFileCount = 6;
+  uint64 dbDirCacheCount = 7;
+  double downloadBytesPerSecond = 8;
+  double uploadBytesPerSecond = 9;
+  uint64 totalMemoryKB = 10;
+}
+
+message RuntimeInfo {
+  string productName = 1;
+  string productVersion = 2;
+  string CloudAPIVersion = 3;
+  string osInfo = 4;
+}
+
+message SearchRequest {
+  string path = 1;
+  string searchFor = 2;
+  bool forceRefresh = 3;
+  bool fuzzyMatch = 4;
+}
+
+message SendChangeEmailCodeRequest {
+  string newEmail = 1;
+  string password = 2;
+}
+
+message SendPromotionActionRequest {
+  string cloudName = 1;
+  string cloudAccountId = 2;
+  string promotionId = 3;
+}
+
+message SendResetAccountEmailRequest {
+  string email = 1;
+}
+
+message SetCloudAPIConfigRequest {
+  string cloudName = 1;
+  string userName = 2;
+  CloudAPIConfig config = 3;
+}
+
+message SetDirCacheTimeRequest {
+  string path = 1;
+  uint64 dirCachTimeToLiveSecs = 2;
+}
+
+message SpaceInfo {
+  int64 totalSpace = 1;
+  int64 usedSpace = 2;
+  int64 freeSpace = 3;
+}
+
+message StringList {
+  repeated string values = 1;
+}
+
+message StringResult {
+  string result = 1;
+}
+
+message StringValue {
+  string value = 1;
+}
+
+message SubFilesReply {
+  repeated CloudDriveFile subFiles = 1;
+}
+
+message SystemSettings {
+  uint64 dirCacheTimeToLiveSecs = 1;
+  uint64 maxPreProcessTasks = 2;
+  uint64 maxProcessTasks = 3;
+  string tempFileLocation = 4;
+  bool syncWithCloud = 5;
+  uint64 readDownloaderTimeoutSecs = 6;
+  uint64 uploadDelaySecs = 7;
+  StringList processBlackList = 8;
+  StringList uploadIgnoredExtensions = 9;
+  UpdateChannel updateChannel = 10;
+  double maxDownloadSpeedKBytesPerSecond = 11;
+  double maxUploadSpeedKBytesPerSecond = 12;
+  string deviceName = 13;
+  bool dirCachePersistence = 14;
+  string dirCacheDbLocation = 15;
+  LogLevel fileLogLevel = 16;
+  LogLevel terminalLogLevel = 17;
+  LogLevel backupLogLevel = 18;
+  bool EnableAutoRegisterDevice = 19;
+  LogLevel realtimeLogLevel = 20;
+  StringList operatorPriorityOrder = 21;
+  ProxyInfo updateProxy = 22;
+}
+
+message TaskError {
+  google.protobuf.Timestamp time = 1;
+  string message = 2;
+}
+
+message TempFileTable {
+  uint64 count = 1;
+  repeated string tempFiles = 2;
+}
+
+message TimeSchedule {
+  bool isEnabled = 1;
+  uint32 hour = 2;
+  uint32 minute = 3;
+  uint32 second = 4;
+  DaysOfWeek daysOfWeek = 5;
+}
+
+message TokenInfo {
+  string token = 1;
+  string rootDir = 2;
+  TokenPermissions permissions = 3;
+  uint64 expires_in = 4;
+  string friendly_name = 5;
+}
+
+message TokenPermissions {
+  bool allow_list = 1;
+  bool allow_search = 2;
+  bool allow_list_local = 3;
+  bool allow_create_folder = 4;
+  bool allow_create_file = 5;
+  bool allow_write = 6;
+  bool allow_read = 7;
+  bool allow_rename = 8;
+  bool allow_move = 9;
+  bool allow_copy = 10;
+  bool allow_delete = 11;
+  bool allow_delete_permanently = 12;
+  bool allow_create_encrypt = 13;
+  bool allow_unlock_encrypted = 14;
+  bool allow_lock_encrypted = 15;
+  bool allow_add_offline_download = 16;
+  bool allow_list_offline_downloads = 17;
+  bool allow_modify_offline_downloads = 18;
+  bool allow_shared_links = 19;
+  bool allow_view_properties = 20;
+  bool allow_get_space_info = 21;
+  bool allow_view_runtime_info = 22;
+  bool allow_get_memberships = 23;
+  bool allow_modify_memberships = 24;
+  bool allow_get_mounts = 25;
+  bool allow_modify_mounts = 26;
+  bool allow_get_transfer_tasks = 27;
+  bool allow_modify_transfer_tasks = 28;
+  bool allow_get_cloud_apis = 29;
+  bool allow_modify_cloud_apis = 30;
+  bool allow_get_system_settings = 31;
+  bool allow_modify_system_settings = 32;
+  bool allow_get_backups = 33;
+  bool allow_modify_backups = 34;
+  bool allow_get_dav_config = 35;
+  bool allow_modify_dav_config = 36;
+  bool allow_token_management = 37;
+  bool allow_get_account_info = 38;
+  bool allow_modify_account = 39;
+  bool allow_service_control = 40;
+}
+
+message TransferBalanceRequest {
+  string toUserName = 1;
+  double amount = 2;
+  string password = 3;
+}
+
+message TransferTaskStatus {
+  uint32 downloadCount = 1;
+  uint32 uploadCount = 2;
+  string clouddriveVersion = 3;
+  repeated UploadFileInfo uploadFileStatusChanges = 4;
+  bool hasUpdate = 5;
+  uint32 copyTaskCount = 6;
+}
+
+message UnlockEncryptedFileRequest {
+  string path = 1;
+  string password = 2;
+  bool permanentUnlock = 3;
+}
+
+message UpdateMountPointRequest {
+  string mountPoint = 1;
+  MountOption newMountOption = 2;
+}
+
+message UpdatePromotionResultByCloudRequest {
+  string cloudName = 1;
+  string cloudAccountId = 2;
+  string promotionId = 3;
+}
+
+message UpdateResult {
+  bool hasUpdate = 1;
+  string newVersion = 2;
+  string description = 3;
+}
+
+message UpdateStatus {
+  UpdatePhase updatePhase = 1;
+  string newVersion = 2;
+  string message = 3;
+  string clouddriveVersion = 4;
+  uint64 downloadedBytes = 5;
+  uint64 totalBytes = 6;
+}
+
+message UploadFileInfo {
+  string key = 1;
+  string destPath = 2;
+  uint64 size = 3;
+  uint64 transferedBytes = 4;
+  string status = 5;
+  string errorMessage = 6;
+  OperatorType operatorType = 7;
+  Status statusEnum = 8;
+}
+
+message UploadRequest {
+  string fileName = 1;
+  uint64 fileSize = 2;
+  string parentPath = 3;
+  bytes data = 4;
+  uint64 offset = 5;
+  bool isLastChunk = 6;
+}
+
+message UploadResponse {
+  uint64 bytesReceived = 1;
+  string fileId = 2;
+  bool uploadComplete = 3;
+  string errorMessage = 4;
+  Status status = 5;
+}
+
+message UserLoginRequest {
+  string userName = 1;
+  string password = 2;
+  bool synDataToCloud = 3;
+}
+
+message UserLogoutRequest {
+  bool logoutFromCloudFS = 1;
+}
+
+message UserRegisterRequest {
+  string userName = 1;
+  string password = 2;
+}
+
+message WalkThroughFolderResult {
+  uint64 totalFolderCount = 1;
+  uint64 totalFileCount = 2;
+  uint64 totalSize = 3;
+}
+
+message WebhookInfo {
+  string fileName = 1;
+  string content = 2;
+  bool isValid = 3;
+}
+
+message WebhookList {
+  repeated WebhookInfo webhooks = 1;
+}
+
+message WebhookRequest {
+  string fileName = 1;
+  string content = 2;
+}
+
+message WriteFileRequest {
+  uint64 fileHandle = 1;
+  uint64 startPos = 2;
+  uint64 length = 3;
+  bytes buffer = 4;
+  bool closeFile = 5;
+}
+
+message WriteFileResult {
+  uint64 bytesWritten = 1;
+}
+

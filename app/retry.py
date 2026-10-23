@@ -74,6 +74,15 @@ FATAL_PATTERNS = (
     "磁力链接无效",
     "xunlei_parent_id",         # 迅雷下载目录 id 没配/失效，重试也不会自己好
     "device_space_not_active",
+    "鉴权失败",                 # OpenList/CD2：账号密码不对
+    "401 unauthorized",
+    "只读",
+    "分享权限",
+    "openlist：没配",
+    "clouddrive2：没配",
+    "没有 grpcio",
+    "没装 grpcio",
+    "目标已存在",
     "迅雷投递失败",             # 投递阶段就是被面板拒绝，不是网络抖动
     "没有任何进展",             # 死种：重试只会拿回同一条任务（infohash 去重），白等
     "不在 TMP_ROOT",            # 挂载配错，重试一万次也一样

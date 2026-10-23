@@ -1,0 +1,4 @@
+# CloudDrive2 后端（gRPC）专用：对接 OpenList 或用 rclone 时不需要。
+# 镜像里可用 --build-arg WITH_CD2=0 跳过安装（约省 25MB）。
+grpcio>=1.84,<2
+protobuf>=7.35.1,<8

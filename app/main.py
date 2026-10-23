@@ -27,7 +27,7 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import (codes, core, diskspace, fetcher, meta, metadata, metrics, metatube,
+from . import (codes, core, diskspace, fetcher, meta, metadata, metrics, metatube, storage,
                pipeline, retry, settings as settings_mod, sources, store, whatslink,
                workspace, xunlei)
 
@@ -708,12 +708,23 @@ async def run_task(
 
             require_lease(cfg, job_id)          # organizing→uploading 前
             task_event(cfg, job_id, "stage", f"uploading {folder}")
-            target = f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
+            backend = storage.get()
+            target = (f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
+                      if backend.kind == "rclone" else f"{backend.kind}:{storage.rel(folder)}")
             await progress(f"⏳ 上传 {folder}（{core.human_size(total)}）…（含附件）"
                            if scraped["files"] != files else
                            f"⏳ 上传 {folder}（{core.human_size(total)}）…")
 
             async def do_upload():
+                if backend.kind != "rclone":
+                    # 适配器是同步实现（网页在后台线程用），这里丢到线程里跑
+                    rel = storage.rel(folder)
+                    await asyncio.to_thread(backend.ensure_dir, rel)
+                    await asyncio.to_thread(
+                        lambda: backend.upload_dir(work, rel,
+                                                   transfers=cfg.upload_transfers,
+                                                   chunk=cfg.upload_chunk))
+                    return
                 await rclone(cfg, "mkdir", target, timeout=120.0)
                 rc, _, err = await rclone(
                     cfg, "copy", str(work), target,
@@ -740,7 +751,20 @@ async def run_task(
             retried["upload"] = up_policy.attempts
             add_usage(cfg, total)
 
-            link = await folder_link(cfg, target)
+            if backend.kind != "rclone":
+                # CD2 会归一化目录名（全角替换、削尾部空白/点号），记账得按真实名
+                actual = await asyncio.to_thread(storage.real_folder, folder)
+                if actual and actual != folder:
+                    log.info("远端目录名被归一化：%s → %s", folder, actual)
+                    folder = actual
+                    target = f"{backend.kind}:{storage.rel(folder)}"
+                try:
+                    link = await asyncio.to_thread(backend.link, storage.rel(folder))
+                except Exception as exc:
+                    log.warning("取 %s 的分享链接失败：%s", folder, exc)
+                    link = None
+            else:
+                link = await folder_link(cfg, target)
             # 兜底元数据（与网页 _finish 的 meta.lookup 同语义）：查不到/出异常都不影响记账
             try:
                 meta_info = await meta.lookup(folder)
@@ -957,6 +981,21 @@ async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     target = record.get("path") or ""
+    backend = storage.get()
+    if backend.kind != "rclone":
+        code = str(record.get("code") or key)
+        if ".." in code or "/" in code:
+            await message.reply_text("⛔ 路径校验未通过，已拒绝删除")
+            return
+        try:
+            receipt = await asyncio.to_thread(backend.purge, storage.rel(code))
+        except storage.StorageError as exc:
+            await message.reply_text(f"❌ 删除失败：{str(exc)[:300]}")
+            return
+        state.pop(key, None)
+        core.save_state(cfg.state_path, state)
+        await message.reply_text(f"🗑 已删除 {key}（{backend.kind}：{receipt}）")
+        return
     root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
     if not target.startswith(root + "/") or ".." in target:
         await message.reply_text("⛔ 路径校验未通过，已拒绝删除")
@@ -1299,23 +1338,35 @@ async def self_check(cfg: Config) -> bool:
     else:
         print(f"工作区: OK {cfg.state_dir}")
 
-    for binary in ("rclone",):
-        found = shutil.which(binary)
-        print(f"{binary}: {found or '未安装'}")
-        ok &= bool(found)
+    try:
+        backend = storage.get()
+    except Exception as exc:                 # 后端没配好（缺 URL / 缺 grpcio）也要说得清楚
+        print(f"存储后端: {exc}")
+        print("自检 未通过")
+        return False
+    if backend.kind == "rclone":
+        for binary in ("rclone",):
+            found = shutil.which(binary)
+            print(f"{binary}: {found or '未安装'}")
+            ok &= bool(found)
 
-    root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
-    rc, _, err = await rclone(cfg, "lsd", root, timeout=90.0)
-    if rc != 0:
-        rc, _, err = await rclone(cfg, "lsd", f"{cfg.remote}:", timeout=90.0)
-    print(f"rclone {cfg.remote}: {'OK' if rc == 0 else err.strip()[:300]}")
-    ok &= rc == 0
-    if rc == 0:
-        rc2, _, err2 = await rclone(cfg, "mkdir", f"{root}/_healthcheck", timeout=90.0)
-        print(f"Drive 写权限: {'OK' if rc2 == 0 else err2.strip()[:200]}")
-        if rc2 == 0:
-            await rclone(cfg, "rmdir", f"{root}/_healthcheck", timeout=90.0)
-        ok &= rc2 == 0
+        root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
+        rc, _, err = await rclone(cfg, "lsd", root, timeout=90.0)
+        if rc != 0:
+            rc, _, err = await rclone(cfg, "lsd", f"{cfg.remote}:", timeout=90.0)
+        print(f"rclone {cfg.remote}: {'OK' if rc == 0 else err.strip()[:300]}")
+        ok &= rc == 0
+        if rc == 0:
+            rc2, _, err2 = await rclone(cfg, "mkdir", f"{root}/_healthcheck", timeout=90.0)
+            print(f"Drive 写权限: {'OK' if rc2 == 0 else err2.strip()[:200]}")
+            if rc2 == 0:
+                await rclone(cfg, "rmdir", f"{root}/_healthcheck", timeout=90.0)
+            ok &= rc2 == 0
+    else:
+        # 另两个后端（OpenList / CloudDrive2）自带 check()：连通性 + 可写 + 配额
+        result = await asyncio.to_thread(storage.check)
+        print(f"存储后端 {result.get('kind')}: {result.get('detail') or result.get('error')}")
+        ok &= bool(result.get("ok"))
 
     print("自检", "通过" if ok else "未通过")
     return ok

@@ -14,7 +14,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ${RCLONE_CONFIG_HOST:?在 .env 里设置 RCLONE_CONFIG_HOST 指向 rclone.conf}:/config/rclone/rclone.conf:ro
+      # 只有 rclone 后端需要它；OpenList / CloudDrive2 用户不设也能起（详见 README「存储后端」）
+      - ${RCLONE_CONFIG_HOST:-./.rclone/rclone.conf}:/config/rclone/rclone.conf:ro
       - ./data:/data
       - ./work:/work
       # 必须和迅雷容器里 /downloads 指向同一份目录，否则看不见下好的文件
@@ -45,7 +46,8 @@ services:
       - ./data:/data
       - ./work:/work
       - ${XUNLEI_DOWNLOADS_HOST:?在 .env 里设置 XUNLEI_DOWNLOADS_HOST 指向迅雷的下载目录}:/downloads
-      - ${RCLONE_CONFIG_HOST:?在 .env 里设置 RCLONE_CONFIG_HOST 指向 rclone.conf}:/config/rclone/rclone.conf:ro
+      # 只有 rclone 后端需要它；OpenList / CloudDrive2 用户不设也能起（详见 README「存储后端」）
+      - ${RCLONE_CONFIG_HOST:-./.rclone/rclone.conf}:/config/rclone/rclone.conf:ro
     ports:
       - "${WEB_PORT:-8080}:8080"
     healthcheck:

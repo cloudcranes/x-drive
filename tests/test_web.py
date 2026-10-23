@@ -305,3 +305,54 @@ def test_archive_delete_keeps_record_when_purge_fails(server, monkeypatch):
                               {"code": "SSIS-123", "confirm": True})
     assert status == 502 and not body["ok"]
     assert "SSIS-123" in core.load_state(web.STATE), "失败不能丢记录"
+
+
+# ---------------------------------------------------------------- 存储后端接口
+
+def test_api_storage_shape(server):
+    data = json.loads(get(server + "/api/storage").read())
+    assert data["ok"] is True
+    assert data["kind"] in ("rclone", "openlist", "clouddrive2")
+    assert data["root"]
+    assert "PASSWORD" not in json.dumps(data), "接口不能回显任何密钥字段"
+
+
+def test_api_storage_test_failure_still_200(server, monkeypatch):
+    """连不通也要 200 + ok:false：面板要能把原因直接显示出来。"""
+    monkeypatch.setattr(web, "storage_test",
+                        lambda: {"ok": False, "kind": "openlist", "root": "X-Drive",
+                                 "latency_ms": 3, "error": "openlist：没配 OPENLIST_URL"})
+    status, body = _post_json(server + "/api/storage/test", {})
+    assert status == 200 and body["ok"] is False
+    assert "OPENLIST_URL" in body["error"]
+
+
+def test_api_storage_test_success(server, monkeypatch):
+    monkeypatch.setattr(web, "storage_test",
+                        lambda: {"ok": True, "kind": "clouddrive2", "root": "X-Drive",
+                                 "latency_ms": 12, "detail": "clouddrive2 x: 可读写"})
+    status, body = _post_json(server + "/api/storage/test", {})
+    assert status == 200 and body["ok"] is True and "可读写" in body["detail"]
+
+
+def test_storage_endpoints_need_auth(server, monkeypatch):
+    monkeypatch.setattr(web, "AUTH", "u:p")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        get(server + "/api/storage")
+    assert exc.value.code == 401
+    status, body = _post_json(server + "/api/storage/test", {})
+    assert status == 401 and body["ok"] is False
+
+
+def test_saving_settings_resets_storage_cache(server, tmp_path, monkeypatch):
+    """存完设置必须清掉后端实例：否则「保存成功但下一次上传还走旧配置」。"""
+    from app import settings as settings_mod, storage, store
+    inst = settings_mod.Settings(store.Store(str(tmp_path / "jobs.db")))
+    monkeypatch.setattr(web, "_settings", inst)
+    monkeypatch.setattr(settings_mod, "bind", lambda _i: None)
+    calls = []
+    monkeypatch.setattr(storage, "reset", lambda: calls.append(1))
+    status, body = _post_json(server + "/api/settings",
+                              {"updates": {"CD2_URL": "http://127.0.0.1:19798"}})
+    assert status == 200 and body["ok"] is True
+    assert calls, "保存设置后必须让存储实例缓存失效"

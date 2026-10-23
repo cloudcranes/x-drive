@@ -189,3 +189,35 @@ def test_web_set_settings_wiring(tmp_path, monkeypatch):
     out = web.set_settings({"RETRIES": 5})
     assert out["ok"] is True
     assert web.get_setting("RETRIES") == 5
+
+
+# ─────────────────────────────────────────── 存储后端（新增分组）
+
+def test_storage_group_present(tmp_path, monkeypatch):
+    for key in ("STORAGE_BACKEND", "OPENLIST_URL", "OPENLIST_PASSWORD",
+                "CD2_URL", "CD2_PASSWORD", "CD2_LINK_MODE"):
+        assert key in settings_mod.SETTINGS_SPEC, f"{key} 没进设置表"
+        assert settings_mod.SETTINGS_SPEC[key]["group"] == "存储"
+    snap = _s(tmp_path).snapshot()
+    assert snap["STORAGE_BACKEND"]["value"] == "rclone"
+    assert snap["STORAGE_BACKEND"]["choices"] == ["rclone", "openlist", "clouddrive2"]
+    assert snap["CD2_LINK_MODE"]["choices"] == ["none", "static", "template"]
+
+
+def test_storage_secrets_are_never_echoed(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENLIST_PASSWORD", "s3cret")
+    monkeypatch.setenv("CD2_PASSWORD", "hunter2")
+    snap = _s(tmp_path).snapshot()
+    for key in ("OPENLIST_PASSWORD", "CD2_PASSWORD"):
+        assert snap[key]["value"] == "", "密码不能出现在快照里"
+        assert snap[key]["configured"] is True
+    assert "s3cret" not in str(snap) and "hunter2" not in str(snap)
+
+
+def test_storage_backend_roundtrip(tmp_path, monkeypatch):
+    inst = _s(tmp_path)
+    assert inst.set("STORAGE_BACKEND", "clouddrive2") is True
+    assert inst.get("STORAGE_BACKEND") == "clouddrive2"
+    assert inst.explicit("STORAGE_BACKEND") == (True, "clouddrive2")
+    # 非法类型不该被写进去
+    assert inst.set("CD2_CHUNK_MB", "太宽") is False

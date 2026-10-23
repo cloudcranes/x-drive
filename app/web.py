@@ -32,8 +32,8 @@ from uuid import uuid4
 import httpx
 
 from . import (backlog, cleanup, codes, core, diskspace, fetcher, meta, metadata, metatube,
-               notify, pipeline, preview, retry, settings as settings_mod, sources, store,
-               subscribe, workspace, xunlei)
+               notify, pipeline, preview, retry, settings as settings_mod, sources, storage,
+               store, subscribe, workspace, xunlei)
 
 log = logging.getLogger("x-drive.web")
 
@@ -250,12 +250,35 @@ def set_setting(key: str, value) -> bool:
 
 
 def set_settings(updates: dict) -> dict:
-    """批量写（网页一次保存多个）。返回 {ok, saved, failed}。"""
+    """批量写（网页一次保存多个）。返回 {ok, saved, failed}。
+
+    存完立刻清掉存储后端实例缓存：URL/账号/密码一改，旧连接与旧 token 都得换，
+    否则「保存成功但下一次上传还走旧配置」。
+    """
     try:
-        return _get_settings().set_many(updates)
+        result = _get_settings().set_many(updates)
     except Exception as exc:
         log.warning("批量写设置失败：%s", exc)
         return {"ok": False, "saved": [], "failed": {"*": str(exc)[:120]}}
+    if result.get("saved"):
+        storage.reset()
+    return result
+
+
+# ── 存储后端：面板上的「当前后端」与「测试连接」
+
+def storage_view() -> dict:
+    """当前后端快照（不含任何密钥）。"""
+    try:
+        return {"ok": True, **storage.snapshot()}
+    except Exception as exc:
+        log.warning("读存储状态失败：%s", exc)
+        return {"ok": False, "error": str(exc)[:200]}
+
+
+def storage_test() -> dict:
+    """连通性自检。失败也回 200 + ok:false，面板直接展示原因。"""
+    return storage.check()
 
 
 def job_event(job_id: str, kind: str, detail: str = "") -> None:
@@ -445,6 +468,9 @@ def local_disk_inventory() -> dict:
 
 
 CANCEL: dict[str, threading.Event] = {}
+# 上传进度回调按线程传递：upload_folder 的两参签名被测试大量 monkeypatch，
+# 不适合加参数；CD2/OpenList 适配器有真实进度，就靠这个把进度送到 _upload_loop。
+_UPLOAD_PROGRESS = threading.local()
 
 
 def request_cancel(job_id: str) -> bool:
@@ -474,12 +500,34 @@ def rclone(*args: str, timeout: float = 7200.0) -> tuple[int, str, str]:
     return done.returncode, done.stdout.decode(errors="replace"), done.stderr.decode(errors="replace")
 
 
-def upload_folder(work: Path, folder: str) -> tuple[str | None, int]:
-    """把目录推到 Drive/<番号>，返回 (分享链接, 字节数)。
+# 把本模块这层 rclone 注入存储层：/api/storage/test 里 rclone 后端的自检走它，
+# 于是测试里 monkeypatch `web.rclone` 的替身照样生效（别在 storage 里另起一套 subprocess）。
+storage.set_runner(lambda *args, **kwargs: rclone(*args, **kwargs))
 
-    transfers/chunk 可调：实测 300MB 单文件上 transfers=4 的中位耗时
-    28s，transfers=2 是 52s（各 3 次，网络抖动大所以看中位数）。
+
+def storage_backend():
+    """当前存储后端实例（app/storage 的注册表按配置指纹缓存）。"""
+    return storage.get()
+
+
+def upload_folder(work: Path, folder: str) -> tuple[str | None, int]:
+    """把目录推到「归档根/<番号>」，返回 (分享链接, 字节数)。
+
+    rclone 分支的 argv 与改造前逐字一致：现网就是它在跑，别顺手加 --progress
+    之类（实测 transfers/chunk 的取值也写进了默认值，见 settings 注释）。
+    OpenList / CloudDrive2 走 storage 适配器，语义见 app/storage/base.py：
+    返回即代表云端已落地。
     """
+    backend = storage_backend()
+    if backend.kind != "rclone":
+        rel = storage.rel(folder)
+        backend.ensure_dir(rel)
+        size = backend.upload_dir(work, rel,
+                                  transfers=get_setting("UPLOAD_TRANSFERS"),
+                                  chunk=get_setting("UPLOAD_CHUNK"),
+                                  progress=getattr(_UPLOAD_PROGRESS, "fn", None))
+        return backend.link(rel), size
+
     target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}"
     rclone("mkdir", target, timeout=120.0)
     rc, _, err = rclone(
@@ -573,6 +621,29 @@ def fetch_image(url: str, limit: int = 12 << 20) -> bytes:
     return metadata.fetch_image(url, limit=limit)
 
 
+def _upload_progress(job_id: str):
+    """上传进度回调：把适配器给的 0..1 写成任务的 percent，顺手响应取消。
+
+    限流到约 1 秒一次：CD2 的轮询本身就是秒级，没必要每一跳都打一次库。
+    """
+    last = [0.0]
+
+    def report(ratio: float, _note: str = "") -> None:
+        if cancel_requested(job_id):
+            raise Cancelled("已停止")
+        now = time.monotonic()
+        if ratio < 1.0 and now - last[0] < 0.8:
+            return
+        last[0] = now
+        try:
+            job_update(job_id, stage="uploading",
+                       percent=round(max(0.0, min(float(ratio), 1.0)) * 100, 1))
+        except Exception:            # 进度只是展示，写库失败不能拖垮上传
+            pass
+
+    return report
+
+
 def _upload_loop(job_id: str, work: Path, folder: str, size: int,
                  clock: dict, policy) -> str | None:
     """把工作区推到 Drive，可重试；返回分享链接。"""
@@ -584,6 +655,7 @@ def _upload_loop(job_id: str, work: Path, folder: str, size: int,
         job_update(job_id, stage="uploading", folder=folder, size=size, percent=100.0,
                    retries=policy.attempts + up_policy.attempts)
         phase = time.monotonic()
+        _UPLOAD_PROGRESS.fn = _upload_progress(job_id)
         try:
             link, _ = upload_folder(work, folder)
             clock["upload"] += time.monotonic() - phase
@@ -603,11 +675,20 @@ def _upload_loop(job_id: str, work: Path, folder: str, size: int,
             if not retry.backoff_sleep(up_policy, cancel_check=lambda: cancel_requested(job_id),
                                        error=str(exc)):
                 raise Cancelled("已停止")
+        finally:
+            _UPLOAD_PROGRESS.fn = None
 
 
 def _finish(job_id: str, work: Path, folder: str, files: list[Path], size: int,
             link: str | None, source: str, clock: dict, policy) -> None:
     """记账：元数据查不到也写归档，不能因为刮削失败丢掉已上传的记录。"""
+    # 目录名以服务端为准：CloudDrive2 会把 *?:/\<>|" 转全角、削掉尾部空白与点号。
+    # 不跟着改的话，记录里的路径在远端根本不存在 —— 之后的校核、改名、删除全对不上。
+    if storage.kind() != "rclone":
+        actual = storage.real_folder(folder)
+        if actual and actual != folder:
+            log.info("远端目录名被归一化：%s → %s", folder, actual)
+            folder = actual
     require_lease(job_id, folder)                # 写归档前
     info = None
     try:
@@ -1936,18 +2017,43 @@ def build_cleanup_plan(dry_run: bool = True) -> dict:
     return result
 
 
+def _drop_share(backend, record: dict) -> None:
+    """删归档时顺手删掉当初建的分享（OpenList）。取不到 id 就什么都不做。"""
+    hook = getattr(backend, "drop_share", None)
+    if hook is None:
+        return
+    sid = storage.openlist_link_id((record or {}).get("link") or "")
+    if sid:
+        hook(sid)
+
+
 def purge_archives(codes_to_drop: list[str]) -> list[dict]:
-    """真正删除：Drive 目录 + state 记录。任一失败就保留记录，便于重试。"""
+    """真正删除：远端目录 + state 记录。任一失败就保留记录，便于重试。"""
     done = []
+    try:
+        backend = storage_backend()
+    except Exception as exc:      # 后端没配好（缺 URL / 缺 grpcio）：一条都删不成，别抛 500
+        log.warning("存储后端不可用，删除归档全部放弃：%s", exc)
+        return done
     for code in codes_to_drop:
         if not code:
             continue
-        target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
-        rc, _, err = rclone("purge", target, timeout=1800.0)
-        if rc != 0:
-            log.warning("删除 %s 失败：%s", code, err.strip()[:200])
-            continue
         state = core.load_state(STATE)
+        record = state.get(code) or {}
+        if backend.kind != "rclone":
+            try:
+                receipt = backend.purge(storage.rel(code))
+            except storage.StorageError as exc:
+                log.warning("删除 %s 失败：%s", code, exc)
+                continue
+            log.info("删除 %s：%s", code, receipt)
+            _drop_share(backend, record)
+        else:
+            target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
+            rc, _, err = rclone("purge", target, timeout=1800.0)
+            if rc != 0:
+                log.warning("删除 %s 失败：%s", code, err.strip()[:200])
+                continue
         if code in state:
             state.pop(code, None)
             core.save_state(STATE, state)
@@ -1982,6 +2088,13 @@ def rename_archive(old: str, new: str) -> dict:
     if wanted in state:
         return {"ok": False, "error": f"{wanted} 已经存在，先处理掉同名归档"}
 
+    try:
+        backend = storage_backend()
+    except Exception as exc:
+        return {"ok": False, "error": f"存储后端不可用：{exc}"}
+    if backend.kind != "rclone":
+        return _rename_archive_backend(backend, old, wanted, state)
+
     src = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{old}"
     dst = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{wanted}"
     rc, out, err = rclone("lsf", f"{RCLONE_REMOTE}:{DRIVE_ROOT}", "--dirs-only", timeout=180.0)
@@ -2002,6 +2115,37 @@ def rename_archive(old: str, new: str) -> dict:
     core.rekey_state(STATE, old, wanted, record)
     log.info("归档改名 %s → %s", old, wanted)
     return {"ok": True, "from": old, "code": wanted, "link": record.get("link") or ""}
+
+
+def _rename_archive_backend(backend, old: str, wanted: str, state: dict) -> dict:
+    """OpenList / CloudDrive2 的改名：列一遍根目录查重，再让后端自己改名。
+
+    顺序仍是「先动远端、再动记录」：远端失败就原样留着，重试安全。
+    """
+    try:
+        existing = set(backend.list_dirs(storage.rel("")))
+    except storage.StorageError as exc:
+        return {"ok": False, "error": f"列出远端目录失败：{exc}"}
+    if wanted in existing:
+        return {"ok": False, "error": f"远端已有 {wanted}，先处理掉同名目录"}
+    try:
+        backend.rename_dir(storage.rel(old), wanted)
+    except storage.StorageError as exc:
+        return {"ok": False, "error": f"移动目录失败：{exc}"}
+
+    record = dict(state[old])
+    record["code"] = wanted
+    record["path"] = f"{backend.kind}:{storage.rel(wanted)}"
+    try:
+        link = backend.link(storage.rel(wanted))
+    except storage.StorageError:
+        link = None
+    if link:
+        record["link"] = link
+    core.rekey_state(STATE, old, wanted, record)
+    log.info("归档改名 %s → %s（%s）", old, wanted, backend.kind)
+    return {"ok": True, "from": old, "code": wanted, "link": record.get("link") or ""}
+
 
 def wanted_name(key: str, record: dict) -> str:
     """规范名：`YYYY-MM-DD 番号 标题`（有元数据时），否则只有番号。
@@ -2785,6 +2929,14 @@ class Handler(BaseHTTPRequestHandler):
             updates = payload.get("updates") or payload.get("settings") or {}
             self._json(set_settings(updates))
             return
+        if path == "/api/storage/test":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            self._drain()
+            self._json(storage_test())
+            return
         if path == "/api/backlog/retry":
             if not self._authorized():
                 self._drain()
@@ -2840,7 +2992,8 @@ class Handler(BaseHTTPRequestHandler):
             if code not in state:
                 self._json({"ok": False, "error": f"{code} 不在归档记录里"}, 404)
                 return
-            target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
+            target = (f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}" if storage.kind() == "rclone"
+                      else f"{storage.kind()}:{storage.rel(code)}")
             # 删除不可逆：没显式 confirm 只回报将删什么
             if not payload.get("confirm"):
                 self._json({"ok": True, "code": code, "target": target,
@@ -2925,6 +3078,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
             self._json({"ok": True, "items": settings_snapshot()})
+            return
+        if path == "/api/storage":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            self._drain()
+            self._json(storage_view())
             return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
@@ -3189,16 +3350,32 @@ def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> 
                                      poster=poster, want_nfo=get_setting("SCRAPE_NFO"), keep=kept)
         generated = [n for n in out["written"] if n != metadata.MANIFEST_NAME]
         target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
+        try:
+            backend = storage_backend()
+        except Exception as exc:
+            raise RuntimeError(f"存储后端不可用：{exc}") from exc
+        rel = storage.rel(code)
+
+        def push(name: str) -> tuple[bool, str]:
+            """推一个附件；返回 (是否成功, 失败原因)。"""
+            if backend.kind != "rclone":
+                try:
+                    backend.upload_file(work / name, f"{rel}/{name}")
+                    return True, ""
+                except storage.StorageError as exc:
+                    return False, str(exc)[:200]
+            rc, _, err = rclone("copyto", str(work / name), f"{target}/{name}",
+                                timeout=300.0)
+            return (True, "") if rc == 0 else (False, err.strip()[:200])
+
         pushed, failed, skipped = [], [], []
         manifest_first = metadata.MANIFEST_NAME in out["written"]
         for name in sorted(generated, key=lambda n: n == metadata.MANIFEST_NAME):
             if named and name not in wanted:
                 skipped.append(name)
                 continue
-            rc, _, err = rclone("copyto", str(work / name), f"{target}/{name}",
-                                timeout=300.0)
-            (pushed if rc == 0 else failed).append(
-                name if rc == 0 else {"name": name, "error": err.strip()[:200]})
+            ok, why = push(name)
+            (pushed if ok else failed).append(name if ok else {"name": name, "error": why})
 
         res: dict = {"synced": pushed, "sync_failed": failed}
         # 生成阶段就失败的（磁盘写不进等）以前被整个丢掉，面板只看到「已同步」
@@ -3215,13 +3392,11 @@ def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> 
                                    else ""))
         # 清单最后推：前提是本次确实写了新清单，且（全量模式或点名要它）
         if manifest_first and (not named or metadata.MANIFEST_NAME in wanted):
-            rc, _, err = rclone("copyto", str(work / metadata.MANIFEST_NAME),
-                                f"{target}/{metadata.MANIFEST_NAME}", timeout=300.0)
-            if rc == 0:
+            ok, why = push(metadata.MANIFEST_NAME)
+            if ok:
                 pushed.append(metadata.MANIFEST_NAME)
             else:
-                failed.append({"name": metadata.MANIFEST_NAME,
-                               "error": err.strip()[:200]})
+                failed.append({"name": metadata.MANIFEST_NAME, "error": why})
         elif manifest_first:
             skipped.append(metadata.MANIFEST_NAME)
 
@@ -3267,7 +3442,17 @@ def _record_after_sync(record: dict, work: Path, pushed: list, failed: list) -> 
 # ─────────────────────────────────────────── 归档完整性校验（第四批）
 
 def remote_ls(folder: str, timeout: float = 180.0) -> list[dict]:
-    """列远端目录里的文件（名字 + 大小）。rclone 的 lsjson 是标准库外的唯一依赖，已有。"""
+    """列远端目录里的文件（名字 + 大小）。校核与补刮都靠它，两条链路口径要一致。"""
+    try:
+        backend = storage_backend()
+    except Exception as exc:
+        raise RuntimeError(f"列目录失败：{exc}") from exc
+    if backend.kind != "rclone":
+        try:
+            entries = backend.list_files(storage.rel(folder))
+        except storage.StorageError as exc:
+            raise RuntimeError(f"列目录失败：{exc}") from exc
+        return [{"name": e.name, "size": e.size} for e in entries]
     rc, out, err = rclone("lsjson", f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}",
                           "--files-only", timeout=timeout)
     if rc != 0:

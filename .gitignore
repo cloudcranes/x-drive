@@ -13,3 +13,5 @@ work/
 *.db-shm
 backup-*.db
 /tmp/
+.rclone/*.conf
+.rclone/!
