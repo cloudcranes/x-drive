@@ -40,6 +40,11 @@
   ::-webkit-scrollbar-track{background:transparent}
 
   button{font:inherit; color:inherit; cursor:pointer}
+  /* 禁用态必须看得出来：以前 disabled 的按钮和可点的长得一模一样
+     （「保存全部改动」「全部应用」「取消」点了没反应，像坏了） */
+  button:disabled{opacity:.42; cursor:not-allowed; filter:saturate(.3)}
+  button:disabled:hover{filter:saturate(.3)}
+  .primary:disabled{box-shadow:none}
   :focus-visible{outline:2px solid rgba(62,186,244,.7); outline-offset:2px}
 
   /* ───────────────────────── 侧栏 */
@@ -49,11 +54,20 @@
     background:linear-gradient(180deg,rgba(12,12,12,.96),rgba(6,6,6,.98));
     border-right:1px solid var(--line); overflow:hidden;   /* 只让筛选区滚动，页脚钉底 */
   }
-  /* 品牌 + 统计 + 功能导航固定，系列/月份各自可滚动，页脚永远可见 */
-  .side > .brand, .side > .stat, .side > .navmain{flex:none}
-  .side-block{display:flex; flex-direction:column; gap:2px; min-height:0}
-  .side-block.series{max-height:42%}
-  .side-block.month{max-height:30%}
+  /* 品牌 + 统计 + 功能导航 + 页脚都固定，只有中间的「系列 / 月份」区滚动。
+     以前两块各自 max-height 硬撑，900px 高的屏上月份被压成 0 高、页脚被顶出可视区
+     （移动端更是连「刷新」都摸不到）；改成中间一个滚动容器，内容再多也滚得出来。 */
+  .side > .brand, .side > .stat, .side > .navmain, .side > .side-foot{flex:none}
+  .side-mid{flex:1 1 auto; min-height:0; display:flex; flex-direction:column; gap:14px;
+    overflow-y:auto; overflow-x:hidden; margin-right:-6px; padding-right:6px;
+    scrollbar-width:thin}
+  /* 还没滚到底时底部渐隐：否则系列列表被切断得像已经到底，
+     用户根本不知道下面还有「月份」（矮屏尤其明显） */
+  .side-mid.has-more{-webkit-mask-image:linear-gradient(#000 calc(100% - 20px), transparent);
+    mask-image:linear-gradient(#000 calc(100% - 20px), transparent)}
+  .side-block{display:flex; flex-direction:column; gap:2px; min-height:0; flex:none}
+  /* 中间区已经是滚动容器，里面的列表不再二次滚动，避免出现嵌套滚动条 */
+  .side-mid .side-block .nav{overflow:visible; min-height:0; margin-right:0; padding-right:0}
   /* 功能导航：操作入口，图标 + 完整词组，不随筛选滚动 */
   .side-block.navmain{margin-top:2px}
   .navmain .nav{gap:1px}
@@ -109,9 +123,13 @@
   .dot.off{background:var(--red);box-shadow:0 0 10px var(--red)}
   #health{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .side-actions{display:flex; gap:8px}
-  .ghost{flex:1; display:inline-flex; align-items:center; justify-content:center; gap:6px;
-    padding:7px 10px; border-radius:8px; border:1px solid var(--line); background:rgba(255,255,255,.02);
-    color:var(--muted); font-size:12px; cursor:pointer; transition:color .14s, border-color .14s, background .14s}
+  .side-actions .ghost{flex:1}      /* 只有侧栏底部这两个按钮平分宽度 */
+  /* 其余地方的 ghost 按内容取宽：以前 flex:1 让「关闭」「刷新待办」「同步附件」
+     被拉成几百像素的巨宽按钮，视觉重量比主按钮还大。 */
+  .ghost{display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    padding:7px 12px; border-radius:8px; border:1px solid var(--line); background:rgba(255,255,255,.02);
+    color:var(--muted); font-size:12px; white-space:nowrap;
+    cursor:pointer; transition:color .14s, border-color .14s, background .14s}
   .ghost:hover{color:var(--text); border-color:rgba(255,255,255,.2); background:rgba(255,255,255,.05)}
   .ghost svg{width:13px;height:13px}
   .ghost.on{color:var(--cyan); border-color:rgba(62,186,244,.4); background:var(--cyan-dim)}
@@ -170,7 +188,8 @@
 
   /* 结果条 */
   .resultbar{display:flex; align-items:baseline; gap:10px; padding:16px var(--pad) 0; min-height:34px}
-  .resultbar h2{margin:0; font-size:14.5px; font-weight:700; letter-spacing:-.01em}
+  .resultbar h2{margin:0; font-size:14.5px; font-weight:700; letter-spacing:-.01em;
+    min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .resultbar .sub{font-family:var(--mono); font-size:11.5px; color:var(--dim)}
   .resultbar .sub b{color:var(--text-2); font-weight:700}
   .resultbar .right{margin-left:auto; display:flex; align-items:center; gap:7px}
@@ -191,10 +210,20 @@
   .card.hl{border-color:rgba(62,186,244,.6); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
 
   /* 封面：等比填充，固定比例避免不同图尺寸把网格撑乱 */
-  .card-cover{aspect-ratio:16/9; overflow:hidden; background:#0b0b0b; border-bottom:1px solid var(--line-soft)}
-  .card-cover img{width:100%; height:100%; object-fit:cover; display:block; opacity:.92;
-    transition:opacity .18s, transform .3s}
-  .card:hover .card-cover img{opacity:1; transform:scale(1.03)}
+  /* 底纹常驻：图还没回来（图床慢 / 代理还在超时重试）时，也别让人对着
+     一块死黑猜「是不是页面挂了」。图片加载出来后整块盖住底纹。 */
+  .card-cover{aspect-ratio:16/9; overflow:hidden; border-bottom:1px solid var(--line-soft);
+    background:
+      radial-gradient(120% 120% at 50% 0%, rgba(62,186,244,.06), transparent 62%),
+      repeating-linear-gradient(135deg, rgba(255,255,255,.018) 0 6px, transparent 6px 14px),
+      #0a0a0a}
+  .card-cover img{width:100%; height:100%; object-fit:cover; display:block;
+    transition:transform .3s}
+  .card:hover .card-cover img{transform:scale(1.03)}
+  /* 明确失败（403/502/断网）才额外标一句「无封面」，和「还在加载」区分开 */
+  .card-cover.nocover{display:grid; place-items:center}
+  .card-cover.nocover .noimg{font-family:var(--mono); font-size:10px; letter-spacing:.14em;
+    color:var(--faint)}
   .card-title{padding:9px 13px 0; font-size:12.5px; line-height:1.45; color:var(--text);
     display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
   .card-actors{padding:8px 13px 0; display:flex; flex-wrap:wrap; gap:5px}
@@ -204,7 +233,9 @@
   .tag.rate{color:#ffd479; border-color:rgba(255,212,121,.3); background:rgba(255,212,121,.07)}
 
   .card-head{display:flex; align-items:flex-start; gap:9px; padding:13px 13px 0}
-  .series{font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.1em;
+  /* 卡片上的系列名。类名不能再叫 .series：侧栏筛选块用的是 .side-block.series，
+     同名规则会把那块挤到 38% 宽（系列名全被截断，维度切换也被压扁）。 */
+  .card-series{font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.1em;
     text-transform:uppercase; color:var(--faint); padding-top:3px; flex:none; max-width:38%;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .code{margin-left:auto; font-family:var(--mono); font-size:16.5px; font-weight:800;
@@ -216,15 +247,18 @@
   .tag.vid{color:var(--cyan); border-color:rgba(62,186,244,.32); background:rgba(62,186,244,.07)}
   .tag.img{color:var(--violet); border-color:rgba(201,163,255,.3); background:rgba(201,163,255,.06)}
   .tag.warn{color:#ffc98a; border-color:rgba(255,201,138,.3); background:rgba(255,201,138,.06)}
-  .card-foot{display:flex; align-items:center; gap:8px; margin-top:auto;
+  /* 窄卡片（手机上两列约 180px）里，时间 + 改名 + 删除 + 链接挤一行会把
+     「改名 / 删除」压成竖排两行，所以允许折行、每项都不许断行。 */
+  .card-foot{display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin-top:auto;
     padding:10px 13px 11px; border-top:1px solid var(--line-soft); font-family:var(--mono); font-size:10.5px;
     color:var(--dim)}
-  .card-foot .time{font-variant-numeric:tabular-nums}
+  .card-foot .time{font-variant-numeric:tabular-nums; white-space:nowrap}
   .card-foot a{margin-left:auto; color:var(--cyan); text-decoration:none; font-weight:600;
     padding:1px 0; white-space:nowrap}
   .card-foot a:hover{text-decoration:underline}
-  .card-foot .nolink{margin-left:auto; color:var(--faint)}
+  .card-foot .nolink{margin-left:auto; color:var(--faint); white-space:nowrap}
   .card-del{font:inherit; font-family:var(--mono); font-size:10px; padding:2px 8px; cursor:pointer;
+    white-space:nowrap;
     border-radius:5px; border:1px solid transparent; background:transparent; color:var(--faint);
     transition:color .15s, border-color .15s, background .15s}
   .card-del:hover{color:#ff8a8a; border-color:rgba(255,138,138,.4); background:rgba(255,138,138,.09)}
@@ -258,8 +292,14 @@
   .sub-row{display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:8px;
     border:1px solid var(--line-soft); background:rgba(255,255,255,.02); font-size:12px}
   .sub-row.off{opacity:.5}
-  .sub-row .nm{font-weight:600; color:var(--text-2)}
-  .sub-row .meta{font-family:var(--mono); font-size:10.5px; color:var(--dim)}
+  /* 列表里的整句提示（「还没有订阅…」「没有待办…」）以前借 .meta 类，
+     那是给 .sub-row 内部小字用的，行外渲染出来是一行没样式的裸文本 */
+  .subs-list > .meta, #backlog-list > .meta{font-size:12px; color:var(--dim); line-height:1.7}
+  .sub-row .nm{font-weight:600; color:var(--text-2); min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap}
+  /* 元信息（游标 / 上限 / 上次结果）可能很长，必须能截断，否则把右边的操作按钮顶出卡片 */
+  .sub-row .meta{font-family:var(--mono); font-size:10.5px; color:var(--dim); min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .sub-row .r{margin-left:auto; display:flex; gap:5px}
   .sub-row button{font:inherit; font-size:10.5px; padding:3px 8px; border-radius:5px; cursor:pointer;
     border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
@@ -271,6 +311,15 @@
     outline:none; transition:border-color .16s, box-shadow .16s}
   .panel #dl-text::placeholder{color:var(--faint)}
   .panel #dl-text:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+  /* 其余文本输入（订阅的演员 ID、元数据番号、设置项）以前没写样式，
+     在深色面板里落回浏览器默认白框，非常刺眼。统一到同一套深色底。 */
+  .panel input[type="text"], .panel input:not([type]){
+    width:100%; padding:9px 12px; border-radius:8px; font:inherit; font-size:12.5px;
+    font-family:var(--mono); border:1px solid var(--line); background:rgba(0,0,0,.6);
+    color:var(--text); outline:none; transition:border-color .16s, box-shadow .16s}
+  .panel input[type="text"]::placeholder, .panel input:not([type])::placeholder{color:var(--faint)}
+  .panel input[type="text"]:focus, .panel input:not([type]):focus{
+    border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
   .panel-actions{display:flex; align-items:center; gap:9px; margin-top:10px; flex-wrap:wrap}
   .chk{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);
     cursor:pointer; user-select:none}
@@ -305,6 +354,10 @@
     border:1px solid var(--line); background:none; color:var(--dim); transition:color .14s, border-color .14s}
   .iconbtn:hover{color:var(--text); border-color:rgba(255,255,255,.2)}
   .iconbtn svg{width:12px; height:12px}
+  /* 带文字的 iconbtn（弹层的「关闭」）：26px 见方会把两个字挤成竖排，
+     所以文字版必须放开宽度。 */
+  .iconbtn.txt{width:auto; min-width:54px; height:26px; padding:0 10px; white-space:nowrap;
+    font-size:11.5px; letter-spacing:.02em}
   .dlayer{position:fixed; inset:0; background:rgba(0,0,0,.72); display:flex; align-items:center;
     justify-content:center; z-index:200; padding:20px; animation:fadein .12s ease-out}
   @keyframes fadein{from{opacity:0} to{opacity:1}}
@@ -313,7 +366,9 @@
   .dhead{display:flex; align-items:center; gap:10px; margin-bottom:12px}
   .dcode{font-family:var(--mono); font-size:14px; font-weight:700; color:var(--text); margin-right:auto}
   .dtop{display:flex; gap:14px; align-items:flex-start}
-  .dcover{width:220px; border-radius:8px; flex:none}
+  /* 图还没回来时也占住 16:9 的位置：否则 0 高，图一加载整块内容往下跳 */
+  .dcover{width:220px; border-radius:8px; flex:none; aspect-ratio:16/9; object-fit:cover;
+    background:linear-gradient(160deg,rgba(62,186,244,.06),transparent 62%),#0a0a0a}
   .dmeta{display:flex; flex-direction:column; gap:5px; min-width:0}
   .dtitle{font-size:13px; line-height:1.5; color:var(--text); margin-bottom:4px}
   .drow{display:flex; gap:8px; font-size:11.5px; line-height:1.5}
@@ -340,6 +395,13 @@
   .queue-foot .ghostbtn{width:100%; justify-content:center}
   .queue-list{flex:1; overflow-y:auto; padding:10px 12px 20px; display:flex; flex-direction:column; gap:7px}
   .queue-empty{margin:28px 8px; text-align:center; font-size:12.5px; color:var(--dim); line-height:1.8}
+  /* 「迅雷面板」那一段的标题。以前借用 .queue-empty（居中 + 28px 留白），
+     在列表里像一条居中错误提示，还把上下任务撑出大段空白。 */
+  .queue-sec{display:flex; align-items:center; gap:8px; margin:14px 2px 3px;
+    font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--faint)}
+  .queue-sec::after{content:""; flex:1; height:1px; background:var(--line-soft)}
+  .queue-sec.err{color:#ff9b9b}
   .job{padding:9px 10px; border:1px solid var(--line); border-radius:9px; background:rgba(17,17,17,.85);
     display:flex; flex-direction:column; gap:6px}
   .job .jtop{display:flex; align-items:center; gap:7px; min-width:0}
@@ -380,6 +442,9 @@
   .kv{display:flex; flex-wrap:wrap; gap:6px 14px; font-family:var(--mono); font-size:11.5px;
     color:var(--muted); align-items:center}
   .kv .k{color:var(--faint); margin-right:4px}
+  /* 体检区里的错误原文是 div.notice 塞在 .kv 的 flex 里，会被挤成一小条；
+     给整行独占，才读得完 */
+  .kv .notice{flex:1 1 100%; margin-top:2px}
   .kv .v{color:var(--text-2)}
   .badge{display:inline-flex; align-items:center; gap:5px; font-family:var(--mono); font-size:10.5px;
     padding:2px 8px; border-radius:999px; border:1px solid var(--line-soft);
@@ -422,8 +487,17 @@
   .kvrow .r button{font:inherit; font-size:10.5px; padding:3px 8px; border-radius:5px; cursor:pointer;
     border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
   .kvrow .r button:hover{color:var(--cyan); border-color:rgba(62,186,244,.45)}
+  /* 设置项：标签 / 输入框 / 来源一行，说明文字独占一行。
+     以前说明挤在同一行被 ellipsis 吃掉，界面「来源」整块看不见。 */
+  .kvrow.setting{flex-wrap:wrap; row-gap:5px}
+  .kvrow.setting .nm{flex:none; min-width:150px}     /* 标签定宽，输入框才会齐列 */
+  .kvrow.setting .sval{flex:none; width:126px; max-width:45%}
+  .kvrow.setting .sval[type="checkbox"]{width:15px; height:15px; accent-color:var(--cyan); cursor:pointer}
+  .kvrow.setting .why{flex:1 1 100%; white-space:normal; overflow:visible; line-height:1.55}
+  .kvrow.setting .hint{flex:none}
   /* 状态汇总格：点一下就是筛选 */
-  .vsum{display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:1px;
+  /* auto-fit（不是 auto-fill）：6 个状态填不满一行时，别在右边留一块 1px 线的灰块 */
+  .vsum{display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:1px;
     background:var(--line-soft); border:1px solid var(--line); border-radius:10px; overflow:hidden}
   .vsum button{border:0; background:rgba(10,10,10,.9); padding:9px 11px; text-align:left;
     display:flex; flex-direction:column; gap:1px; transition:background .14s}
@@ -462,6 +536,13 @@
   .jacts .jtl.on{color:var(--cyan); border-color:rgba(62,186,244,.45)}
 
   /* ───────────────────────── 响应式 */
+  /* 矮屏（1440×800 / 1280×720 这类笔记本）压一压固定区，给中间的系列 / 月份留可视高度 */
+  @media(max-height:860px){
+    .side{gap:12px; padding:14px 14px 12px}
+    .stat div{padding:8px 11px}
+    .stat b{font-size:15.5px}
+    .nav .it{padding:5px 9px}
+  }
   @media(max-width:1180px){
     :root{--side:236px; --bar-w:286px}
     .grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
@@ -471,6 +552,10 @@
     .side{position:fixed; transform:translateX(-101%); transition:transform .26s cubic-bezier(.22,1,.36,1);
       box-shadow:24px 0 60px -40px rgba(0,0,0,.95); width:276px; z-index:30}
     .side.open{transform:none}
+    /* 抽屉本身就是临时层：整块一起滚最符合直觉（否则中间的系列/月份
+       里还套一层滚动条，月份永远藏在里面） */
+    .side{overflow-y:auto; overflow-x:hidden}
+    .side-mid{overflow:visible; flex:none; margin-right:0; padding-right:0}
     .shell{margin-left:0}
     #sidebtn{display:grid}
     /* 窄屏队列改成覆盖式，避免把卡片压成一条 */
@@ -490,16 +575,25 @@
     .tb-search{order:-1; flex-basis:100%}
     .tb-search input{padding-top:9px; padding-bottom:9px}
     .tb-seg button{padding:5px 9px; font-size:12px}
-    .primary{padding:7px 11px; font-size:12.5px; margin-left:auto}
+    .primary{padding:7px 11px; font-size:12.5px}
     .primary .lbl{display:none}
     .queuebtn .n{display:none}
     .resultbar{padding-top:12px}
     .card-head{padding:11px 11px 0}
     .card-body{padding:5px 11px 0}
-    .card-foot{padding:9px 11px 10px}
+    /* 窄卡片底栏排两行：时间一行，操作 + 链接一行，别让「改名 / 删除」折成竖排 */
+    .card-foot{padding:9px 11px 10px; row-gap:3px}
+    .card-foot .time{flex:1 1 100%; order:0; color:var(--faint)}
+    .card-del{order:1}
+    .card-foot a, .card-foot .nolink{order:2}
     .code{font-size:15px}
     .panel{margin:12px var(--pad) 0}
     .shots img{width:72px; height:41px}
+    /* 详情/磁力预览弹层：封面 220px 固定宽会把右边字段挤成一条，窄屏改成上下排 */
+    .dtop{flex-direction:column}
+    .dcover{width:100%; max-height:190px; object-fit:cover}
+    .dpanel{padding:13px}
+    .dhead{margin-bottom:10px}
   }
   @media(prefers-reduced-motion:reduce){
     *{transition:none !important; animation:none !important}
@@ -571,20 +665,23 @@
     </nav>
   </div>
 
-  <div class="side-block series">
-    <div class="side-h"><span id="dim-label">系列</span>
-      <button id="clear-series" type="button" hidden>清除</button></div>
-    <div class="dimtabs" id="dimtabs">
-      <button type="button" data-dim="series" class="on">系列</button>
-      <button type="button" data-dim="actor">演员</button>
-      <button type="button" data-dim="maker">片商</button>
+  <!-- 系列 / 月份放同一个滚动容器：矮屏和移动端也能滚到底，页脚永远钉住可见 -->
+  <div class="side-mid" id="side-mid">
+    <div class="side-block series">
+      <div class="side-h"><span id="dim-label">系列</span>
+        <button id="clear-series" type="button" hidden>清除</button></div>
+      <div class="dimtabs" id="dimtabs">
+        <button type="button" data-dim="series" class="on">系列</button>
+        <button type="button" data-dim="actor">演员</button>
+        <button type="button" data-dim="maker">片商</button>
+      </div>
+      <nav class="nav" id="nav-series"></nav>
     </div>
-    <nav class="nav" id="nav-series"></nav>
-  </div>
 
-  <div class="side-block month">
-    <div class="side-h">月份 <button id="clear-month" type="button" hidden>清除</button></div>
-    <nav class="nav" id="nav-month"></nav>
+    <div class="side-block month">
+      <div class="side-h">月份 <button id="clear-month" type="button" hidden>清除</button></div>
+      <nav class="nav" id="nav-month"></nav>
+    </div>
   </div>
 
   <div class="side-foot">
@@ -768,7 +865,7 @@
     </div>
 
     <div class="panel-body">
-      <div class="notice">这里改的是**运行时参数**，保存后立即生效（无需改 .env、无需重启）。
+      <div class="notice">这里改的是运行时参数，保存后立即生效（无需改 .env、无需重启）。
         token / 端口 / 挂载路径等启动参数仍走 .env，改了要重启容器才生效。</div>
       <div class="panel-actions">
         <button class="primary" id="settings-save" type="button">保存全部改动</button>
@@ -962,7 +1059,19 @@ function renderSidebar() {
   for (const b of $("dimtabs").children) b.classList.toggle("on", b.dataset.dim === view.dim);
   $("clear-series").hidden = !view.series;
   $("clear-month").hidden = !view.month;
+  syncSideMore();
 }
+
+// 侧栏中间区还能不能往下滚：只影响底部渐隐提示，不影响任何数据
+function syncSideMore() {
+  const mid = $("side-mid");
+  if (!mid) return;
+  const more = mid.scrollHeight - mid.clientHeight - mid.scrollTop > 2;
+  mid.classList.toggle("has-more", more);
+}
+
+$("side-mid").addEventListener("scroll", syncSideMore, {passive: true});
+if (window.addEventListener) window.addEventListener("resize", syncSideMore);
 
 // ── 已生效筛选（工具条第二行）
 function renderActiveFilters() {
@@ -976,7 +1085,7 @@ function renderActiveFilters() {
 
   if (!chips.length) {
     box.append(el("span", "lb", "筛选"));
-    box.append(el("span", "lb", "在左侧选择系列或月份"));
+    box.append(el("span", "lb", "按系列 / 演员 / 片商 · 月份筛选"));
     return;
   }
   box.append(el("span", "lb", "已筛选"));
@@ -1003,20 +1112,32 @@ function card(t) {
   const m = t.meta || {};
   const node = el("article", "card");
   const head = el("div", "card-head");
-  head.append(el("span", "series", t.series || "—"));
+  head.append(el("span", "card-series", t.series || "—"));
   head.append(el("span", "code", t.code));
   node.append(head);
 
-  // 封面：走同源代理，避免浏览器直连图床被拦
+  // 封面：走同源代理，避免浏览器直连图床被拦。
+  // 没封面 / 图床 403·502 都渲染同一块占位：卡片版面保持一致，
+  // 也不会出现破图标或一块死黑让人以为页面坏了。
+  const cover = el("div", "card-cover");
   if (m.cover) {
-    const wrap = el("div", "card-cover");
     const img = el("img");
     img.loading = "lazy";
+    img.decoding = "async";
+    img.referrerPolicy = "no-referrer";
+    img.addEventListener("error", () => {
+      cover.classList.add("nocover");
+      img.remove();
+      if (!cover.firstChild) cover.append(el("span", "noimg", "无封面"));
+    });
     img.src = BASE + "/proxy?u=" + encodeURIComponent(m.cover);
     img.alt = "";
-    wrap.append(img);
-    node.append(wrap);
+    cover.append(img);
+  } else {
+    cover.classList.add("nocover");
+    cover.append(el("span", "noimg", "无封面"));
   }
+  node.append(cover);
 
   // 标题是元数据里最有用的信息，放不下就截断
   if (m.title) {
@@ -1081,6 +1202,17 @@ function card(t) {
     if (e.target.closest("a")) return;
     if (t.link) window.open(t.link, "_blank", "noopener");
   });
+  // 卡片是列表主体，只能鼠标点等于把键盘用户挡在外面
+  if (t.link) {
+    node.tabIndex = 0;
+    node.setAttribute("role", "link");
+    node.setAttribute("aria-label", `${t.code} · 打开 Drive`);
+    node.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      window.open(t.link, "_blank", "noopener");
+    });
+  }
   return node;
 }
 
@@ -1275,7 +1407,11 @@ function applyFilter() {
   const total = allTasks.size;
   const size = tasks.reduce((s, t) => s + (t.size || 0), 0);
   const bytes = b => b >= 1073741824 ? (b / 1073741824).toFixed(2) + "GB" : (b / 1048576).toFixed(0) + "MB";
-  $("result-title").textContent = KIND_LABEL[view.kind] || "全部归档";
+  // 标题要说清「现在看的是哪一坨」：只写「全部归档」时，
+  // 明明已按系列筛过，用户还得回头看侧栏才知道自己在哪
+  const scope = view.series ? `${DIM_LABEL[view.dim]}：${view.series}`
+    : (view.month ? fmtMonth(view.month) : "");
+  $("result-title").textContent = (KIND_LABEL[view.kind] || "全部归档") + (scope ? " · " + scope : "");
   $("result-sub").textContent = tasks.length
     ? `${tasks.length} / ${total} 个番号 · ${bytes(size)}`
     : `${total} 个番号`;
@@ -1286,7 +1422,7 @@ function applyFilter() {
     const box = el("div", "empty");
     if (!total) {
       box.append(el("b", null, "还没有归档记录"));
-      box.append(el("span", null, "点左侧「新建下载」粘贴磁力，或在 Telegram 里直接发给机器人。"));
+      box.append(el("span", null, "点「新建下载」粘贴磁力，或在 Telegram 里直接发给机器人。"));
     } else {
       box.append(el("b", null, "没有匹配的番号"));
       box.append(el("span", null, "试试更短的关键词，或清空筛选条件。"));
@@ -1321,6 +1457,9 @@ $("clear-month").addEventListener("click", () => { view.month = ""; renderSideba
 let qTimer = null;
 $("q").addEventListener("input", e => {
   view.q = e.target.value;
+  // 在设置/元数据/订阅界面里搜索：先回到归档列表再筛，
+  // 否则输入半天看不到任何变化，像搜索框坏了。
+  if ($("q").value && $("feed").hidden) showView("archive");
   clearTimeout(qTimer);
   qTimer = setTimeout(applyFilter, 160);
 });
@@ -1344,19 +1483,24 @@ function closeSide() { $("side").classList.remove("open"); syncScrim(); }
 function openQueue() {
   $("queue").classList.add("open");
   $("queuebtn").classList.add("on");
+  syncScrim();
   try { localStorage.setItem("xd_queue", "1"); } catch (e) {}
 }
 function closeQueue() {
   $("queue").classList.remove("open");
   $("queuebtn").classList.remove("on");
+  syncScrim();
   try { localStorage.setItem("xd_queue", "0"); } catch (e) {}
 }
-// 窄屏侧栏打开时压暗内容，点空白处收起
+// 窄屏时侧栏和队列都是覆盖层：压暗底下的内容，点空白处收起。
+// 队列在窄屏是全屏抽屉，不压暗 + 不能点外面的话，用户会以为页面卡住了。
 function syncScrim() {
-  $("scrim").hidden = !($("side").classList.contains("open") && window.innerWidth <= 960);
+  const narrow = window.innerWidth <= 960;
+  const drawer = $("queue").classList.contains("open") || $("side").classList.contains("open");
+  $("scrim").hidden = !(narrow && drawer);
 }
 $("sidebtn").addEventListener("click", () => $("side").classList.contains("open") ? closeSide() : openSide());
-$("scrim").addEventListener("click", closeSide);
+$("scrim").addEventListener("click", () => { closeSide(); closeQueue(); });
 $("queuebtn").addEventListener("click", () => $("queue").classList.contains("open") ? closeQueue() : openQueue());
 $("queue-close").addEventListener("click", closeQueue);
 
@@ -1730,6 +1874,11 @@ function showView(name) {
     if (!el) continue;
     if (on) el.classList.add("on"); else el.classList.remove("on");
   }
+  // 筛选条只对归档列表有意义。以前切到设置/元数据时它还挂着，
+  // 「在左侧选择系列或月份」在最上方空转，点它什么都不会发生。
+  if ($("activefilters")) $("activefilters").hidden = !isArchive;
+  // 窄屏：侧栏是抽屉，选了条目还把抽屉留在原地 = 挡住刚切过去的界面
+  if (!isArchive && window.innerWidth <= 960 && $("side").classList.contains("open")) closeSide();
 }
 function showArchive() { showView("archive"); }
 
@@ -1769,6 +1918,7 @@ function showProbePreview(info) {
     const img = new Image();
     img.loading = "lazy";
     img.referrerPolicy = "no-referrer";
+    img.addEventListener("error", () => img.remove());
     img.src = BASE + "/proxy?u=" + encodeURIComponent(src);
     shots.append(img);
   }
@@ -1919,24 +2069,34 @@ function showDetail(code, info) {
   if (old) old.remove();
   const layer = el("div", "dlayer");
   layer.id = "detail-layer";
-  layer.addEventListener("click", e => { if (e.target === layer) layer.remove(); });
-  const onKey = e => { if (e.key === "Escape") { layer.remove(); document.removeEventListener("keydown", onKey); } };
+  // 三个出口（点遮罩 / Esc / 关闭）都走同一个 close：背景滚动锁必须成对解开，
+  // 否则关掉弹层后整页再也滚不动。
+  const closeLayer = () => {
+    document.removeEventListener("keydown", onKey);
+    layer.remove();
+    document.body.style.overflow = "";
+  };
+  const onKey = e => { if (e.key === "Escape") closeLayer(); };
+  layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
   document.addEventListener("keydown", onKey);
+  document.body.style.overflow = "hidden";
 
   const panel = el("div", "dpanel");
   const head = el("div", "dhead");
   head.append(el("span", "dcode", code));
-  const close = el("button", "iconbtn", "关闭");
+  const close = el("button", "iconbtn txt", "关闭");
   close.type = "button";
-  close.addEventListener("click", () => layer.remove());
+  close.addEventListener("click", closeLayer);
   head.append(close);
   panel.append(head);
 
   const top = el("div", "dtop");
   if (info.cover) {
     const img = el("img", "dcover");
-    img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
     img.alt = code;
+    // 取不到封面就整块不显示：破图标 + alt 文字比没有图更难看
+    img.addEventListener("error", () => img.remove());
+    img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
     top.append(img);
   }
   const metaBox = el("div", "dmeta");
@@ -1968,9 +2128,11 @@ function showDetail(code, info) {
       a.target = "_blank";
       a.rel = "noopener";
       const img = el("img");
-      img.src = a.href;
       img.loading = "lazy";
       img.alt = "预览";
+      // 单张预览图挂了就抽掉这一格，别在网格里留一张破图
+      img.addEventListener("error", () => a.remove());
+      img.src = a.href;
       a.append(img);
       wall.append(a);
     }
@@ -2008,13 +2170,21 @@ async function showMagnetPreview(item, btn) {
   const info = (data && data.info) || {};
   const layer = el("div", "dlayer");
   layer.id = "preview-layer";
-  layer.addEventListener("click", e => { if (e.target === layer) layer.remove(); });
+  const closeLayer = () => {
+    document.removeEventListener("keydown", onKey);
+    layer.remove();
+    document.body.style.overflow = "";
+  };
+  const onKey = e => { if (e.key === "Escape") closeLayer(); };
+  layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
+  document.addEventListener("keydown", onKey);
+  document.body.style.overflow = "hidden";
   const panel = el("div", "dpanel");
   const head = el("div", "dhead");
   head.append(el("span", "dcode", "磁力预览"));
-  const close = el("button", "iconbtn", "关闭");
+  const close = el("button", "iconbtn txt", "关闭");
   close.type = "button";
-  close.addEventListener("click", () => layer.remove());
+  close.addEventListener("click", closeLayer);
   head.append(close);
   panel.append(head);
 
@@ -2043,7 +2213,11 @@ async function showMagnetPreview(item, btn) {
         const a = el("a", "dthumb");
         a.href = BASE + "/proxy?u=" + encodeURIComponent(src);
         a.target = "_blank"; a.rel = "noopener";
-        const img = el("img"); img.src = a.href; img.loading = "lazy"; img.alt = "截图";
+        const img = el("img");
+        img.loading = "lazy";
+        img.alt = "截图";
+        img.addEventListener("error", () => a.remove());
+        img.src = a.href;
         a.append(img); wall.append(a);
       }
       panel.append(wall);
@@ -2081,7 +2255,8 @@ async function appendPanelTasks(box) {
   } catch (e) { return; }
   const tasks = (data && data.tasks) || [];
   if (!tasks.length) return;
-  const head = el("div", "queue-empty", data.error ? `迅雷面板不可用：${data.error}` : "迅雷面板");
+  const head = el("div", "queue-sec" + (data.error ? " err" : ""),
+                  data.error ? `迅雷面板不可用：${data.error}` : "迅雷面板");
   box.append(head);
   for (const t of tasks.slice(0, 20)) {
     const node = el("div", "job" + (t.phase === "PHASE_TYPE_ERROR" ? " failed" : ""));
@@ -2134,6 +2309,9 @@ async function loadJobs() {
     $("queuebtn").classList.toggle("busy", active > 0);
 
     const box = $("jobs");
+    // 队列每 3 秒整块重绘。不记住滚动位置的话，用户刚往下翻一屏就被拉回顶部，
+    // 多任务时根本没法看完一条失败原因。
+    const keepTop = box.scrollTop;
     box.textContent = "";
     if (!lastJobs.length) {
       const empty = el("div", "queue-empty");
@@ -2141,10 +2319,12 @@ async function loadJobs() {
       empty.append(el("div", null, "新建下载后进度会显示在这里"));
       box.append(empty);
       await appendPanelTasks(box);
+      box.scrollTop = keepTop;
       return;
     }
     for (const j of lastJobs) box.append(jobNode(j));
     await appendPanelTasks(box);
+    box.scrollTop = keepTop;
 
     // 有任务从进行中变成完成，顺手刷新一次列表
     if (active === 0 && lastJobs.some(j => j.stage === "done") && !loadJobs._done) {
@@ -2188,9 +2368,10 @@ $("dl-find").addEventListener("click", async () => {
       card.addEventListener("click", () => showDetail(data.code, info));
       if (info.cover) {
         const img = el("img", "findcover");
-        img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
         img.alt = data.code;
         img.loading = "lazy";
+        img.addEventListener("error", () => img.remove());
+        img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
         card.append(img);
       }
       const body = el("div", "findbody");
@@ -2932,7 +3113,9 @@ function renderVerifySummary() {
     const b = el("button");
     b.type = "button";
     b.className = verifyState.filter === k ? "on" : "";
-    const num = el("b", VERIFY_TONE[k], String(counts[k] || 0));
+    // 0 个不要染成红/橙：那是「异常」色，会把「一切正常」读成「有 5 个问题」
+    const n = counts[k] || 0;
+    const num = el("b", n ? VERIFY_TONE[k] : "", String(n));
     b.append(num);
     b.append(el("span", null, k));
     b.title = `只看「${k}」的番号`;
@@ -3184,13 +3367,14 @@ $("queue-clear").addEventListener("click", async () => {
   loadJobs();
 });
 
-// 记住队列展开状态；窄屏默认收起，桌面默认展开（队列是内容区右侧栏）
+// 记住队列展开状态；窄屏默认收起，桌面默认展开（队列是内容区右侧栏）。
+// 窄屏上是全屏抽屉，不管上次记的是什么都不自动弹：一进页面就被进度条糊住脸太难受。
 (function initQueue() {
   let saved = null;
   try { saved = localStorage.getItem("xd_queue"); } catch (e) {}
   const wide = window.innerWidth > 1180;
-  const open = saved === null ? wide : saved === "1";
-  if (open && (!wide || window.innerWidth > 960)) openQueue();
+  if (!wide) return;
+  if (saved === null || saved === "1") openQueue();
 })();
 
 showView("archive");   // 初始首页 = 归档列表
@@ -3249,7 +3433,7 @@ async function loadSettings() {
 }
 
 function settingsRow(key, it) {
-  const row = el("div", "kvrow");
+  const row = el("div", "kvrow setting");
   const nm = el("span", "nm");
   nm.textContent = it.label || key;
   nm.title = (it.note || "") + "\n键：" + key;

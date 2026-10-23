@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -2960,19 +2961,30 @@ class Handler(BaseHTTPRequestHandler):
                    else "https://www.javbus.com/" if "javbus" in host
                    else "https://javdb.com/")
         req_headers = {"User-Agent": "Mozilla/5.0", "Referer": referer}
-        for attempt in range(3):          # 上游偶发 500，重试两次基本就稳
+        # 重试只对外面的「偶发 500」有意义。原来 3 次 × 20s 超时，碰上图床拒绝
+        # 或图已删（4xx 不会自愈），页面上就是一块黑着等一分钟。
+        # 现在：4xx 立刻放弃，传输类错误最多再试一次，单张图最坏 ~17s。
+        last = None
+        for attempt in range(2):
             try:
                 req = urllib.request.Request(url, headers=req_headers)
-                with urllib.request.urlopen(req, timeout=20) as resp:
+                with urllib.request.urlopen(req, timeout=8) as resp:
                     data = resp.read(4 * 1024 * 1024)
                     ctype = resp.headers.get("Content-Type") or "image/jpeg"
                 self._send(200, data, ctype, {"Cache-Control": "public, max-age=86400"})
                 return
+            except urllib.error.HTTPError as exc:
+                last = exc
+                if exc.code < 500:          # 403 / 404 再试也是同一个结果
+                    break
             except Exception as exc:
-                if attempt == 2:
-                    self._send(502, f"proxy failed: {exc}".encode(), "text/plain; charset=utf-8")
-                else:
-                    time.sleep(0.4 * (attempt + 1))
+                # 超时 / 连接失败：重试等于再等一整个 timeout，一张封面不值得。
+                # 只有上游明确吐 5xx 才值得再试一次（下面 HTTPError 分支）。
+                last = exc
+                break
+            if attempt == 0:
+                time.sleep(0.4)
+        self._send(502, f"proxy failed: {last}".encode(), "text/plain; charset=utf-8")
 
     def _json(self, payload: dict, code: int = 200, extra: dict | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()
