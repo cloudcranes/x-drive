@@ -209,6 +209,39 @@ def test_unauthorized_keeps_connection_clean(tmp_path, monkeypatch):
         httpd.server_close()
 
 
+def test_bodyless_post_routes_drain_keep_alive(tmp_path, monkeypatch):
+    """带 body 的 POST 打到「不读请求体」的路由（如 /api/scrape/status），
+    复用同一连接再发 GET 必须正常解析，不能残留成 `{}GET` 报 501/400。"""
+    state_file = tmp_path / "state.json"
+    core.save_state(str(state_file), {})
+    monkeypatch.setattr(web, "STATE", str(state_file))
+    monkeypatch.setattr(web, "AUTH", "")
+    monkeypatch.setattr(web, "JOBS", {})
+    monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
+    httpd = web.serve("127.0.0.1", 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    host, port = "127.0.0.1", httpd.server_address[1]
+    try:
+        c = http.client.HTTPConnection(host, port, timeout=10)
+        # 这 5 条路由通过鉴权后都不读请求体，曾导致 keep-alive 残留
+        for path in ("/api/scrape/status", "/api/jobs/clear", "/api/digest",
+                     "/api/restore/status", "/api/logout"):
+            c.request("POST", path, body=json.dumps({"code": "ABC-001"}),
+                      headers={"Content-Type": "application/json"})
+            r = c.getresponse()
+            r.read()
+        # 复用同一连接：后续 GET 必须正常返回 JSON，不能是 501/400
+        c.request("GET", "/api/jobs")
+        r = c.getresponse()
+        body = r.read()
+        assert r.status == 200, f"复用连接后 GET /api/jobs 应 200，实际 {r.status}: {body[:120]!r}"
+        json.loads(body)
+        c.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_job_records_phase_timing(monkeypatch, tmp_path):
     """任务结束后要把阶段耗时写进 metrics，否则永远不知道慢在哪一步。"""
     from app import metrics

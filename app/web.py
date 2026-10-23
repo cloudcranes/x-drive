@@ -2601,6 +2601,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._drain()
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
+            self._drain()
             with _jobs_lock:
                 for job_id in [k for k, v in JOBS.items() if v.get("stage") in ("done", "failed")]:
                     JOBS.pop(job_id, None)
@@ -2717,6 +2718,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._drain()
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
+            self._drain()
             self._json(restore_status())
             return
         if path == "/api/digest":
@@ -2724,6 +2726,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._drain()
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
+            self._drain()
             self._json(daily_digest())
             return
         if path == "/api/archive/verify":
@@ -2748,6 +2751,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._drain()
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
+            self._drain()
             self._json({"ok": True, **scrape_status()})
             return
         if path == "/api/scrape/preview":
@@ -2847,11 +2851,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "deleted": done})
             return
         if path == "/api/logout":
+            self._drain()
             self._json(
                 {"ok": True},
                 extra={"Set-Cookie": f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"},
             )
             return
+        self._drain()
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
     def do_HEAD(self) -> None:  # noqa: N802 (标准库命名)
