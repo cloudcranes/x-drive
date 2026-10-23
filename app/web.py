@@ -31,8 +31,8 @@ from uuid import uuid4
 import httpx
 
 from . import (backlog, cleanup, codes, core, diskspace, fetcher, meta, metadata, metatube,
-               notify, pipeline, preview, retry, sources, store, subscribe, workspace,
-               xunlei)
+               notify, pipeline, preview, retry, settings as settings_mod, sources, store,
+               subscribe, workspace, xunlei)
 
 log = logging.getLogger("x-drive.web")
 
@@ -199,6 +199,59 @@ def _store() -> store.Store:
 
 
 STORE: store.Store | None = None
+
+# 可热更新参数的单例：惰性绑定到 STORE，网页保存后立即失效本进程缓存。
+_settings: settings_mod.Settings | None = None
+_settings_lock = threading.Lock()
+
+
+def _get_settings() -> settings_mod.Settings:
+    """可热更新参数的访问器（惰性单例）。绑定到当前 STORE，库换了就重建。"""
+    global _settings
+    s = _store()
+    with _settings_lock:
+        if _settings is None or _settings._store is not s:
+            _settings = settings_mod.Settings(s)
+        return _settings
+
+
+def get_setting(key: str):
+    """读一个可热更新参数（state 表 > 环境变量 > 默认值，带 TTL 缓存）。"""
+    try:
+        return _get_settings().get(key)
+    except Exception as exc:
+        # 读不到设置不能拖垮主流程：回落到环境变量/默认值由 Settings 内部兜底，
+        # 这里只防 Settings 本身抛异常（例如 store 打不开）。
+        log.warning("读设置 %s 失败，回退默认：%s", key, exc)
+        spec = settings_mod.SETTINGS_SPEC.get(key) or {}
+        return spec.get("default")
+
+
+def settings_snapshot() -> dict:
+    """设置面板用：17 项的当前值 + 来源（settings/env/default）+ 分组说明。"""
+    try:
+        return _get_settings().snapshot()
+    except Exception as exc:
+        log.warning("读设置快照失败：%s", exc)
+        return {}
+
+
+def set_setting(key: str, value) -> bool:
+    """写一个可热更新参数（网页保存）。返回是否成功。"""
+    try:
+        return _get_settings().set(key, value)
+    except Exception as exc:
+        log.warning("写设置 %s 失败：%s", key, exc)
+        return False
+
+
+def set_settings(updates: dict) -> dict:
+    """批量写（网页一次保存多个）。返回 {ok, saved, failed}。"""
+    try:
+        return _get_settings().set_many(updates)
+    except Exception as exc:
+        log.warning("批量写设置失败：%s", exc)
+        return {"ok": False, "saved": [], "failed": {"*": str(exc)[:120]}}
 
 
 def job_event(job_id: str, kind: str, detail: str = "") -> None:
@@ -427,8 +480,8 @@ def upload_folder(work: Path, folder: str) -> tuple[str | None, int]:
     rclone("mkdir", target, timeout=120.0)
     rc, _, err = rclone(
         "copy", str(work), target,
-        "--transfers", str(UPLOAD_TRANSFERS),
-        "--drive-chunk-size", UPLOAD_CHUNK,
+        "--transfers", str(get_setting("UPLOAD_TRANSFERS")),
+        "--drive-chunk-size", get_setting("UPLOAD_CHUNK"),
         "--retries", "2", "--timeout", "30m",
         "--drive-stop-on-upload-limit",
     )
@@ -485,7 +538,7 @@ def scrape_attachments(work: Path, folder: str, files: list[Path],
     返回 {"record", "files", "written", "failed", "pending"}：
       pending=True 表示元数据不完整（要补刮），任务状态里会带这个标记。
     """
-    if not SCRAPE_ON:
+    if not get_setting("SCRAPE"):
         return {"record": {}, "files": files, "written": [], "failed": [], "pending": False}
 
     code = workspace.key_of(folder) and (codes.canonical(folder) or folder)
@@ -501,8 +554,8 @@ def scrape_attachments(work: Path, folder: str, files: list[Path],
         return found
 
     out = metadata.build_attachments(work, code, files, scrape, locks=locked,
-                                     old=extra.get("scraped") or {}, want_nfo=NFO_ON,
-                                     want_poster=POSTER_ON)
+                                     old=extra.get("scraped") or {}, want_nfo=get_setting("SCRAPE_NFO"),
+                                     want_poster=get_setting("SCRAPE_POSTER"))
     if job_id:
         job_update(job_id, extra={
             **(_store().get(job_id).get("extra") or {}),
@@ -519,7 +572,7 @@ def fetch_image(url: str, limit: int = 12 << 20) -> bytes:
 def _upload_loop(job_id: str, work: Path, folder: str, size: int,
                  clock: dict, policy) -> str | None:
     """把工作区推到 Drive，可重试；返回分享链接。"""
-    up_policy = retry.RetryPolicy(retries=RETRIES, base_delay=RETRY_BASE_DELAY)
+    up_policy = retry.RetryPolicy(retries=get_setting("RETRIES"), base_delay=get_setting("RETRY_BASE_DELAY"))
     require_lease(job_id, folder)                # 上传前
     job_event(job_id, "stage", f"uploading {folder}")
     while True:
@@ -760,8 +813,8 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
                 stored = _store().get(job_id)
                 return await pipeline.download(
                     xl, client, source, download_dir, progress=on_progress,
-                    poll=XUNLEI_POLL, timeout=MAGNET_TIMEOUT,
-                    stall_timeout=STALL_TIMEOUT, settle=XUNLEI_SETTLE,
+                    poll=XUNLEI_POLL, timeout=get_setting("MAGNET_TIMEOUT"),
+                    stall_timeout=get_setting("STALL_TIMEOUT"), settle=XUNLEI_SETTLE,
                     on_task=remember,
                     session={"task": str(stored.get("xunlei_task") or ""),
                              "infohash": str((stored.get("extra") or {}).get("infohash") or "")},
@@ -780,7 +833,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
     clock = {"download": 0.0, "organize": 0.0, "upload": 0.0}
     done_code, done_size = code, 0
     uploaded = False
-    policy = retry.RetryPolicy(retries=RETRIES, base_delay=RETRY_BASE_DELAY)
+    policy = retry.RetryPolicy(retries=get_setting("RETRIES"), base_delay=get_setting("RETRY_BASE_DELAY"))
     try:
         # ── 断点续跑：整理已完成、只剩上传时，直接复用工作区，不重下也不重拷。
         # 以前整理/上传中断一律重跑整条流程，等于把一个已下好的大文件再抄一遍。
@@ -848,7 +901,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
                    total=size, extra={**_store().get(job_id).get("extra", {}),
                                       "files": [f.name for f in files]})
 
-        if DAILY_UPLOAD_GB and size > DAILY_UPLOAD_GB * 1024**3:
+        if get_setting("DAILY_UPLOAD_GB") and size > get_setting("DAILY_UPLOAD_GB") * 1024**3:
             raise RuntimeError(f"单任务 {core.human_size(size)} 超过 DAILY_UPLOAD_GB 限制")
 
         # ── 刮削并生成附件（失败不阻断）：NFO/JSON/封面/清单跟着视频一起上去
@@ -994,7 +1047,7 @@ def admit(job_id: str) -> bool:
         need = int(stored.get("total") or job.get("total") or 0)
         if not need:
             need = _guess_size(stored.get("code") or job.get("code") or "")
-        reserve = int(DISK_RESERVE_GB * diskspace.GB)
+        reserve = int(get_setting("DISK_RESERVE_GB") * diskspace.GB)
         free = diskspace.free_bytes(TMP_ROOT)
         # 已经许给「已在下载」的任务的额度要先扣掉，否则几个任务会同时
         # 判定「放得下」然后一起开下，合起来把盘吃穿。排队中的不算，
@@ -1069,7 +1122,7 @@ def _refresh_queue_positions() -> None:
     with _waiting_lock:
         order = list(WAITING.keys())
     free = diskspace.free_bytes(TMP_ROOT)
-    reserve_gb = DISK_RESERVE_GB
+    reserve_gb = get_setting("DISK_RESERVE_GB")
     for idx, job_id in enumerate(order, start=1):
         with _jobs_lock:
             job = dict(JOBS.get(job_id) or {})
@@ -1221,11 +1274,12 @@ def _resume_loop() -> None:
 def _panel_clean_tick() -> None:
     """每天一次清掉面板里过期的失败任务记录（PANEL_CLEAN_DAYS>0 才启用）。"""
     global _last_clean
-    if PANEL_CLEAN_DAYS <= 0 or time.time() - _last_clean < 86400:
+    pcd = get_setting("PANEL_CLEAN_DAYS")
+    if pcd <= 0 or time.time() - _last_clean < 86400:
         return
     _last_clean = time.time()
     try:
-        out = clean_panel_errors(PANEL_CLEAN_DAYS, confirm=True)
+        out = clean_panel_errors(pcd, confirm=True)
         if out.get("deleted"):
             log.info("清理面板失败任务 %d 条", len(out["deleted"]))
     except Exception as exc:
@@ -1321,19 +1375,20 @@ def _queue_loop() -> None:
                 # 每日 tick 是「顺便做」的事，绝不能因为它出错就跳过本轮调度
                 log.exception("每日 tick 出错")
             pump_queue()
-            if DISK_QUEUE_TIMEOUT:
+            dq = get_setting("DISK_QUEUE_TIMEOUT")
+            if dq:
                 now = time.time()
                 with _waiting_lock:
                     expired = [j for j, t in _queued_at.items()
-                               if now - t > DISK_QUEUE_TIMEOUT]
+                               if now - t > dq]
                     for j in expired:
                         WAITING.pop(j, None)
                         _queued_at.pop(j, None)
                 for job_id in expired:
                     job_update(job_id, stage="failed",
-                               error=f"排队超过 {int(DISK_QUEUE_TIMEOUT)}s 仍未等到磁盘空间")
+                               error=f"排队超过 {int(dq)}s 仍未等到磁盘空间")
                     job_event(job_id, "failed",
-                              f"排队超过 {int(DISK_QUEUE_TIMEOUT)}s 仍未等到磁盘空间")
+                              f"排队超过 {int(dq)}s 仍未等到磁盘空间")
         except Exception:
             log.exception("磁盘空间调度出错")
         time.sleep(DISK_CHECK_INTERVAL)
@@ -1832,7 +1887,7 @@ def reconcile_backlog(todo: dict) -> list[dict]:
 def diskspace_room_ok() -> bool:
     """有空间才跑自动下载；不够就整轮跳过，等下次。"""
     free = diskspace.free_bytes(TMP_ROOT)
-    reserve = int(DISK_RESERVE_GB * diskspace.GB)
+    reserve = int(get_setting("DISK_RESERVE_GB") * diskspace.GB)
     return free is None or free > reserve
 
 
@@ -1865,10 +1920,10 @@ def build_cleanup_plan(dry_run: bool = True) -> dict:
         })
     plan = cleanup.plan_cleanup(
         archives,
-        keep_recent=CLEANUP_KEEP_RECENT,
-        max_bytes=int(CLEANUP_MAX_GB * 1024**3),
+        keep_recent=get_setting("CLEANUP_KEEP_RECENT"),
+        max_bytes=int(get_setting("CLEANUP_MAX_GB") * 1024**3),
         active_codes=active_codes(),
-        older_than_days=CLEANUP_OLDER_DAYS,
+        older_than_days=get_setting("CLEANUP_OLDER_DAYS"),
         dry_run=dry_run,
     )
     result = plan.as_dict()
@@ -2036,7 +2091,7 @@ def _guess_size(code: str) -> int:
     这样一批批冲进来的。宁可估大一点，让队头多等一会儿。
     """
     guess = series_median(code, core.load_state(STATE)) if code else 0
-    return int(guess or DEFAULT_SIZE_GB * 1024**3)
+    return int(guess or get_setting("DEFAULT_SIZE_GB") * 1024**3)
 
 
 def panel_errors(days: float) -> list[dict]:
@@ -2506,7 +2561,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
             except (ValueError, json.JSONDecodeError):
                 payload = {}
-            days = float(payload.get("days") or PANEL_CLEAN_DAYS or 7)
+            days = float(payload.get("days") or get_setting("PANEL_CLEAN_DAYS") or 7)
             self._json(clean_panel_errors(days, bool(payload.get("confirm"))))
             return
         if path == "/api/xunlei/control":
@@ -2713,6 +2768,15 @@ class Handler(BaseHTTPRequestHandler):
                                    bool(p.get("confirm")), p.get("unlock") or None,
                                    p.get("only") or None))
             return
+        if path == "/api/settings":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            payload = self._payload()
+            updates = payload.get("updates") or payload.get("settings") or {}
+            self._json(set_settings(updates))
+            return
         if path == "/api/backlog/retry":
             if not self._authorized():
                 self._drain()
@@ -2845,6 +2909,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(local_disk_inventory())
             return
+        if path == "/api/settings":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            self._json({"ok": True, "items": settings_snapshot()})
+            return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
             limit = int((parse_qs(parts.query).get("limit", ["50"]) or ["50"])[0] or 50)
@@ -2919,7 +2990,7 @@ def scrape_status() -> dict:
     不返回 token，也不拼到任何 URL 里。
     """
     info = {"configured": metatube.configured(), "url": metatube.BASE,
-            "scrape": SCRAPE_ON, "nfo": NFO_ON, "poster": POSTER_ON,
+            "scrape": get_setting("SCRAPE"), "nfo": get_setting("SCRAPE_NFO"), "poster": get_setting("SCRAPE_POSTER"),
             "ok": False, "version": "", "providers": [], "error": "",
             "pending": _scrape_pending()}
     if not metatube.configured():
@@ -3090,11 +3161,11 @@ def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> 
 
         # 海报：开关开着且记录里有封面地址就重建一次；取不到就沿用旧条目（不删）
         poster = b""
-        if POSTER_ON and rec.get("cover_url"):
+        if get_setting("SCRAPE_POSTER") and rec.get("cover_url"):
             poster = metadata.fetch_image(rec["cover_url"]) or None
 
         out = metadata.write_sidecar(work, rec, [], code=code, locks=locks,
-                                     poster=poster, want_nfo=NFO_ON, keep=kept)
+                                     poster=poster, want_nfo=get_setting("SCRAPE_NFO"), keep=kept)
         generated = [n for n in out["written"] if n != metadata.MANIFEST_NAME]
         target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
         pushed, failed, skipped = [], [], []

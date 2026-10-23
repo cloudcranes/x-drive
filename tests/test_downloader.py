@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import codes, core, fetcher, main, pipeline
+from app import codes, core, fetcher, main, pipeline, store
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +24,7 @@ def make_cfg(tmp_path, **over):
         pending_dir=str(tmp_path / "pending"), metrics_path=str(tmp_path / "metrics.json"),
         state_dir=str(tmp_path / "work"),
         jobs_db=str(tmp_path / "jobs.db"),
-        daily_upload_gb=0, **over,
+        **over,
     )
 
 
@@ -170,7 +170,6 @@ def test_failure_is_recorded_in_shared_store(tmp_path, stub, monkeypatch):
 
 
 def test_quota_blocks_upload(tmp_path, stub, monkeypatch):
-    import dataclasses
 
     async def fake_download(xl, client, source, dest, progress=None, **opts):
         dest.mkdir(parents=True, exist_ok=True)
@@ -178,7 +177,8 @@ def test_quota_blocks_upload(tmp_path, stub, monkeypatch):
         return {"task": "T", "dir": dest, "waited": 0.0, "reused": False}
     monkeypatch.setattr(pipeline, "download", fake_download)
 
-    cfg = dataclasses.replace(make_cfg(tmp_path), daily_upload_gb=1)
+    cfg = make_cfg(tmp_path)
+    store.Store(cfg.jobs_db).state_put({"settings": {"DAILY_UPLOAD_GB": 1}})
     main.add_usage(cfg, 1023 * 1024**2)   # 距 1GB 上限只剩 1MB
     reply, _, _, state = run(tmp_path, {}, "SSIS-999 magnet:?xt=urn:btih:cc", cfg=cfg)
     assert "上限" in reply

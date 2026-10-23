@@ -616,6 +616,13 @@
         </svg>
         <span class="lbl">元数据</span>
       </button>
+      <button class="ghostbtn" id="settings-open" type="button" title="设置：配额、重试、并发、刮削开关等，改了立即生效">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        <span class="lbl">设置</span>
+      </button>
       <button class="queuebtn" id="queuebtn" type="button" title="下载队列">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 6h11M3 12h11M3 18h7"/><path d="m16 12 3 3 3-3"/><path d="M19 15V6"/>
@@ -748,6 +755,25 @@
 
       <div class="meta-h">重复归档</div>
       <div id="dups-list"><span class="hint">点「查重复归档」列出同番号多条记录 / 同 infohash 多份</span></div>
+    </div>
+  </section>
+
+  <section class="panel wide" id="settingspanel" hidden aria-label="设置">
+    <div class="panel-actrow">
+      <b style="font-size:13px">设置</b>
+      <span class="badge" id="settings-state">未加载</span>
+      <span class="hint" id="settings-hint"></span>
+      <button class="ghost" id="settings-close" type="button">关闭</button>
+    </div>
+
+    <div class="panel-body">
+      <div class="notice">这里改的是**运行时参数**，保存后立即生效（无需改 .env、无需重启）。
+        token / 端口 / 挂载路径等启动参数仍走 .env，改了要重启容器才生效。</div>
+      <div class="panel-actions">
+        <button class="primary" id="settings-save" type="button">保存全部改动</button>
+        <button class="ghost" id="settings-reload" type="button">重新加载</button>
+      </div>
+      <div id="settings-list"></div>
     </div>
   </section>
 
@@ -3150,6 +3176,122 @@ fetch(BASE + "/api/session", {cache: "no-store"})
     $("logout").hidden = !d.auth;
   })
   .catch(() => {});
+
+// ───────────────────────────────── 设置面板
+// 后端 /api/settings 返回 {items: {KEY: {value, source, type, default, group, label, note}}}
+// 前端只负责展示与编辑；值怎么解析、怎么生效全由后端决定，不自造第二套口径。
+const settingsDirty = {};   // key -> 用户改后的值（还没保存）
+
+function openSettings() {
+  $("settingspanel").hidden = false;
+  $("settings-open").classList.add("on");
+  loadSettings();
+}
+function closeSettings() {
+  $("settingspanel").hidden = true;
+  $("settings-open").classList.remove("on");
+}
+
+async function loadSettings() {
+  const list = $("settings-list");
+  const st = $("settings-state");
+  const hint = $("settings-hint");
+  list.textContent = "";
+  for (const k of Object.keys(settingsDirty)) delete settingsDirty[k];
+  st.textContent = "加载中";
+  try {
+    const d = await subsApi("/api/settings");
+    if (!d || !d.ok) throw new Error(d && d.error || "读取失败");
+    const items = d.items || {};
+    const groups = {};
+    for (const [key, it] of Object.entries(items)) {
+      (groups[it.group || "其它"] = groups[it.group || "其它"] || []).push([key, it]);
+    }
+    for (const [gname, rows] of Object.entries(groups)) {
+      list.append(el("div", "meta-h", gname));
+      for (const [key, it] of rows) list.append(settingsRow(key, it));
+    }
+    st.textContent = "已加载";
+    hint.textContent = `${Object.keys(items).length} 项 · 来源标注在每项右侧`;
+  } catch (e) {
+    st.textContent = "读取失败";
+    hint.textContent = e.message || e;
+  }
+}
+
+function settingsRow(key, it) {
+  const row = el("div", "kvrow");
+  const nm = el("span", "nm");
+  nm.textContent = it.label || key;
+  nm.title = (it.note || "") + "\n键：" + key;
+  row.append(nm);
+
+  const input = el("input", "sval");
+  input.type = it.type === "bool" ? "checkbox" : "text";
+  if (it.type === "bool") {
+    input.checked = !!it.value;
+  } else {
+    input.value = String(it.value);
+  }
+  input.addEventListener("input", () => {
+    const v = it.type === "bool" ? input.checked : input.value;
+    if (String(v) === String(it.type === "bool" ? !!it.value : it.value)) {
+      delete settingsDirty[key];
+    } else {
+      settingsDirty[key] = v;
+    }
+    renderDirty();
+  });
+  row.append(input);
+
+  const src = el("span", "hint", settingsSource(it.source));
+  row.append(src);
+  if (it.note) {
+    const nt = el("div", "why");
+    nt.textContent = it.note;
+    row.append(nt);
+  }
+  return row;
+}
+
+function settingsSource(s) {
+  return { settings: "网页设置", env: "环境变量", default: "默认" }[s] || s;
+}
+
+function renderDirty() {
+  const n = Object.keys(settingsDirty).length;
+  $("settings-state").textContent = n ? `${n} 项待保存` : "已加载";
+  $("settings-save").disabled = !n;
+}
+
+async function saveSettings() {
+  const updates = {};
+  for (const [k, v] of Object.entries(settingsDirty)) updates[k] = v;
+  const n = Object.keys(updates).length;
+  if (!n) return;
+  const btn = $("settings-save");
+  btn.disabled = true;
+  $("settings-hint").textContent = "保存中…";
+  try {
+    const d = await subsApi("/api/settings", { updates });
+    if (!d || !d.ok) throw new Error((d && d.error) || "保存失败");
+    $("settings-hint").textContent =
+      `已保存 ${n} 项` + (d.failed && Object.keys(d.failed).length
+        ? `，失败 ${Object.keys(d.failed).length} 项：${Object.values(d.failed).join("；")}` : "");
+    for (const k of Object.keys(settingsDirty)) delete settingsDirty[k];
+    await loadSettings();
+  } catch (e) {
+    $("settings-hint").textContent = "保存失败：" + (e.message || e);
+    btn.disabled = false;
+  }
+}
+
+$("settings-open").addEventListener("click",
+  () => $("settingspanel").hidden ? openSettings() : closeSettings());
+$("settings-close").addEventListener("click", closeSettings);
+$("settings-reload").addEventListener("click", loadSettings);
+$("settings-save").addEventListener("click", saveSettings);
+$("settings-save").disabled = true;
 </script>
 </body>
 </html>

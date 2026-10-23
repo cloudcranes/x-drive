@@ -28,7 +28,6 @@ def cfg_for(tmp_path):
         pending_dir=str(tmp_path / "pending"),
         metrics_path=str(tmp_path / "metrics.json"),
         state_dir=str(tmp_path / "work"), jobs_db=str(tmp_path / "jobs.db"),
-        daily_upload_gb=0,
     )
 
 
@@ -54,8 +53,8 @@ def _run(tmp_path, monkeypatch, cfg, handler_name):
 
 def test_status_shows_active_today_and_gate_closed(tmp_path, monkeypatch):
     cfg = cfg_for(tmp_path)
-    cfg = main.Config(**{**cfg.__dict__, "daily_upload_gb": 10})
     st = store.Store(cfg.jobs_db)
+    st.state_put({"settings": {"DAILY_UPLOAD_GB": 10}})
     st.start("j1", "SSIS-123", "magnet:a")
     st.update("j1", stage="downloading")
     # 今日 metrics：ok 2、error 1

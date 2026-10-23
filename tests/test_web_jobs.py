@@ -12,6 +12,19 @@ import pytest
 
 from app import core, meta, pipeline, store, web, workspace
 
+_INJECTED = {}
+
+
+def _inject(monkeypatch, **overrides):
+    """注入可热更新参数：这些参数已迁到 get_setting，monkeypatch 模块常量已失效。
+
+    用模块级 dict 累加：连续多次 _inject 不会互相覆盖。
+    """
+    real = web.get_setting
+    _INJECTED.update(overrides)
+    monkeypatch.setattr(web, "get_setting",
+                       lambda key, d=None: _INJECTED[key] if key in _INJECTED else real(key))
+
 
 @pytest.fixture(autouse=True)
 def clean_leases():
@@ -19,9 +32,11 @@ def clean_leases():
 
     这里只做清理，不预置租约：租约该由 claim_owner 真正领，测试不许绕过去。
     """
+    _INJECTED.clear()
     web.LEASES.clear()
     web._lease_live.clear()
     yield
+    _INJECTED.clear()
     web.LEASES.clear()
     web._lease_live.clear()
 
@@ -363,8 +378,8 @@ def test_cleanup_preview_is_read_only(server, monkeypatch):
         f"CODE-{i}": {"code": f"CODE-{i}", "size": 1024**3,
                       "at": f"2026-01-{i+1:02d}T00:00:00"} for i in range(5)
     })
-    monkeypatch.setattr(web, "CLEANUP_MAX_GB", 2.0)
-    monkeypatch.setattr(web, "CLEANUP_KEEP_RECENT", 1)
+    _inject(monkeypatch, CLEANUP_MAX_GB=2.0)
+    _inject(monkeypatch, CLEANUP_KEEP_RECENT=1)
     called = []
     monkeypatch.setattr(web, "purge_archives", lambda codes: called.append(codes) or [])
 
@@ -385,8 +400,8 @@ def test_cleanup_run_without_confirm_is_dry_run(server, monkeypatch):
     core.save_state(web.STATE, {
         f"C-{i}": {"code": f"C-{i}", "size": 1024**3, "at": f"2026-01-{i+1:02d}T00:00:00"}
         for i in range(5)})
-    monkeypatch.setattr(web, "CLEANUP_MAX_GB", 1.0)
-    monkeypatch.setattr(web, "CLEANUP_KEEP_RECENT", 1)
+    _inject(monkeypatch, CLEANUP_MAX_GB=1.0)
+    _inject(monkeypatch, CLEANUP_KEEP_RECENT=1)
     called = []
     monkeypatch.setattr(web, "purge_archives", lambda codes: called.append(codes) or [])
 
@@ -400,8 +415,8 @@ def test_cleanup_run_with_confirm_executes(server, monkeypatch):
     core.save_state(web.STATE, {
         f"D-{i}": {"code": f"D-{i}", "size": 1024**3, "at": f"2026-01-{i+1:02d}T00:00:00"}
         for i in range(5)})
-    monkeypatch.setattr(web, "CLEANUP_MAX_GB", 1.0)
-    monkeypatch.setattr(web, "CLEANUP_KEEP_RECENT", 1)
+    _inject(monkeypatch, CLEANUP_MAX_GB=1.0)
+    _inject(monkeypatch, CLEANUP_KEEP_RECENT=1)
     called = []
     monkeypatch.setattr(web, "purge_archives",
                         lambda codes: called.append(codes) or [{"code": c, "ok": True} for c in codes])
@@ -419,8 +434,8 @@ def test_cleanup_never_touches_active_job_codes(server, monkeypatch):
         "OLD-002": {"code": "OLD-002", "size": 10 * 1024**3, "at": "2026-01-02T00:00:00"},
     })
     web.job_update("jx", stage="downloading", code="BUSY-001", percent=50.0)
-    monkeypatch.setattr(web, "CLEANUP_MAX_GB", 1.0)
-    monkeypatch.setattr(web, "CLEANUP_KEEP_RECENT", 0)
+    _inject(monkeypatch, CLEANUP_MAX_GB=1.0)
+    _inject(monkeypatch, CLEANUP_KEEP_RECENT=0)
 
     plan = web.build_cleanup_plan(dry_run=True)
     assert "BUSY-001" not in [i["code"] for i in plan["delete"]]

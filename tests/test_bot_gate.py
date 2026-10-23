@@ -25,7 +25,6 @@ def cfg_for(tmp_path):
         pending_dir=str(tmp_path / "pending"),
         metrics_path=str(tmp_path / "metrics.json"),
         state_dir=str(tmp_path / "work"), jobs_db=str(tmp_path / "jobs.db"),
-        daily_upload_gb=0,
     )
 
 

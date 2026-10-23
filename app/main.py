@@ -28,7 +28,8 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from . import (codes, core, diskspace, fetcher, meta, metadata, metrics, metatube,
-               pipeline, retry, sources, store, whatslink, workspace, xunlei)
+               pipeline, retry, settings as settings_mod, sources, store, whatslink,
+               workspace, xunlei)
 
 log = logging.getLogger("x-drive")
 
@@ -48,26 +49,71 @@ class Config:
     jobs_db: str = "/data/jobs.db"
     metrics_path: str = "/data/metrics.json"
     state_dir: str = "/work"
-    daily_upload_gb: int = 0
-    magnet_timeout: float = 7200.0
-    stall_timeout: float = 900.0
     xunlei_url: str = "http://127.0.0.1:2345"
     xunlei_parent: str = ""
     xunlei_token: str = ""
     xunlei_poll: float = 10.0
     xunlei_settle: float = 30.0
-    upload_transfers: int = 4
-    upload_chunk: str = "64M"
-    retries: int = 2
-    retry_base_delay: float = 3.0
-    # 刮削附件：默认全开，与网页侧同名环境变量同语义；关掉就退回「只有视频」
-    scrape: bool = True
-    scrape_nfo: bool = True
-    scrape_poster: bool = True
+    # 可热更新参数（daily_upload_gb / magnet_timeout / stall_timeout /
+    # upload_transfers / upload_chunk / retries / retry_base_delay /
+    # scrape / scrape_nfo / scrape_poster）不再是 dataclass 字段，
+    # 改成下面的 property 每次从 state 表读，网页改了立即生效、不必重启。
 
     @property
     def max_bytes(self) -> int:
         return self.max_mb * 1024 * 1024
+
+    # ── 可热更新参数：改成 property，每次访问从 state 表读（网页改了立即生效，
+    #    不必重启）。这些字段不再进 dataclass 的 __init__，由 from_env 之后动态读。
+    #    其余（token / 端口 / 挂载路径等启动参数）仍是 dataclass 字段，保持不变。
+    def _settings(self) -> "settings_mod.Settings":
+        return settings_mod.Settings(task_store(self))
+
+    def _get(self, key: str):
+        try:
+            return self._settings().get(key)
+        except Exception:
+            return settings_mod.SETTINGS_SPEC.get(key, {}).get("default")
+
+    @property
+    def daily_upload_gb(self) -> int:
+        return self._get("DAILY_UPLOAD_GB")
+
+    @property
+    def magnet_timeout(self) -> float:
+        return self._get("MAGNET_TIMEOUT")
+
+    @property
+    def stall_timeout(self) -> float:
+        return self._get("STALL_TIMEOUT")
+
+    @property
+    def upload_transfers(self) -> int:
+        return self._get("UPLOAD_TRANSFERS")
+
+    @property
+    def upload_chunk(self) -> str:
+        return self._get("UPLOAD_CHUNK")
+
+    @property
+    def retries(self) -> int:
+        return self._get("RETRIES")
+
+    @property
+    def retry_base_delay(self) -> float:
+        return self._get("RETRY_BASE_DELAY")
+
+    @property
+    def scrape(self) -> bool:
+        return self._get("SCRAPE")
+
+    @property
+    def scrape_nfo(self) -> bool:
+        return self._get("SCRAPE_NFO")
+
+    @property
+    def scrape_poster(self) -> bool:
+        return self._get("SCRAPE_POSTER")
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -88,21 +134,11 @@ class Config:
             pending_dir=os.getenv("PENDING_DIR", "/data/pending"),
             jobs_db=os.getenv("JOBS_DB", "/data/jobs.db"),
             metrics_path=os.getenv("METRICS_PATH", "/data/metrics.json"),
-            daily_upload_gb=int(os.getenv("DAILY_UPLOAD_GB", "0") or 0),
-            magnet_timeout=float(os.getenv("MAGNET_TIMEOUT", "7200") or 7200),
-            stall_timeout=float(os.getenv("STALL_TIMEOUT", "900") or 0),
             xunlei_url=os.getenv("XUNLEI_URL", "http://127.0.0.1:2345").strip(),
             xunlei_parent=os.getenv("XUNLEI_PARENT_ID", "").strip(),
             xunlei_token=os.getenv("XUNLEI_PAN_AUTH", "").strip(),
             xunlei_poll=float(os.getenv("XUNLEI_POLL", "10") or 10),
             xunlei_settle=float(os.getenv("XUNLEI_SETTLE", "30") or 0),
-            upload_transfers=max(1, int(os.getenv("UPLOAD_TRANSFERS", "4") or 4)),
-            upload_chunk=os.getenv("UPLOAD_CHUNK", "64M").strip() or "64M",
-            retries=max(0, int(os.getenv("RETRIES", "2") or 2)),
-            retry_base_delay=float(os.getenv("RETRY_BASE_DELAY", "3") or 3),
-            scrape=_flag("SCRAPE", "1"),
-            scrape_nfo=_flag("SCRAPE_NFO", "1"),
-            scrape_poster=_flag("SCRAPE_POSTER", "1"),
         )
 
 
@@ -110,7 +146,11 @@ class Config:
 
 
 def _flag(name: str, default: str = "1") -> bool:
-    """环境变量开关：0/false/False 视为关。与网页侧同一套写法。"""
+    """环境变量开关：0/false/False 视为关。与网页侧同一套写法。
+
+    保留给可能的其它环境变量开关用；刮削三项已迁到 settings 的 property，
+    不再经这里。
+    """
     return os.getenv(name, default) not in ("0", "false", "False")
 
 
