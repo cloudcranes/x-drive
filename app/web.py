@@ -305,6 +305,88 @@ def archived_codes() -> set[str]:
         return set()
 
 
+def _dir_size(path: Path) -> int:
+    """递归算一个目录的字节数。不跟符号链接：防循环，也不把别处的挂载算进来。"""
+    total = 0
+    try:
+        for p in path.rglob("*"):
+            try:
+                if p.is_symlink():
+                    continue
+                if p.is_file():
+                    total += p.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return 0
+    return total
+
+
+def local_disk_inventory() -> dict:
+    """本地残留盘点：只读列出 TMP_ROOT 与 STATE_DIR 下带归属标记的目录。
+
+    背景：归档回收（rclone purge）删的是 Drive，本地一个字节都不动。磁盘满了
+    用户点回收，以为腾了空间，本地还是满的。这个接口把两处本地占用的目录
+    摊开来，让用户看到「哪些是已归档但没清干净的残留、哪些是失败保留的原件」。
+
+    **只读、只报告**：不删任何目录、不删任何文件、不改任何状态。没有归属
+    标记的目录一律跳过（与「没有标记的目录不接管、不清理」纪律一致）。
+    返回里只有 hint 提示「清理需人工确认」，不提供删除入口。
+    """
+    archived = {workspace.key_of(k) for k in archived_codes()}
+    items: list[dict] = []
+
+    def scan(root: Path, bucket: str, subdir: str | None = None) -> None:
+        base = root / subdir if subdir else root
+        try:
+            entries = list(base.iterdir())
+        except OSError:
+            return
+        for d in entries:
+            try:
+                if not d.is_dir() or d.is_symlink():
+                    continue
+            except OSError:
+                continue
+            ev = workspace.evidence_of(d)
+            owner = str(ev.get("owner") or "").strip()
+            if not owner:                     # 没有归属标记：不报告、不接管
+                continue
+            key = workspace.key_of(owner)
+            size = _dir_size(d)
+            # 分类：key 在归档表里 = 上传成功但本地没清干净的残留；否则是失败保留。
+            # 注意两边都按 key_of 归一（去连字符）后再比：目录名是 key_of(folder)，
+            # 归档表 key 是 folder 本身（SSIS-123），直接比永远对不上。
+            kind = "已归档残留" if key in archived else "失败保留"
+            items.append({
+                "bucket": bucket,
+                "key": key,
+                "path": str(d.relative_to(root)) if subdir is None
+                        else f"{subdir}/{d.name}",
+                "size": size,
+                "kind": kind,
+                "task": ev.get("task") or "",
+                "btih": ev.get("btih") or "",
+            })
+
+    scan(Path(TMP_ROOT), "downloads")
+    scan(Path(STATE_DIR), "workspace", subdir="state")
+
+    items.sort(key=lambda r: (-r["size"], r["bucket"], r["key"]))
+    total = sum(i["size"] for i in items)
+    return {
+        "ok": True,
+        "items": items,
+        "count": len(items),
+        "total_size": total,
+        "by_kind": {
+            "已归档残留": sum(1 for i in items if i["kind"] == "已归档残留"),
+            "失败保留": sum(1 for i in items if i["kind"] == "失败保留"),
+        },
+        "hint": "只报告，不删除。清理前请人工确认每个目录确属本程序产物。",
+    }
+
+
 CANCEL: dict[str, threading.Event] = {}
 
 
@@ -2755,6 +2837,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "subs": subs_snapshot(),
                         "suggest": subscribe_suggestions(),
                         "backlog": backlog_view()})
+            return
+        if path == "/api/local/disk":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            self._json(local_disk_inventory())
             return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
