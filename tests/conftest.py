@@ -75,10 +75,30 @@ def _drain_job_threads(web, grace: float = 5.0) -> None:
 
     做法：先给这些任务打上取消标记，再等它们退出；超时也放行（不能因为兜底
     逻辑把测试挂死），但取消标记 + 租约清空已足够让它们在下一个检查点停手。
+
+    **必须按线程名兜底扫一遍**，不能只信 web._threads：有些 fixture 会直接
+    `web._threads.clear()`（清字典但不停线程），那些线程就从字典里消失了，
+    这里再也找不到它们 —— 于是它们变成不可见的僵尸，继续在下一例的桩下推进。
+    下一例若恰好没打桩某个符号，它就会真的去连迅雷面板（容器内实测撞上
+    「平台上已有同一个种子在下载」，把无关的恢复用例搞红）。所以这里按名字
+    兜住所有 job-* 线程。
+
+    从线程名反解 job_id 来打取消标记：线程名是 `job-<job_id>`，而 CANCEL 是按
+    job_id 索引的。只按名字找到却按名字打标记没用 —— 那个线程查的是
+    CANCEL[job_id]，标记打错地方它就停不下来。
     """
     with web._threads_lock:
         pending = {job_id: t for job_id, t in web._threads.items()
                    if t.is_alive() and t is not threading.current_thread()}
+    # 兜底：字典里没有但还活着的 job-* 线程（被 clear 掉的那批）
+    for t in threading.enumerate():
+        if not t.name.startswith("job-") or not t.is_alive():
+            continue
+        if t is threading.current_thread():
+            continue
+        # 线程名形如 "job-<job_id>"：用它反解 job_id，取消标记才打对地方
+        job_id = t.name[len("job-"):]
+        pending.setdefault(job_id, t)
     if not pending:
         return
     with web._jobs_lock:
@@ -102,6 +122,22 @@ def _clear_memory_state(web) -> None:
     web.set_paused(False)
 
 
+def _block_real_xunlei(web) -> None:
+    """把网页端的迅雷客户端指向一个**必定连不通**的地址。
+
+    为什么需要：某些用例会真的走 `admit()` 起后台任务线程，线程在断言结束后
+    仍在跑。等它推进到下载那一步时，如果下一个用例没打桩 `pipeline.download`，
+    它就会真的去连**真实迅雷面板** —— 容器内实测撞上「平台上已有同一个种子
+    在下载」，把毫不相干的恢复用例搞红；更糟的是它会真的占用平台的下载位。
+
+    这里把 `web._XL`（惰性创建、模块级缓存）换成指向本地保留端口的实例：
+    漏网的调用会立刻连接失败并露出调用栈，而不是悄悄连上真面板。
+    真的需要面板的用例自己会重新设置 `web._XL` 或 monkeypatch 掉它。
+    """
+    from app import xunlei
+    web._XL = xunlei.Xunlei("http://127.0.0.1:9", "", web.TMP_ROOT, "")
+
+
 @pytest.fixture(autouse=True)
 def isolate_module_state():
     """每个用例前后都把 web 的模块级内存状态复位。
@@ -111,6 +147,7 @@ def isolate_module_state():
     from app import main as bot
     from app import web
 
+    _block_real_xunlei(web)
     _stop_heartbeats(web)
     _drain_job_threads(web)
     _clear_memory_state(web)
