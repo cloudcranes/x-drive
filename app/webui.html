@@ -3951,16 +3951,30 @@ function storageStatusRow() {
   const hint = el("span", "hint", "");
   btn.addEventListener("click", async () => {
     btn.disabled = true;
-    hint.textContent = "测试中…";
+    hint.className = "hint";
+    // 走云端的探测可能要几十秒（rclone 要问一次配额）：把秒数跑出来，
+    // 否则一直停在「测试中…」，看起来像按钮没反应
+    // 用递归 setTimeout 而不是 setInterval：页面里只该有那两个轮询定时器，
+    // 这个秒数只是「正在等」的即时反馈，结束即停。
+    const started = Date.now();
+    let ticking = true;
+    const tick = () => {
+      if (!ticking) return;
+      hint.textContent = `测试中… ${Math.round((Date.now() - started) / 1000)}s`;
+      setTimeout(tick, 500);
+    };
+    tick();
     try {
       const d = await subsApi("/api/storage/test", {});
+      const ms = d.latency_ms != null ? d.latency_ms : Date.now() - started;
       hint.textContent = (d.detail || d.error || "无响应")
-        + (d.latency_ms != null ? ` · ${d.latency_ms}ms` : "");
+        + ` · ${ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : ms + "ms"}`;
       hint.className = "hint" + (d.ok ? " ok" : " err");
     } catch (e) {
       hint.textContent = "测试失败：" + (e.message || e);
       hint.className = "hint err";
     } finally {
+      ticking = false;
       btn.disabled = false;
     }
   });

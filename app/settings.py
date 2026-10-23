@@ -107,7 +107,8 @@ SETTINGS_SPEC: dict[str, dict] = {
                         "note": "rclone 用挂载进来的 rclone.conf；另两个走 HTTP/gRPC"},
     "STORAGE_ROOT": {"type": "str", "default": "", "group": "存储",
                      "label": "归档根目录",
-                     "note": "留空 = 沿用 DRIVE_ROOT（默认 X-Drive）；OpenList/CD2 里是虚拟路径"},
+                     "note": "留空 = 沿用 DRIVE_ROOT（默认 X-Drive）；OpenList/CD2 里是虚拟路径。"
+                             "上方「测试连接」会真去连一次，走云端的后端可能要几十秒"},
     # OpenList（自建，AList v3 兼容 REST）
     "OPENLIST_URL": {"type": "str", "default": "", "group": "存储",
                      "label": "OpenList 地址",

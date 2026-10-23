@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .base import AuthError, Backend, FileEntry, Progress, StorageError
@@ -122,13 +123,37 @@ class Rclone(Backend):
 
     # ── 自检
     def check(self) -> tuple[bool, str]:
-        rc, _, err = self.run("lsd", self.spec(""), timeout=90.0)
-        if rc != 0:
-            rc, _, err = self.run("lsd", f"{self.remote}:", timeout=90.0)
-        if rc != 0:
-            return False, f"{self.remote}: 不可用：{(err or '').strip()[:200]}"
-        rc2, _, err2 = self.run("mkdir", self.spec("_healthcheck"), timeout=90.0)
-        if rc2 != 0:
-            return False, f"{self.remote}: 可读但不可写：{(err2 or '').strip()[:200]}"
-        self.run("rmdir", self.spec("_healthcheck"), timeout=90.0)
-        return True, f"rclone {self.remote}: 可读写"
+        """探一次：能不能连上、能不能写。
+
+        以前第一探是 `lsd <根目录>`，那会把根下所有番号目录列一遍 —— 归档上千条
+        时这一步能拖到几十秒（实测 92s），面板上「测试连接」像死了。改成先用
+        `about`（云端配额，单个轻请求，顺带给出剩余空间），拿不到配额的后端才退回
+        `lsd remote:` 这种浅探测。
+        """
+        # 两件事并行：写探测（必须）+ 配额（附赠信息）。一个一个来要串满两次云端
+        # 往返（实测 about 40s + mkdir 10s + rmdir 10s = 一分钟），并起来只等最慢那个，
+        # 而配额查询给一个短超时：问不到就只报「可读写」，不拖住整个测试。
+        def probe_write():
+            rc, _, err = self.run("mkdir", self.spec("_healthcheck"), timeout=45.0)
+            if rc != 0:
+                return False, f"{self.remote}: 可读但不可写：{(err or '').strip()[:200]}"
+            self.run("rmdir", self.spec("_healthcheck"), timeout=45.0)
+            return True, ""
+
+        def probe_quota():
+            rc, out, _err = self.run("about", f"{self.remote}:", timeout=20.0)
+            if rc != 0:
+                return ""
+            for line in (out or "").splitlines():
+                if line.lower().startswith("free:"):
+                    return f" · 剩余 {line.split(':', 1)[1].strip()}"
+            return ""
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            wrote = pool.submit(probe_write)
+            quota = pool.submit(probe_quota)
+            ok, why = wrote.result()
+            free = quota.result() if ok else ""
+        if not ok:
+            return False, why
+        return True, f"rclone {self.remote}: 可读写{free}"

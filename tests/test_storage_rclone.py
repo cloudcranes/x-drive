@@ -111,15 +111,40 @@ def test_transient_error_is_storage_error():
     assert not isinstance(err.value, AuthError)
 
 
-def test_check_mkdir_then_rmdir_probe():
-    rec = Recorder([(0, "", ""), (0, "", ""), (0, "", "")])
-    ok, detail = _backend(rec).check()
-    assert ok and "可读写" in detail
-    assert rec.calls[1][0] == ("mkdir", "gdrive:_healthcheck")
-    assert rec.calls[2][0] == ("rmdir", "gdrive:_healthcheck")
+class Table:
+    """按命令名回话的假执行器：写探测与配额是并行的，不能再按调用顺序断言。"""
+
+    def __init__(self, replies):
+        self.replies = replies
+        self.calls = []
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self.replies.get(args[0], (0, "", ""))
+
+    def names(self):
+        return [c[0][0] for c in self.calls]
+
+
+def test_check_never_lists_the_archive_root():
+    """lsd 根目录会把上千个番号目录列一遍（实测 92s）：自检不许用它。"""
+    table = Table({"about": (0, "Total: 100Gi\nFree: 60Gi\n", ""),
+                   "mkdir": (0, "", ""), "rmdir": (0, "", ""),
+                   "lsd": (0, "0 -1 X-Drive\n", "")})
+    ok, detail = _backend(table).check()
+    assert ok and "可读写" in detail and "60Gi" in detail
+    assert "lsd" not in table.names(), "自检不该列目录"
+
+
+def test_check_survives_quota_unsupported():
+    """拿不到配额（部分 WebDAV/S3）也要报可读写，不能因此判失败。"""
+    table = Table({"about": (1, "", "about not supported"),
+                   "mkdir": (0, "", ""), "rmdir": (0, "", "")})
+    ok, detail = _backend(table).check()
+    assert ok and detail == f"rclone gdrive: 可读写"
 
 
 def test_check_reports_readonly():
-    rec = Recorder([(0, "", ""), (1, "", "403 Forbidden")])
-    ok, detail = _backend(rec).check()
+    table = Table({"about": (0, "Free: 60Gi\n", ""), "mkdir": (1, "", "403 Forbidden")})
+    ok, detail = _backend(table).check()
     assert not ok and "不可写" in detail

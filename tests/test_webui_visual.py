@@ -334,3 +334,12 @@ def test_settings_marks_unsaved_rows_and_wide_paths():
     assert 'sel.classList.toggle("dirty", key in settingsDirty)' in js
     assert ".kvrow.setting .sval.dirty" in css(html())
     assert "_ROOT|_PATH|_TEMPLATE|_CA_FILE" in js, "路径/模板类字段要用宽输入框"
+
+
+def test_storage_test_button_shows_elapsed():
+    """rclone 的探测要问云端配额，可能几十秒：必须把秒数跑出来，否则像按钮没反应。"""
+    js = script(html())
+    # 递归 setTimeout：页面里只该有那两个轮询定时器（见 test_webui_backlog）
+    assert "let ticking = true;" in js
+    assert "测试中… ${Math.round((Date.now() - started) / 1000)}s" in js
+    assert "ticking = false;" in js
