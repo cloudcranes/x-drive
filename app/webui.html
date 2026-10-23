@@ -1442,32 +1442,34 @@ function applyFilter() {
   // 输入像番号时，结果条右侧给「搜资源」：本地没有也能直接去网上找
   const resCode = codeOfQuery(view.q);
   if ($("resbtn")) $("resbtn").hidden = !resCode;
+  // 上方资源面板已经给出这个番号的候选，就别在空态里再摆一个同样的按钮
+  const resShown = !!resCode && resState.code === resCode && resState.items > 0;
 
   const slot = $("empty-slot");
   slot.textContent = "";
   if (!tasks.length) {
     const box = el("div", "empty");
+    const cta = (label, run) => {
+      const b = el("button", "primary", label);
+      b.type = "button";
+      b.style.marginTop = "14px";
+      b.addEventListener("click", run);
+      box.append(b);
+    };
     if (!total) {
       box.append(el("b", null, "还没有归档记录"));
-      box.append(el("span", null, "点「新建下载」粘贴磁力，或在 Telegram 里直接发给机器人。"));
-      const go = el("button", "primary", "去搜资源");
-      go.type = "button";
-      go.style.marginTop = "14px";
-      go.addEventListener("click", () => { if (resCode) searchResources(resCode); else openPanel(); });
-      box.append(go);
-    } else if (resCode && resState.code === resCode && resState.items > 0) {
-      // 上方就是这批资源候选，别再摆一个「搜网络资源」按钮让人以为没搜到
+      box.append(el("span", null, resShown
+        ? "上面的网络资源就是搜到的候选：点「下载」才会进队列。"
+        : "点「新建下载」粘贴磁力，或在 Telegram 里直接发给机器人。"));
+      if (!resShown) cta(resCode ? "搜网络资源" : "新建下载", () => (resCode ? searchResources(resCode) : openPanel()));
+    } else if (resCode && resShown) {
       box.append(el("b", null, "站内没有 " + resCode));
       box.append(el("span", null, "上面的网络资源就是搜到的候选：点「下载」才会进队列。"));
     } else if (resCode) {
       // 站内没有这条番号：直接在原地给「去网上找」的出口，不用再进「新建下载」
       box.append(el("b", null, "站内没有 " + resCode));
       box.append(el("span", null, `本地 ${total} 个番号里没有它。搜一下网络资源，找到磁力再决定下不下。`));
-      const go = el("button", "primary", "搜网络资源");
-      go.type = "button";
-      go.style.marginTop = "14px";
-      go.addEventListener("click", () => searchResources(resCode));
-      box.append(go);
+      cta("搜网络资源", () => searchResources(resCode));
     } else {
       box.append(el("b", null, "没有匹配的番号"));
       box.append(el("span", null, "试试更短的关键词，或清空筛选条件。"));
