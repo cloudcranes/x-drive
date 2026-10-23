@@ -29,8 +29,14 @@ TIMEOUT = 20.0
 # 两次外部请求之间的最小间隔（秒），只在本进程内生效
 MIN_INTERVAL = float(os.getenv("META_MIN_INTERVAL", "1.5") or 0)
 CACHE_PATH = os.getenv("META_PATH", "/data/meta.json")
-# 优先用 javbus（JSON 接口，字段更全）；关掉或它挂了会回退到 javdb
+# 优先用 javbus（JSON 接口，字段更全）；关掉或它挂了会回退到 javdb。
+# 网页「设置 → 数据源」可以热改（settings.hot），改完下一次刮削就按新值走。
 USE_JAVBUS = os.getenv("META_USE_JAVBUS", "1") not in ("0", "false", "False")
+
+
+def _use_javbus() -> bool:
+    from . import settings as settings_mod
+    return bool(settings_mod.hot("META_USE_JAVBUS", USE_JAVBUS, bool))
 
 _lock = threading.Lock()
 _last_call = 0.0
@@ -291,7 +297,7 @@ async def lookup(code: str, path: str | None = None, client: httpx.AsyncClient |
     try:
         # 优先 javbus：直接返回 JSON，字段更全（导演/片商/发行商/系列/精确时长），
         # 不用解析 HTML。它挂了再回退到 javdb。
-        if USE_JAVBUS:
+        if _use_javbus():
             try:
                 info = await javbus.movie(code, client=cli)
             except Exception as exc:

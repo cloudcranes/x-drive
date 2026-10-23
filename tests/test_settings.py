@@ -105,14 +105,44 @@ def test_snapshot_marks_source(tmp_path, monkeypatch):
     assert snap["SCRAPE"]["value"] is False
 
 
-def test_snapshot_covers_all_17(tmp_path):
+def test_snapshot_covers_every_spec(tmp_path):
+    """设置面板列表 = SETTINGS_SPEC 全量（别写死条数，加配置项不用再改测试）。"""
     s = _s(tmp_path)
     snap = s.snapshot()
-    assert len(snap) == len(settings_mod.SETTINGS_SPEC) == 17
+    assert len(snap) == len(settings_mod.SETTINGS_SPEC)
     for key, spec in settings_mod.SETTINGS_SPEC.items():
         assert key in snap, f"缺 {key}"
         assert snap[key]["group"] == spec["group"]
         assert snap[key]["label"]
+
+
+def test_secret_settings_are_not_echoed(tmp_path, monkeypatch):
+    """METATUBE_TOKEN 这类密钥只回「已设置」，快照里绝不能带明文。"""
+    monkeypatch.setenv("METATUBE_TOKEN", "SECRET-MT")
+    s = _s(tmp_path)
+    snap = s.snapshot()
+    assert snap["METATUBE_TOKEN"]["secret"] is True
+    assert snap["METATUBE_TOKEN"]["value"] == ""
+    assert snap["METATUBE_TOKEN"]["configured"] is True
+    assert "SECRET-MT" not in repr(snap)
+
+
+def test_secret_set_from_web_wins_over_env(tmp_path, monkeypatch):
+    """网页写入的 token 优先级高于环境变量（state > env）。"""
+    monkeypatch.setenv("METATUBE_TOKEN", "FROM-ENV")
+    s = _s(tmp_path)
+    assert s.set("METATUBE_TOKEN", "FROM-WEB") is True
+    assert s.explicit("METATUBE_TOKEN") == (True, "FROM-WEB")
+    assert s.snapshot()["METATUBE_TOKEN"]["configured"] is True
+
+
+def test_explicit_reports_unset_keys(tmp_path, monkeypatch):
+    """没配过的键要能分辨出来，模块常量才有机会兜底。"""
+    monkeypatch.delenv("METATUBE_URL", raising=False)
+    s = _s(tmp_path)
+    assert s.explicit("METATUBE_URL") == (False, None)
+    monkeypatch.setenv("METATUBE_URL", "http://mt:8090")
+    assert s.explicit("METATUBE_URL") == (True, "http://mt:8090")
 
 
 # ─────────────────────────────────────────── TTL 缓存

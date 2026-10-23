@@ -12,6 +12,10 @@
 哪些算「启动参数」不进这里（改了必须重启，见 README 的 .env 说明）：
   TELEGRAM_BOT_TOKEN / WEB_PORT / XUNLEI_URL / RCLONE_CONFIG_HOST /
   TMP_ROOT / STATE_DIR / 各类挂载路径。它们仍走 os.getenv。
+
+刮削源（MetaTube / JavBus）的地址、代理、超时以前也是启动参数，改一次就得
+改 .env 再重启；现在收进这里，网页「设置 → 数据源」直接改、下一次调用即生效。
+METATUBE_TOKEN 标成 secret：网页只能写、不回显，快照里只给「已设置 / 未设置」。
 """
 from __future__ import annotations
 
@@ -64,6 +68,33 @@ SETTINGS_SPEC: dict[str, dict] = {
     # ── 其它
     "DEFAULT_SIZE_GB": {"type": "float", "default": 4.0, "group": "其它",
                         "label": "默认体积估算 (GB)", "note": "体积查不到时的兜底"},
+    # ── 数据源：MetaTube（刮削后端）。地址/代理/超时改完下一次请求就生效。
+    "METATUBE_URL": {"type": "str", "default": "", "group": "数据源",
+                     "label": "MetaTube 地址",
+                     "note": "例如 http://192.210.135.118:8090；留空 = 未配置刮削"},
+    "METATUBE_TOKEN": {"type": "str", "default": "", "group": "数据源", "secret": True,
+                       "label": "MetaTube Token",
+                       "note": "服务端容器里的 TOKEN；只写不回显，留空表示不改"},
+    "METATUBE_PROXY": {"type": "str", "default": "", "group": "数据源",
+                       "label": "MetaTube 代理",
+                       "note": "直连超时才填，例如 http://192.168.1.2:7893"},
+    "METATUBE_TIMEOUT": {"type": "float", "default": 25.0, "group": "数据源",
+                         "label": "MetaTube 超时 (秒)", "note": "单次请求超时"},
+    "METATUBE_AUTH_HEADER": {"type": "str", "default": "Authorization", "group": "数据源",
+                             "label": "鉴权头名",
+                             "note": "默认 Authorization；服务端换了带法才改"},
+    "METATUBE_AUTH_SCHEME": {"type": "str", "default": "Bearer", "group": "数据源",
+                             "label": "鉴权前缀",
+                             "note": "默认 Bearer；留空 = 只发裸 token"},
+    # ── 数据源：JavBus（磁力/详情 JSON API，可选源，挂了自动回退 javdb）
+    "JAVBUS_BASE": {"type": "str", "default": "https://javbus.master.us.kg", "group": "数据源",
+                    "label": "JavBus API 地址",
+                    "note": "自建 ovnrain/javbus-api 实例的根地址"},
+    "JAVBUS_TIMEOUT": {"type": "float", "default": 25.0, "group": "数据源",
+                       "label": "JavBus 超时 (秒)", "note": "单次请求超时"},
+    "META_USE_JAVBUS": {"type": "bool", "default": True, "group": "数据源",
+                        "label": "优先用 JavBus",
+                        "note": "关掉就只走 javdb 页面解析"},
 }
 
 # 设置键在 state 表里的名字
@@ -115,6 +146,30 @@ class Settings:
             self._cache[key] = (value, time.time())
         return value
 
+    # ---- 「有没有被显式配过」：设置表 > 环境变量；都没有返回 (False, None)。
+    #      刮削源这类参数用它决定要不要回落到模块里的老常量（测试里 monkeypatch 的
+    #      就是那些常量，不能被一份空的 settings 覆盖掉）。
+    def explicit(self, key: str) -> tuple[bool, object]:
+        spec = SETTINGS_SPEC.get(key)
+        if spec is None:
+            return False, None
+        try:
+            data = self._store.state_get(SETTINGS_KEY)
+        except Exception:
+            data = {}
+        if key in data:
+            try:
+                return True, _coerce(spec["type"], data[key])
+            except (TypeError, ValueError):
+                return False, None
+        env = os_getenv(key)
+        if env is not None and env != "":
+            try:
+                return True, _coerce(spec["type"], env)
+            except (TypeError, ValueError):
+                return False, None
+        return False, None
+
     # ---- 读「当前生效」的原始来源（网页展示用：区分来自设置/环境变量/默认）
     def _read(self, key: str, spec: dict):
         # 1. state 表里的 settings
@@ -131,7 +186,7 @@ class Settings:
         # 3. 默认值
         return spec["default"]
 
-    # ---- 全部 17 项的「当前值 + 来源」快照（网页设置面板用）
+    # ---- 全部设置项的「当前值 + 来源」快照（网页设置面板用）
     def snapshot(self) -> dict:
         try:
             data = self._store.state_get(SETTINGS_KEY)
@@ -150,7 +205,12 @@ class Settings:
                 else:
                     value = spec["default"]
                     source = "default"
-            out[key] = {"value": value, "source": source, **spec}
+            if spec.get("secret"):
+                # 密钥只写不回显：接口里给空值 + 是否已设置，别把 token 发给浏览器
+                out[key] = {"value": "", "configured": bool(value),
+                            "source": source, **spec}
+            else:
+                out[key] = {"value": value, "source": source, **spec}
         return out
 
     # ---- 写（网页保存）。校验类型，写库，清本进程缓存。
@@ -186,3 +246,42 @@ class Settings:
 # 环境变量读取：独立成函数便于测试替换。
 def os_getenv(key: str):
     return os.getenv(key)
+
+
+# ───────────────────────── 进程内绑定：给「模块常量」型配置做热更新的桥
+#
+# metatube / javbus / meta 里那些 BASE、TOKEN、TIMEOUT 是模块导入时一次性读的
+# 环境变量。要让网页改完立即生效，又不能把它们改成必传参数（会牵动全部调用方），
+# 这里在 web / bot 启动时把 Settings 实例绑到模块级，取配置时先问它。
+# 没绑定（单测、离线脚本）就照旧用模块常量。
+_bound: Settings | None = None
+
+
+def bind(instance: Settings | None) -> None:
+    """把当前进程用的 Settings 绑给热更新桥。传 None 解绑。"""
+    global _bound
+    _bound = instance
+
+
+def bound_get(key: str) -> tuple[bool, object]:
+    """(是否显式配置, 值)。没绑定实例时一律当作「没配过」。"""
+    inst = _bound
+    if inst is None:
+        return False, None
+    try:
+        return inst.explicit(key)
+    except Exception:
+        return False, None
+
+
+def hot(key: str, fallback, cast=None):
+    """热更新取值：显式配置优先，否则用调用方给的回落值。"""
+    ok, value = bound_get(key)
+    if not ok:
+        return fallback
+    if cast is None:
+        return value
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        return fallback

@@ -27,6 +27,8 @@ import time
 
 import httpx
 
+from . import settings as settings_mod
+
 log = logging.getLogger("x-drive.metatube")
 
 BASE = os.getenv("METATUBE_URL", "").rstrip("/")
@@ -41,22 +43,44 @@ TIMEOUT = float(os.getenv("METATUBE_TIMEOUT", "25") or 25)
 CACHE_DIR = os.getenv("METATUBE_CACHE", "")
 
 
+# 运行时配置：网页「设置 → 数据源」改过的值优先（settings.hot），
+# 没配过就用模块常量（环境变量 / 默认值）。改完下一次请求即生效，不用重启。
+def base() -> str:
+    return str(settings_mod.hot("METATUBE_URL", BASE) or "").rstrip("/")
+
+
+def _auth() -> tuple[str, str, str]:
+    return (str(settings_mod.hot("METATUBE_AUTH_HEADER", AUTH_HEADER) or ""),
+            str(settings_mod.hot("METATUBE_AUTH_SCHEME", AUTH_SCHEME) or ""),
+            str(settings_mod.hot("METATUBE_TOKEN", TOKEN) or ""))
+
+
+def _proxy() -> str:
+    return str(settings_mod.hot("METATUBE_PROXY", PROXY) or "")
+
+
+def _timeout() -> float:
+    return float(settings_mod.hot("METATUBE_TIMEOUT", TIMEOUT, float) or TIMEOUT)
+
+
 def configured() -> bool:
-    return bool(BASE)
+    return bool(base())
 
 
 def _headers() -> dict:
     """带上鉴权头。scheme 留空就只发裸 token。"""
-    if not TOKEN:
+    header, scheme, token = _auth()
+    if not token:
         return {}
-    value = f"{AUTH_SCHEME} {TOKEN}".strip() if AUTH_SCHEME else TOKEN
-    return {AUTH_HEADER: value}
+    value = f"{scheme} {token}".strip() if scheme else token
+    return {header: value}
 
 
 def _client() -> httpx.AsyncClient:
-    kwargs = {"follow_redirects": True, "timeout": TIMEOUT}
-    if PROXY:
-        kwargs["proxy"] = PROXY
+    kwargs = {"follow_redirects": True, "timeout": _timeout()}
+    proxy = _proxy()
+    if proxy:
+        kwargs["proxy"] = proxy
     return httpx.AsyncClient(**kwargs)
 
 
@@ -126,7 +150,7 @@ async def providers(client: httpx.AsyncClient | None = None) -> dict:
     own = client is None
     c = client or _client()
     try:
-        r = await c.get(f"{BASE}/v1/providers")
+        r = await c.get(f"{base()}/v1/providers")
         r.raise_for_status()
         return (r.json() or {}).get("data") or {}
     finally:
@@ -146,7 +170,7 @@ async def search(query: str, provider: str = "",
     if provider:
         params["provider"] = provider
     try:
-        r = await c.get(f"{BASE}/v1/movies/search", params=params, headers=_headers())
+        r = await c.get(f"{base()}/v1/movies/search", params=params, headers=_headers())
         if r.status_code == 401:
             raise RuntimeError(
                 "MetaTube 拒绝了鉴权（401）：请核对 METATUBE_TOKEN，"
@@ -181,7 +205,7 @@ async def movie(number: str, provider: str = "",
         if not fallback:
             return {}
         prov = provider or ""
-        url = f"{BASE}/v1/movies/{number}/{prov}" if prov else f"{BASE}/v1/movies/{number}"
+        url = f"{base()}/v1/movies/{number}/{prov}" if prov else f"{base()}/v1/movies/{number}"
         r = await c.get(url, headers=_headers())
         if r.status_code in (401, 404):
             return {}

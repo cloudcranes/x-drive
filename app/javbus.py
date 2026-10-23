@@ -18,6 +18,8 @@ import time
 
 import httpx
 
+from . import settings as settings_mod
+
 log = logging.getLogger("x-drive.javbus")
 
 BASE = os.getenv("JAVBUS_BASE", "https://javbus.master.us.kg").rstrip("/")
@@ -28,17 +30,26 @@ TIMEOUT = float(os.getenv("JAVBUS_TIMEOUT", "25") or 25)
 _CODE_IN_TITLE = re.compile(r"^([A-Za-z]+-\d+[A-Za-z]*)", re.I)
 
 
+# 运行时配置：网页「设置 → 数据源」改过的优先，否则用模块常量（env / 默认）。
+def base() -> str:
+    return str(settings_mod.hot("JAVBUS_BASE", BASE) or "").rstrip("/")
+
+
+def timeout() -> float:
+    return float(settings_mod.hot("JAVBUS_TIMEOUT", TIMEOUT, float) or TIMEOUT)
+
+
 def _client(client: httpx.AsyncClient | None) -> tuple[httpx.AsyncClient, bool]:
     if client is not None:
         return client, False
-    return httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT,
+    return httpx.AsyncClient(follow_redirects=True, timeout=timeout(),
                              headers={"User-Agent": UA}), True
 
 
 async def _get(client: httpx.AsyncClient | None, path: str) -> object | None:
     own_client, owned = _client(client)
     try:
-        r = await own_client.get(BASE + path, headers={"User-Agent": UA})
+        r = await own_client.get(base() + path, headers={"User-Agent": UA})
         if r.status_code != 200:
             log.warning("javbus %s 返回 %s", path, r.status_code)
             return None
@@ -106,7 +117,7 @@ async def movie(code: str, client: httpx.AsyncClient | None = None) -> dict | No
     if not isinstance(data, dict) or not data.get("id"):
         return None
     info = normalize_movie(data)
-    info["url"] = f"{BASE}/api/movies/{code}"
+    info["url"] = f"{base()}/api/movies/{code}"
     info["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     return info
 

@@ -313,12 +313,14 @@
   .panel #dl-text:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
   /* 其余文本输入（订阅的演员 ID、元数据番号、设置项）以前没写样式，
      在深色面板里落回浏览器默认白框，非常刺眼。统一到同一套深色底。 */
-  .panel input[type="text"], .panel input:not([type]){
+  .panel input[type="text"], .panel input[type="password"], .panel input:not([type]){
     width:100%; padding:9px 12px; border-radius:8px; font:inherit; font-size:12.5px;
     font-family:var(--mono); border:1px solid var(--line); background:rgba(0,0,0,.6);
     color:var(--text); outline:none; transition:border-color .16s, box-shadow .16s}
-  .panel input[type="text"]::placeholder, .panel input:not([type])::placeholder{color:var(--faint)}
-  .panel input[type="text"]:focus, .panel input:not([type]):focus{
+  .panel input[type="text"]::placeholder, .panel input[type="password"]::placeholder,
+  .panel input:not([type])::placeholder{color:var(--faint)}
+  .panel input[type="text"]:focus, .panel input[type="password"]:focus,
+  .panel input:not([type]):focus{
     border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
   .panel-actions{display:flex; align-items:center; gap:9px; margin-top:10px; flex-wrap:wrap}
   .chk{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);
@@ -492,6 +494,8 @@
   .kvrow.setting{flex-wrap:wrap; row-gap:5px}
   .kvrow.setting .nm{flex:none; min-width:150px}     /* 标签定宽，输入框才会齐列 */
   .kvrow.setting .sval{flex:none; width:126px; max-width:45%}
+  /* 地址 / 代理 / token 这类长值给宽一点的框，否则「https://javbu…」看不全 */
+  .kvrow.setting .sval.wide{width:300px; max-width:70%}
   .kvrow.setting .sval[type="checkbox"]{width:15px; height:15px; accent-color:var(--cyan); cursor:pointer}
   .kvrow.setting .why{flex:1 1 100%; white-space:normal; overflow:visible; line-height:1.55}
   .kvrow.setting .hint{flex:none}
@@ -3439,14 +3443,28 @@ function settingsRow(key, it) {
   nm.title = (it.note || "") + "\n键：" + key;
   row.append(nm);
 
-  const input = el("input", "sval");
-  input.type = it.type === "bool" ? "checkbox" : "text";
+  // 密钥类（MetaTube Token）：后端只回「是否已设置」，值永远是空的。
+  // 输入框留空 = 不改，填了才提交；保存成功后输入框清空、状态变「已设置」。
+  const secret = !!it.secret;
+  const wide = secret || /(_URL|_BASE|_PROXY)$/.test(key);
+  const input = el("input", "sval" + (wide ? " wide" : ""));
+  input.type = it.type === "bool" ? "checkbox" : (secret ? "password" : "text");
+  input.autocomplete = "off";
   if (it.type === "bool") {
     input.checked = !!it.value;
+  } else if (secret) {
+    input.value = "";
+    input.placeholder = it.configured ? "已设置 · 留空不改" : "未设置";
   } else {
     input.value = String(it.value);
   }
   input.addEventListener("input", () => {
+    if (secret) {
+      if (input.value) settingsDirty[key] = input.value;
+      else delete settingsDirty[key];
+      renderDirty();
+      return;
+    }
     const v = it.type === "bool" ? input.checked : input.value;
     if (String(v) === String(it.type === "bool" ? !!it.value : it.value)) {
       delete settingsDirty[key];
@@ -3457,7 +3475,9 @@ function settingsRow(key, it) {
   });
   row.append(input);
 
-  const src = el("span", "hint", settingsSource(it.source));
+  const src = el("span", "hint", secret
+    ? `${it.configured ? "已设置" : "未设置"} · ${settingsSource(it.source)}`
+    : settingsSource(it.source));
   row.append(src);
   if (it.note) {
     const nt = el("div", "why");

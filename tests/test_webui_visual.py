@@ -72,7 +72,8 @@ def test_panel_text_inputs_are_themed():
     # 三个曾经是白框的输入点仍在（#meta-code / #sub-actor 是 text input，.sval 同理）
     assert 'id="meta-code" type="text"' in html()
     assert 'id="sub-actor" type="text"' in html()
-    assert 'el("input", "sval")' in html()
+    assert 'el("input", "sval"' in html(), "设置项输入框要带 sval 类"
+    assert '.panel input[type="password"]' in c, "密钥输入框也要深色样式"
 
 
 # ---------------------------------------------------------------- 4. 禁用态

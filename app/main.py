@@ -67,7 +67,10 @@ class Config:
     #    不必重启）。这些字段不再进 dataclass 的 __init__，由 from_env 之后动态读。
     #    其余（token / 端口 / 挂载路径等启动参数）仍是 dataclass 字段，保持不变。
     def _settings(self) -> "settings_mod.Settings":
-        return settings_mod.Settings(task_store(self))
+        inst = settings_mod.Settings(task_store(self))
+        # 绑定给 scrapers（METATUBE_* / JAVBUS_* / META_USE_JAVBUS 的热更新桥）
+        settings_mod.bind(inst)
+        return inst
 
     def _get(self, key: str):
         try:

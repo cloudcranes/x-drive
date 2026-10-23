@@ -213,6 +213,9 @@ def _get_settings() -> settings_mod.Settings:
     with _settings_lock:
         if _settings is None or _settings._store is not s:
             _settings = settings_mod.Settings(s)
+            # 绑定给 scrapers：METATUBE_* / JAVBUS_* / META_USE_JAVBUS
+            # 在模块里是导入时读的环境变量，靠这个桥改成「网页改完即生效」。
+            settings_mod.bind(_settings)
         return _settings
 
 
@@ -3007,7 +3010,7 @@ def scrape_status() -> dict:
 
     不返回 token，也不拼到任何 URL 里。
     """
-    info = {"configured": metatube.configured(), "url": metatube.BASE,
+    info = {"configured": metatube.configured(), "url": metatube.base(),
             "scrape": get_setting("SCRAPE"), "nfo": get_setting("SCRAPE_NFO"), "poster": get_setting("SCRAPE_POSTER"),
             "ok": False, "version": "", "providers": [], "error": "",
             "pending": _scrape_pending()}
@@ -3017,7 +3020,7 @@ def scrape_status() -> dict:
 
     async def probe():
         async with metatube._client() as client:
-            root = await client.get(f"{metatube.BASE}/")
+            root = await client.get(f"{metatube.base()}/")
             version = ((root.json() or {}).get("data") or {}).get("version", "")
             provs = await metatube.providers(client)
             return version, list((provs.get("movie_providers") or {}))
