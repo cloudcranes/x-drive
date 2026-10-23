@@ -729,3 +729,33 @@ def test_wishlist_adds_codes_and_downloads_without_subscription(tmp_path, monkey
     res = web.run_subscriptions()
     wish = [r for r in res["results"] if r["key"] == web.WISH_KEY][0]
     assert {s["code"] for s in wish["started"]} == {"AAA-1", "AAA-2"}
+
+
+def test_backlog_view_finds_job_outside_latest_200(tmp_path, monkeypatch):
+    """待办里的任务不在最新 200 条里时，仍要按 job_id 精确查到它的真实状态。
+
+    以前 backlog_view 用 recent(200) 兜底，任务一多老任务查不到 → 显示成
+    「进行中」，实际它早就 failed 了。这里造 250 条把目标挤出窗口，验证
+    job_stage 仍是真实值而不是空兜底。
+    """
+    bl, web = _iso_env(tmp_path, monkeypatch)
+    web.STORE.start("TGT-1", "TGT-001", "magnet:tgt")
+    web.STORE.finish("TGT-1", "failed")
+    # 250 条更新的任务，把 TGT-1 挤出 recent(200) 窗口
+    for i in range(250):
+        jid = f"other-{i}"
+        web.STORE.start(jid, f"O-{i:03d}", "magnet:b")
+        web.STORE.finish(jid, "done")
+    todo = {"javbus:actor:w5a": {
+        "TGT-001": {"date": "2020-01-01", "state": bl.QUEUED, "tries": 0,
+                    "next_at": 0, "title": "目标", "note": "", "job_id": "TGT-1"},
+    }}
+    web.subs_save({}, todo)
+
+    view = web.backlog_view()
+    row = {r["code"]: r for r in view["items"]}["TGT-001"]
+
+    assert row["job_stage"] == "failed", \
+        f"任务在 200 条之外被误判成进行中：{row['job_stage']}"
+    assert "failed" in row["why"] or "失败" in row["why"], \
+        f"why 应反映真实失败：{row['why']}"

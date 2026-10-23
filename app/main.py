@@ -27,8 +27,8 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import (codes, core, fetcher, meta, metadata, metrics, metatube, pipeline, retry,
-               sources, store, whatslink, workspace, xunlei)
+from . import (codes, core, diskspace, fetcher, meta, metadata, metrics, metatube,
+               pipeline, retry, sources, store, whatslink, workspace, xunlei)
 
 log = logging.getLogger("x-drive")
 
@@ -878,6 +878,89 @@ async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text(f"🗑 已删除 {key}（文件在 Drive 回收站，可恢复）")
 
 
+async def on_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/status`：只读汇总运行状态，纯本地读取、零副作用。
+
+    用户在手机上想看一眼「现在什么情况」，不能开电脑看网页面板。这里只读
+    bot 自己那几份本地状态（任务表 / metrics / 用量 / 磁盘 / 待补跑 / 闸门），
+    **不 import app.web**：web 是另一个进程，有自己的 STORE/STATE 路径。
+    """
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if user.id not in cfg.allowed:
+        return
+
+    # 任务表：unfinished_any 含 deferred（等额度），比 unfinished 更如实反映「还要跑」
+    try:
+        active = task_store(cfg).unfinished_any()
+    except Exception as exc:
+        log.warning("/status 读任务表失败：%s", exc)
+        active = []
+    # 闸门：恢复后待对账时调度是关的，运维最该知道这件事
+    gate = scheduling_gate(cfg)
+    # 今日完成/失败：metrics.snapshot 里 total 是 {ok, partial, error, ...}
+    snap = metrics.snapshot(cfg.metrics_path)
+    total = snap.get("total") or {}
+    done = int(total.get("ok", 0)) + int(total.get("partial", 0))
+    failed = sum(int(v) for k, v in total.items() if k not in ("ok", "partial"))
+    used = today_bytes(cfg)
+    free = diskspace.free_bytes(cfg.tmp_root)
+
+    lines = ["📊 状态"]
+    lines.append(f"· 进行中 {len(active)} 个"
+                 + ("（含等额度的）" if any(j.get("stage") == "deferred" for j in active) else ""))
+    lines.append(f"· 今日完成 {done} · 失败 {failed}")
+    if cfg.daily_upload_gb:
+        cap = cfg.daily_upload_gb * 1024 ** 3
+        lines.append(f"· 今日上传 {core.human_size(used)} / {cfg.daily_upload_gb}GB")
+    else:
+        lines.append(f"· 今日上传 {core.human_size(used)}（不限额）")
+    lines.append("· 磁盘剩余 " + (core.human_size(free) if free is not None else "无法探测"))
+    lines.append(f"· 待补跑 {len(load_pending(cfg))} 条")
+    if not gate["open"]:
+        lines.append(f"⛔ 调度闸门关闭：{gate['reason']}")
+    await message.reply_text("\n".join(lines))
+
+
+async def on_subs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/subs`：只读列出订阅，与网页面板共用同一张任务库里的 state 表（键 "subs"）。
+
+    订阅表是 web 侧写的，bot 进程读它靠 `store.Store(cfg.jobs_db).state_get("subs")`。
+    docker-compose 里 bot 与 web 挂同一个 ./data，所以 jobs_db 是同一个库文件。
+    读不到（库不存在 / 没有 subs 键）就回一句人话，不能崩溃。
+    """
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if user.id not in cfg.allowed:
+        return
+
+    try:
+        subs = store.Store(cfg.jobs_db).state_get("subs")
+    except Exception as exc:
+        log.warning("/subs 读订阅表失败：%s", exc)
+        await message.reply_text("读订阅表失败，稍后再试。")
+        return
+    if not subs:
+        await message.reply_text("还没有订阅。")
+        return
+
+    rows = []
+    for key, sub in sorted(subs.items()):
+        name = sub.get("name") or sub.get("id") or key
+        kind = "演员" if sub.get("kind") == "actor" else "系列"
+        enabled = "" if sub.get("enabled", True) else "（停用）"
+        last_run = sub.get("last_run") or "从未"
+        last_result = sub.get("last_result") or ""
+        rows.append(f"· {name}{enabled} · {kind}\n  上次 {last_run}"
+                    + (f" · {last_result}" if last_result else ""))
+    head = f"📡 订阅 {len(subs)} 个"
+    await message.reply_text((head + "\n" + "\n".join(rows))[:3500])
+
+
 async def on_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if message:
@@ -889,6 +972,8 @@ async def on_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "• 没写番号时从文件名里识别，识别不到归到「未分类-时间」\n"
             "• `/retry` 或 `/retry <磁力>` → 重试失败的任务\n"
             "• `/list` → 查看已归档的番号\n"
+            "• `/status` → 查看运行状态（进行中 / 今日完成 / 磁盘 / 闸门）\n"
+            "• `/subs` → 查看订阅列表\n"
             "• `/del <番号>` → 查看将删除的目录，加 `--yes` 执行\n"
             "• `/help` → 本说明"
         )
@@ -1197,6 +1282,8 @@ def main() -> None:
     app.add_handler(CommandHandler("find", on_find))
     app.add_handler(CommandHandler("retry", on_retry))
     app.add_handler(CommandHandler("list", on_list))
+    app.add_handler(CommandHandler("status", on_status))
+    app.add_handler(CommandHandler("subs", on_subs))
     app.add_handler(CommandHandler("del", on_delete))
     app.add_handler(CommandHandler(["help", "start"], on_help))
     log.info(

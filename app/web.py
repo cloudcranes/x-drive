@@ -1447,7 +1447,10 @@ def backlog_view(key: str = "", limit: int = 200) -> dict:
     以前待办只在订阅卡片上显示一个数字，用户看不出卡在哪、也动不了它。
     """
     todo = backlog_load()
-    jobs = {j["id"]: j for j in _store().recent(200)}
+    # 按 job_id 精确查任务，不要用 recent(200) 兜底：recent 取的是**最新 200 条**，
+    # 待办里的任务一多（订阅跑久了很容易），老任务就查不到 → 显示成「进行中」，
+    # 实际它可能早就失败了。展示层虽不造成重复下载，但会误导用户卡在哪。
+    store_ = _store()
     archived = archived_codes()
     rows = []
     keys = [key] if key else list(todo)
@@ -1456,7 +1459,7 @@ def backlog_view(key: str = "", limit: int = 200) -> dict:
             state = item.get("state") or backlog.PENDING
             if state == backlog.QUEUED and code in archived:
                 state = backlog.DONE           # 归档完成，展示上以归档为准
-            job = jobs.get(item.get("job_id") or "") or {}
+            job = store_.get(item.get("job_id") or "") or {}
             next_at = float(item.get("next_at") or 0)
             if state == backlog.PENDING:
                 why = (f"{max(0, int((next_at - time.time()) / 60))} 分钟后再查"
