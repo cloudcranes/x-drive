@@ -541,6 +541,8 @@
   .vsum button.on b{color:var(--cyan)}
   .vsum b.warn{color:#ffc98a}
   .vsum b.bad{color:#ff9b9b}
+  /* 智能整理：清单自己滚，别把下面的「执行 / 重新检查」挤出视野 */
+  .norm-list{max-height:300px; overflow-y:auto; padding-right:2px; margin-bottom:2px}
   .notice{margin-top:9px; padding:7px 10px; border-radius:8px; font-size:11.5px; line-height:1.6;
     color:#ffc98a; border:1px solid rgba(255,201,138,.28); background:rgba(255,201,138,.06)}
   .notice.quiet{color:var(--dim); border-color:var(--line); background:rgba(255,255,255,.02)}
@@ -594,6 +596,8 @@
     .queue-list{grid-template-columns:1fr; max-height:none}
     /* 窄屏队列头部塞不下「标题 + 计数 + 说明 + 两个按钮」：说明挪走、按钮换行 */
     #queue-hint{display:none}
+    /* 智能整理头部同理：说明挪走，标题与按钮不被挤断 */
+    #norm-hint, #norm-foot-hint{display:none}
     .queue-head .r{margin-left:0; width:100%; justify-content:flex-end}
   }
   @media(max-width:620px){
@@ -872,6 +876,36 @@
 
       <div class="meta-h">重复归档</div>
       <div id="dups-list"><span class="hint">点「查重复归档」列出同番号多条记录 / 同 infohash 多份</span></div>
+    </div>
+  </section>
+
+  <section class="panel wide" id="normpanel" hidden aria-label="智能整理">
+    <div class="panel-actrow">
+      <b style="font-size:13px">智能整理</b>
+      <span class="badge" id="norm-state">未检查</span>
+      <span class="hint" id="norm-hint"></span>
+      <button class="ghost" id="norm-close" type="button">返回归档</button>
+    </div>
+
+    <div class="panel-body">
+      <div class="notice quiet">只做两件事：把未分类归档按文件名认回番号、把不合规的目录名改成规范名。
+        两步都先出清单，点按钮并确认后才动 Drive；文件不重传。</div>
+
+      <div class="meta-h">未分类可收编 <span class="chip plain" id="norm-adopt-n">0</span></div>
+      <div class="norm-list" id="norm-adopt"><span class="hint">展开时自动检查</span></div>
+
+      <div class="meta-h">按规范改名 <span class="chip plain" id="norm-rename-n">0</span></div>
+      <div class="norm-list" id="norm-rename"><span class="hint">展开时自动检查</span></div>
+
+      <div id="norm-out"></div>
+    </div>
+
+    <!-- 两个执行入口钉在面板底部：清单再长也不用滚到底才点得到 -->
+    <div class="panel-actrow" style="margin-top:10px">
+      <button class="primary" id="norm-adopt-run" type="button" disabled>收编未分类</button>
+      <button class="primary" id="norm-rename-run" type="button" disabled>按规范改名</button>
+      <button class="ghost" id="norm-refresh" type="button">重新检查</button>
+      <span class="hint" id="norm-foot-hint">两步都要确认后才动 Drive</span>
     </div>
   </section>
 
@@ -1252,75 +1286,158 @@ function card(t) {
 // 删除归档：两段式。先问服务端「将删什么」，把番号和体积摆给用户看，
 // 再让用户确认；确认后才带 confirm=true 真删。删除不可逆，不做一键删。
 // 按规范批量改名：先出清单（改名 N 条、跳过 M 条），确认后才搬 Drive。
-async function askNormalize() {
-  // 先收编未分类：从文件名认番号，查到元数据才按规范改名
-  let adopt = null;
-  try {
-    const r = await fetch(BASE + "/api/archive/adopt", authInit({
-      method: "POST", headers: {"Content-Type": "application/json"}, body: "{}",
-    }));
-    adopt = await r.json();
-  } catch (e) { adopt = null; }
-  const adoptList = (adopt && adopt.adopt) || [];
-  if (adoptList.length) {
-    const preview = adoptList.slice(0, 8).map(i => `${i.code} → ${i.to}`).join("\n");
-    if (confirm(`有 ${adoptList.length} 个未分类归档能认出番号：\n\n${preview}\n\n先收编它们？（会查元数据后改名）`)) {
-      try {
-        const r2 = await fetch(BASE + "/api/archive/adopt", authInit({
-          method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({confirm: true}),
-        }));
-        const res = await r2.json().catch(() => ({}));
-        flash(`收编 ${(res.renamed || []).length} 个` + ((res.failed || []).length ? `，失败 ${res.failed.length} 个` : ""),
-              (res.failed || []).length > 0);
-      } catch (e) {
-        flash("收编失败：" + (e.message || e), true);
-      }
-    }
-  }
+// ── 智能整理（视图）
+// 以前这是个「点一下直接跑两步 + 两个 confirm」的动作：没东西可整理时只在左下角
+// 闪 3 秒就没了，用户会以为按钮点不动。现在和其他功能一样是整块视图：
+// 先列两份清单（未分类可收编 / 不合规待改名），再分别点按钮执行，结果留在页面上。
+const normState = {adopt: [], adoptSkip: [], rename: [], renameSkip: [], total: 0};
 
-  let plan = null;
+function setNormHint(text, kind) {
+  const h = $("norm-hint");
+  if (!h) return;
+  h.textContent = text || "";
+  h.className = "hint" + (kind ? " " + kind : "");
+}
+
+function setNormState(text, kind) {
+  const b = $("norm-state");
+  if (!b) return;
+  b.textContent = text;
+  b.className = "badge" + (kind ? " " + kind : "");
+}
+
+async function normApi(path, body) {
+  const r = await fetch(BASE + path, authInit({
+    method: "POST", cache: "no-store",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body || {}),
+  }));
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok && d && !d.error) d.error = "HTTP " + r.status;
+  return d || {};
+}
+
+function normList(rows, skipped) {
+  const box = el("div");
+  for (const row of rows.slice(0, 30)) {
+    const line = el("div", "kvrow");
+    line.append(el("span", "nm", row.code || "—"));
+    line.append(el("span", "why", "→ " + (row.to || "")));
+    box.append(line);
+  }
+  if (rows.length > 30) box.append(el("span", "hint", `…另有 ${rows.length - 30} 条`));
+  if (skipped && skipped.length) {
+    const why = skipped.slice(0, 5)
+      .map(x => `${x.code || "—"}（${x.reason || "目标名已被占用"}）`).join("、");
+    box.append(el("div", "notice quiet",
+      `跳过 ${skipped.length} 条：${why}${skipped.length > 5 ? "…" : ""}`));
+  }
+  return box;
+}
+
+function renderNorm() {
+  const aBox = $("norm-adopt"), nBox = $("norm-rename");
+  aBox.textContent = "";
+  nBox.textContent = "";
+  $("norm-adopt-n").textContent = String(normState.adopt.length);
+  $("norm-rename-n").textContent = String(normState.rename.length);
+  if (normState.adopt.length) aBox.append(normList(normState.adopt, normState.adoptSkip));
+  else {
+    aBox.append(el("span", "hint", "没有可收编的未分类归档（认不出番号或目标名已存在）"));
+    if (normState.adoptSkip.length) aBox.append(normList([], normState.adoptSkip));
+  }
+  if (normState.rename.length) nBox.append(normList(normState.rename, normState.renameSkip));
+  else {
+    nBox.append(el("span", "hint", "没有需要改名的归档"));
+    if (normState.renameSkip.length) nBox.append(normList([], normState.renameSkip));
+  }
+  $("norm-adopt-run").disabled = !normState.adopt.length;
+  $("norm-rename-run").disabled = !normState.rename.length;
+}
+
+async function loadNormPlan() {
+  setNormState("检查中", "warn");
+  setNormHint("");
+  $("norm-out").textContent = "";
   try {
-    const r = await fetch(BASE + "/api/archive/normalize", authInit({
-      method: "POST", headers: {"Content-Type": "application/json"}, body: "{}",
-    }));
-    plan = await r.json();
+    const [a, n] = await Promise.all([
+      normApi("/api/archive/adopt"),
+      normApi("/api/archive/normalize"),
+    ]);
+    if (!a || a.ok === false) throw new Error((a && a.error) || "取收编清单失败");
+    if (!n || n.ok === false) throw new Error((n && n.error) || "取改名清单失败");
+    normState.adopt = a.adopt || [];
+    normState.adoptSkip = a.skipped || [];
+    normState.rename = n.rename || [];
+    normState.renameSkip = n.skipped || [];
+    normState.total = n.total || 0;
+    renderNorm();
+    const todo = normState.adopt.length + normState.rename.length;
+    setNormState(todo ? `${todo} 项待整理` : "已全部符合规范", todo ? "warn" : "ok");
+    setNormHint(`共 ${normState.total} 个番号 · 可收编 ${normState.adopt.length} · 待改名 ${normState.rename.length}`);
   } catch (e) {
-    flash("取改名清单失败：" + e.message, true);
-    return;
+    setNormState("检查失败", "err");
+    setNormHint(e.message || String(e));
   }
-  if (!plan || !plan.ok) {
-    flash((plan && plan.error) || "取改名清单失败", true);
-    return;
-  }
-  const todo = plan.rename || [];
-  const skip = plan.skipped || [];
-  if (!todo.length && !skip.length) {
-    flash(`已全部符合规范（共 ${plan.total} 条）`);
-    return;
-  }
-  const lines = todo.slice(0, 12).map(i => `${i.code} → ${i.to}`);
-  if (todo.length > 12) lines.push(`… 另有 ${todo.length - 12} 条`);
-  if (skip.length) lines.push(`跳过 ${skip.length} 条（目标名已被占用）`);
-  const ok = confirm(`按规范改名 ${todo.length} 条？\n\n${lines.join("\n")}\n\n`
-    + `会移动 Drive 目录并同步归档记录，已上传的文件不会重传。`);
-  if (!ok || !todo.length) return;
+}
+
+function normResultRow(item, ok) {
+  const line = el("div", "kvrow" + (ok ? "" : " bad"));
+  line.append(el("span", "badge " + (ok ? "ok" : "err"), ok ? "完成" : "失败"));
+  line.append(el("span", "nm", `${item.from || "—"} → ${item.to || "—"}`));
+  if (!ok) line.append(el("span", "why", item.error || "未知原因"));
+  return line;
+}
+
+async function runNorm(kind, btn) {
+  const todo = kind === "adopt" ? normState.adopt : normState.rename;
+  if (!todo.length) return;
+  const label = kind === "adopt" ? "收编" : "改名";
+  const lines = todo.slice(0, 8).map(i => `${i.code} → ${i.to}`).join("\n");
+  const more = todo.length > 8 ? `\n… 另有 ${todo.length - 8} 条` : "";
+  const tail = kind === "adopt"
+    ? "会先查元数据，再按规范改名；文件不重传。"
+    : "会移动 Drive 目录并同步归档记录；文件不重传。";
+  if (!confirm(`${label} ${todo.length} 条？\n\n${lines}${more}\n\n${tail}`)) return;
+  if (btn) btn.disabled = true;
+  setNormState(`${label}中…`, "warn");
+  const path = kind === "adopt" ? "/api/archive/adopt" : "/api/archive/normalize";
   try {
-    const r2 = await fetch(BASE + "/api/archive/normalize", authInit({
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({confirm: true}),
-    }));
-    const res = await r2.json().catch(() => ({}));
-    if (!r2.ok || !res.ok) {
-      flash((res && res.error) || `改名失败（HTTP ${r2.status}）`, true);
+    const d = await normApi(path, {confirm: true});
+    const out = $("norm-out");
+    out.textContent = "";
+    if (!d || !d.ok) {
+      out.append(el("div", "notice", `${label}失败：${(d && d.error) || "未知错误"}`));
+      setNormState(`${label}失败`, "err");
       return;
     }
-    const bad = res.failed || [];
-    flash(`已改名 ${(res.renamed || []).length} 条` + (bad.length ? `，失败 ${bad.length} 条` : ""), bad.length > 0);
-    load();
+    const done = d.renamed || [];
+    const bad = d.failed || [];
+    out.append(el("div", "kv", `${label}完成 ${done.length} 条 · 失败 ${bad.length} 条`));
+    done.slice(0, 20).forEach(item => out.append(normResultRow(item, true)));
+    bad.slice(0, 20).forEach(item => out.append(normResultRow(item, false)));
+    if (done.length > 20 || bad.length > 20) {
+      out.append(el("span", "hint", "结果只列前 20 条"));
+    }
+    setNormState(bad.length ? `${bad.length} 条失败` : "已完成", bad.length ? "warn" : "ok");
+    setNormHint(`${label} ${done.length} 条` + (bad.length ? `，失败 ${bad.length} 条` : ""));
+    load();                 // 归档列表跟着更新
+    loadNormPlan();         // 清单重新算一遍
   } catch (e) {
-    flash("改名失败：" + (e.message || e), true);
+    setNormState(`${label}失败`, "err");
+    setNormHint(e.message || String(e));
+  } finally {
+    if (btn) btn.disabled = false;
   }
+}
+
+function openNorm() {
+  showView("norm");
+  loadNormPlan();
+}
+function closeNorm() {
+  showView("archive");
+  setNormHint("");
 }
 
 // 归档改名：Drive 目录与 state 一起改。名字会用作目录名，只留字母数字与连字符，
@@ -2081,8 +2198,7 @@ $("sub-run").addEventListener("click", async () => {
 // ───────────────────────────────── 视图切换
 // 主内容区整块切换：点侧栏某项，中间区域整个换成那个界面，归档列表暂时隐藏。
 // 以前各功能是弹层（section.panel 浮在归档列表上），多个可以叠在一起；
-// 现在改成单视图：同一时刻只显示一个（归档 / 新建下载 / 订阅 / 元数据 / 归档校验 / 设置），
-// 下载队列仍是右侧抽屉、智能整理仍是弹确认的动作，不占主内容区视图。
+// 同一时刻只显示一个视图（归档 / 下载队列 / 订阅 / 智能整理 / 元数据 / 归档校验 / 设置）。
 function showView(name) {
   const isArchive = name === "archive";
   const resBox = $("resource-slot");
@@ -2094,6 +2210,7 @@ function showView(name) {
     ["submit-slot", isArchive && !!($("submit-slot") || {}).childElementCount],
     ["subpanel", name === "subs"],
     ["metapanel", name === "meta"], ["healthpanel", name === "health"],
+    ["normpanel", name === "norm"],
     ["settingspanel", name === "settings"], ["queue", name === "queue"],
   ];
   currentView = name;
@@ -2106,7 +2223,8 @@ function showView(name) {
   const navOn = [
     ["archive-open", isArchive],
     ["subs-open", name === "subs"], ["metatool-open", name === "meta"],
-    ["health-open", name === "health"], ["settings-open", name === "settings"],
+    ["health-open", name === "health"], ["norm-btn", name === "norm"],
+    ["settings-open", name === "settings"],
     // 队列也是视图：在这一页时侧栏同样高亮，切走就清掉（别双高亮）
     ["queuebtn", name === "queue"],
   ];
@@ -3622,7 +3740,11 @@ $("verify-run").addEventListener("click", verifyBatch);
 $("verify-cancel").addEventListener("click", cancelVerify);
 $("verify-dups").addEventListener("click", loadDups);
 
-$("norm-btn").addEventListener("click", askNormalize);
+$("norm-btn").addEventListener("click", () => (currentView === "norm" ? closeNorm() : openNorm()));
+$("norm-close").addEventListener("click", closeNorm);
+$("norm-refresh").addEventListener("click", loadNormPlan);
+$("norm-adopt-run").addEventListener("click", () => runNorm("adopt", $("norm-adopt-run")));
+$("norm-rename-run").addEventListener("click", () => runNorm("rename", $("norm-rename-run")));
 
 // 面板里多天前的失败任务：只删任务记录，不动下载目录
 $("panel-clean").addEventListener("click", async () => {

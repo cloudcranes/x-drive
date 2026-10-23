@@ -242,3 +242,29 @@ def test_magnet_is_not_a_local_filter():
     assert "queryKind(view.q)" in body, "matches 要先判断输入类型"
     filters = js[js.index("function renderActiveFilters"):js.index("function card")]
     assert 'qk.kind !== "magnet"' in filters
+
+
+# ---------------------------------------------------------------- 13. 智能整理是视图
+
+def test_normalize_is_a_view_with_plan_lists():
+    """智能整理不再是「点一下弹两个 confirm」的动作：点得进去、先列清单。"""
+    page = html()
+    assert 'id="normpanel"' in page and 'id="norm-adopt"' in page and 'id="norm-rename"' in page
+    js = script(page)
+    assert "function loadNormPlan" in js and "function runNorm" in js
+    assert "askNormalize" not in js, "旧的一键动作应已移除"
+    body = js[js.index("function showView"):js.index("function showArchive")]
+    assert '["normpanel", name === "norm"]' in body, "showView 要管智能整理视图"
+    assert '["norm-btn", name === "norm"]' in body, "进智能整理时侧栏要高亮"
+    nav = js[js.index('$("norm-btn").addEventListener'):]
+    assert "openNorm" in nav and "closeNorm" in nav
+
+
+def test_normalize_actions_live_outside_scroll_area():
+    """两份清单可以很长：执行按钮要钉在面板底部，不能滚到底才点得到。"""
+    page = html()
+    body_start = page.index('<div class="panel-body">', page.index('id="normpanel"'))
+    body_end = page.index('</div>', page.index('id="norm-out"'))
+    foot = page[body_end:page.index('</section>', body_end)]
+    assert 'id="norm-rename-run"' in foot, "改名按钮应在 panel-body 之外"
+    assert 'id="norm-adopt-run"' in foot
