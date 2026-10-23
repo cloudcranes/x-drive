@@ -36,17 +36,29 @@ def _xml_escape(text: str) -> str:
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+def _blank(value) -> bool:
+    """「没有内容」的口径：None、空串、空容器、0。锁定判定与空值判定共用一份。"""
+    return value is None or value == "" or value == 0 or (
+        isinstance(value, (list, tuple, dict, set)) and not value)
+
+
 def merge(old: dict, fresh: dict, locks: set[str] | None = None) -> dict:
-    """新数据盖旧数据，但锁定字段保旧值、空值不覆盖有效值。"""
+    """新数据盖旧数据，但锁定字段保旧值、空值不覆盖有效值。
+
+    「锁定」尊重的是**用户写进去的那个值**：只要这个字段在记录里已经有内容
+    （含空串、空列表、0 这种「故意留空」），锁住之后就一律保旧值 —— 以前这里
+    还会把「空串/0」当成没有内容，于是用户「清空并锁定」之后下一次刮削又把值
+    填回去，等于把用户的决定静默推翻。
+
+    反过来，字段根本还没写过值（记录里没有这个键）时，锁定不能把首次刮到的
+    内容挡在门外，否则一条新归档会永远没有标题。
+    """
     locks = set(locks or ())
     out = dict(old or {})
     for key, value in (fresh or {}).items():
-        if key in locks and out.get(key) not in (None, "", [], 0):
+        if key in locks and key in out:
             continue
-        empty = value in (None, "", [], 0)
-        if empty and out.get(key) not in (None, "", [], 0):
-            continue
-        if isinstance(value, list) and not value:
+        if _blank(value) and not _blank(out.get(key)):
             continue
         out[key] = value
     return out

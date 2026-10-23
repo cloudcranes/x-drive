@@ -26,6 +26,75 @@ ACTIVE = ("queued", "downloading", "organizing", "uploading", "deferred")
 # 正在占着下载槽的状态：延期在等额度，不能算进去
 RUNNING = ("queued", "downloading", "organizing", "uploading")
 
+# 恢复后「待对账」标记：主标记在 state 表里（跟着库走，备份/覆盖都能带上）；
+# 但库本身可能就是刚被覆盖、写不进去的那个，所以另存一份旁路文件。
+# 放在任务库同目录（由库路径推导，不新增配置），任何进程只要拿到库路径就能读。
+RECONCILE_KEY = "reconcile_required"
+RECONCILE_FILE = "reconcile_required.json"
+
+
+def reconcile_mark_path(db_path: str) -> str:
+    """旁路标记文件路径：与任务库同目录，随 JOBS_DB 走。"""
+    return os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".", RECONCILE_FILE)
+
+
+def write_reconcile_mark(mark: dict, db_path: str) -> str:
+    """写旁路标记文件，返回路径。**写失败会抛异常**：调用方要据此判定库不可信。
+
+    先写临时文件再 os.replace：另一个进程（bot）随时在轮询这个文件，
+    半截 JSON 会被它当成「没有标记」而放行，那就等于没拦。
+    """
+    target = reconcile_mark_path(db_path)
+    data = json.dumps(dict(mark or {}, required=True), ensure_ascii=False)
+    tmp = f"{target}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, target)
+    return target
+
+
+def clear_reconcile_mark(db_path: str) -> None:
+    """删掉旁路标记文件。文件本来就没有算成功；其他错误照实抛出。"""
+    try:
+        os.remove(reconcile_mark_path(db_path))
+    except FileNotFoundError:
+        return
+
+
+def read_reconcile_mark(db_path: str) -> dict:
+    """读「待对账」标记：库内标记与旁路文件任一为真即算待对账，返回合并后的信息。
+
+    **绝不抛异常**：调用方是调度闸门，这里抛异常会把「库不可信」误判成「可以开工」。
+    库本身打不开/读不出来时按**待对账**处理 —— 读不出状态的库不能开工。
+    """
+    out: dict = {"required": False, "db": False, "file": False,
+                 "db_path": os.path.abspath(db_path), "errored": []}
+    try:
+        data = Store(db_path).state_get(RECONCILE_KEY)
+        if data.get("required"):
+            out.update({k: v for k, v in data.items() if k != "file"})
+            out["required"] = True
+            out["db"] = True
+    except Exception as exc:            # 库覆盖到一半 / 被锁死：读不出=不可信
+        out["required"] = True
+        out["errored"].append(f"库内标记读取失败：{str(exc)[:120]}")
+    try:
+        with open(reconcile_mark_path(db_path), encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and data.get("required"):
+            out.update({k: v for k, v in data.items() if k not in ("db", "file")})
+            out["required"] = True
+            out["file"] = True
+    except FileNotFoundError:
+        pass
+    except Exception as exc:            # 文件坏了同样是「有人要求停」，不能当成没标记
+        out["required"] = True
+        out["file"] = True
+        out["errored"].append(f"旁路标记读取失败：{str(exc)[:120]}")
+    return out
+
 # 迁移版本：存在 user_version 里。每次改表结构/索引都必须 +1 并补一段迁移，
 # 因为 CREATE UNIQUE INDEX IF NOT EXISTS 对「已存在的同名旧索引」完全无效 ——
 # 旧库升级后 uniquely 条件不会更新，表现就是「测试全绿、线上照旧重复下载」。

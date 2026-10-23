@@ -887,7 +887,15 @@ def _pending_jobs() -> list[dict]:
                 if j.get("stage") in ("queued", "downloading", "organizing", "uploading")]
 
 def admit(job_id: str) -> bool:
-    """现在放得下吗？放得下就从队列里拿掉、记上额度、启动线程。"""
+    """现在放得下吗？放得下就从队列里拿掉、记上额度、启动线程。
+
+    **所有起线程的路径都必须经过这里**，所以「现在允许开工吗」也在这里判一次：
+    以前只有 pump_queue / _defer_loop / _subs_loop 自己查暂停，requeue() 直达
+    admit()，恢复窗口里新提交/重新入队的任务照样开下载。闸门关着时任务留在
+    WAITING 里等 pump_queue 放行，不丢、也不落成终态。
+    """
+    if not scheduling_open():
+        return False
     with _waiting_lock:
         item = WAITING.get(job_id)
         if item is None:
@@ -958,7 +966,7 @@ def pump_queue() -> int:
 
     暂停或待对账时一律不放行：恢复后的库是旧快照，直接开工会按旧状态重下。
     """
-    if paused() or reconcile_pending():
+    if not scheduling_open():
         return 0
     released = 0
     with _waiting_lock:
@@ -1018,8 +1026,13 @@ def requeue(job_id: str, source: str, code: str, stage: str = "queued") -> bool:
         WAITING[job_id] = (source, code)
         _queued_at[job_id] = time.time()
     job_event(job_id, "queued", f"重新排队（{stage}）" + (f" · {code}" if code else ""))
-    if not admit(job_id):
-        _refresh_queue_positions()
+    # 闸门关着（暂停/待对账）就只排队：admit 会拒绝起线程，任务留在 WAITING 等
+    # pump_queue 放开后放行。不能落成终态，也不能丢，否则恢复确认后就永远没人接了。
+    if admit(job_id):
+        return True
+    _refresh_queue_positions()
+    if not scheduling_open():
+        job_event(job_id, "held", "调度闸门关闭，任务留在队列等放行")
     return True
 
 
@@ -1028,12 +1041,23 @@ def stop_job(job_id: str) -> bool:
 
     以前只对「有线程在跑」的任务有效：排队中的任务没有线程，点了停止什么也不发生，
     空间够了它照样开下 —— 用户以为已经取消了。
+
+    先摘队列、再写终态：admit() 只认 WAITING 里的条目，摘掉之后它就拿不到这个
+    任务了。反过来的顺序（先写 cancelled 再摘）中间那一瞬 admit 仍会把线程起来，
+    形成「已取消却又在下载」的竞态。
     """
     with _waiting_lock:
         item = WAITING.pop(job_id, None)
         _queued_at.pop(job_id, None)
     if item is None:
-        return False
+        # 已经不在队列：只有「确实有线程在跑」才算停止成功（已经落 cancelled 的
+        # 重复停止仍返回 False）。否则就是点了个已经在跑的任务，让它自停。
+        if job_id not in running_threads():
+            return False
+        revoked = request_cancel(job_id)
+        if revoked:
+            job_event(job_id, "cancelled", "正在开工的任务被用户停止")
+        return revoked
     _store().update(job_id, stage="cancelled", error="已停止")
     with _jobs_lock:
         JOBS.setdefault(job_id, {"id": job_id}).update({"stage": "cancelled", "error": "已停止"})
@@ -1046,7 +1070,7 @@ def _defer_loop() -> None:
     """定时把到点的延期任务重新入队。"""
     while True:
         try:
-            if paused() or reconcile_pending():
+            if not scheduling_open():
                 time.sleep(60)
                 continue
             for job in _store().due():
@@ -1063,25 +1087,49 @@ def _defer_loop() -> None:
         time.sleep(60)
 
 
+def requeue_unfinished(reason: str = "进程重启") -> dict:
+    """把库里未完成的任务逐个重新入队，返回 {requeued, failed, held}。
+
+    重启恢复与「对账确认后」共用这一份：后者以前只清标记、放开暂停就返回，
+    而 _resume_loop 是启动时的一次性线程，之后再没有人 recover —— 恢复出来的
+    任务永远停在 queued 里不跑（E3）。单条失败只记失败数，不拖住其余任务。
+
+    held = 已入队但被闸门拦住（停在 WAITING 等 pump_queue），不算失败。
+    """
+    out = {"candidates": 0, "requeued": 0, "failed": 0, "held": 0, "errors": []}
+    try:
+        todo = recover_jobs()
+    except Exception as exc:
+        out["errors"].append(f"读取未完成任务失败：{str(exc)[:150]}")
+        return out
+    out["candidates"] = len(todo)
+    for job in todo:
+        try:
+            # 整理/上传中断的也重跑整条流程：下载会因 infohash 复用直接命中
+            job_event(job["id"], "resumed",
+                      f"{reason}，重新入队（原阶段 {job.get('stage') or '未知'}）")
+            requeue(job["id"], job["source"], job["code"])
+        except Exception as exc:     # 单条坏掉不能让整批恢复中断
+            out["failed"] += 1
+            out["errors"].append(f"{job.get('id')}：{str(exc)[:120]}")
+            log.warning("恢复任务 %s 入队失败：%s", job.get("id"), exc)
+            continue
+        out["requeued"] += 1
+        if job["id"] in WAITING:
+            out["held"] += 1
+    return out
+
+
 def _resume_loop() -> None:
     """重启后把未完成任务重新入队（保留原 job_id 与迅雷任务 id）。"""
     if reconcile_pending():
         # 恢复后先对账：库里可能是备份里的旧状态，未完成任务要人工确认后再放行
         log.warning("当前库处于待对账状态（reconcile_required），跳过重启恢复")
         return
-    try:
-        todo = recover_jobs()
-    except Exception as exc:
-        log.warning("读取未完成任务失败：%s", exc)
-        return
-    for job in todo:
-        try:
-            # 整理/上传中断的也重跑整条流程：下载会因 infohash 复用直接命中
-            job_event(job["id"], "resumed",
-                      f"进程重启，重新入队（原阶段 {job.get('stage') or '未知'}）")
-            requeue(job["id"], job["source"], job["code"])
-        except Exception as exc:
-            log.warning("恢复任务 %s 入队失败：%s", job["id"], exc)
+    out = requeue_unfinished()
+    if out["requeued"] or out["failed"] or out["errors"]:
+        log.info("重启恢复：入队 %d 个（其中 %d 个排队等空间），失败 %d 个",
+                 out["requeued"], out["held"], out["failed"])
 
 def _panel_clean_tick() -> None:
     """每天一次清掉面板里过期的失败任务记录（PANEL_CLEAN_DAYS>0 才启用）。"""
@@ -1157,9 +1205,13 @@ def start_job(source: str, code: str, info: dict | None = None) -> str:
     with _waiting_lock:
         WAITING[job_id] = (source, code)
         _queued_at[job_id] = time.time()
-    # 立刻试一次：空间够就不用等下一个调度周期
-    if not admit(job_id):
-        _refresh_queue_positions()
+    # 立刻试一次：空间够就不用等下一个调度周期。
+    # 闸门关着（暂停/待对账）时 admit 一定拒绝，任务就停在 WAITING 里等放行。
+    if admit(job_id):
+        return job_id
+    _refresh_queue_positions()
+    if not scheduling_open():
+        job_event(job_id, "held", "调度闸门关闭，任务留在队列等放行")
     return job_id
 
 
@@ -1610,7 +1662,7 @@ def diskspace_room_ok() -> bool:
 def _subs_loop() -> None:
     while True:
         try:
-            if paused() or reconcile_pending():
+            if not scheduling_open():
                 # 恢复后待对账：不自动提交新任务，免得旧状态与真实下载对不上
                 time.sleep(SUBS_INTERVAL)
                 continue
@@ -2732,11 +2784,13 @@ def scrape_preview(code: str) -> dict:
         return {"ok": False, "code": code,
                 "error": f"服务返回的是 {fresh.get('code')}，不是 {code}"}
     changes = {}
+    # 预览必须走**和真正写入完全一样**的判定，否则会出现「预览说不会覆盖、实际却覆盖了」。
+    # 以前这里自己写了一套跳过逻辑（无条件跳过锁字段），而 scrape_sync 走
+    # metadata.merge —— 两处判据一旦分叉，用户看到的就是假话。
+    merged = metadata.merge(old, fresh, locks=locks) if fresh else dict(old)
     for key in metadata.LOCKABLE:
-        before, after = old.get(key), fresh.get(key)
-        if key in locks:
-            continue
-        if after in (None, "", [], 0) or before == after:
+        before, after = old.get(key), merged.get(key)
+        if before == after:
             continue
         changes[key] = {"from": before, "to": after}
     return {"ok": True, "code": code, "locked": sorted(locks), "changes": changes,
@@ -2788,17 +2842,26 @@ def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = 
                 merged[key] = value
                 locks.add(key)
     changed = {k: v for k, v in merged.items() if old.get(k) != v}
-    record.update({"meta": merged, "locked": sorted(locks),
-                   "scrape_pending": not merged.get("title")})
-    core.update_state(STATE, {code: record})
-    out = {"ok": True, "code": code, "changed": changed, "locked": sorted(locks),
-           "pending": record["scrape_pending"]}
+    record.update({"meta": merged, "locked": sorted(locks)})
+    out = {"ok": True, "code": code, "changed": changed, "locked": sorted(locks)}
     if unlock:
         out["unlocked"] = sorted(set(unlock))
     if not confirm:
+        # 只改站内记录时按「有没有标题」判定待补刮；真要推附件时由 sync_attachments
+        # 按**实际推送结果**决定，不能在这里先清掉（曾经因此把失败也报成已补全）。
+        record["scrape_pending"] = not merged.get("title")
+        core.update_state(STATE, {code: record})
+        out["pending"] = record["scrape_pending"]
         out["hint"] = "只更新了站内记录；要同步到 Drive 需 confirm=true"
         return out
-    out.update(sync_attachments(code, record, only=only))
+    synced = sync_attachments(code, record, only=only)
+    # 落盘的是 sync_attachments 回写后的记录：清单按实际字节、pending 按推送结果
+    final = synced.pop("record", None) or record
+    core.update_state(STATE, {code: final})
+    out["pending"] = bool(final.get("scrape_pending"))
+    out.update(synced)
+    if synced.get("sync_failed") or synced.get("generate_failed"):
+        out["partial"] = True
     return out
 
 
@@ -2811,6 +2874,13 @@ def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> 
     only 是「只重推这几个附件」的白名单（失败重试用）：只认固定的附件文件名，
     别的名字一律忽略，免得把任意名字拼进远端路径。只给了非法名字就一个都不推 ——
     不能因为筛选后为空就退化成「全部重推」，那等于把用户点名之外的附件也动了。
+
+    清单的两条纪律（曾经两条都错）：
+      1. 新清单以**旧完整清单**为基底，只替换本次真正重写的附件项；没有重写的条目
+         （媒体、以及本次没生成的海报）原样保留。以前把所有附件项都剔出 keep，
+         于是补一次刮削就把 poster.jpg 从云端清单里抹掉了。
+      2. manifest.json **最后**推：先让内容上线再发布清单，中途失败也不会留下
+         一份描述着不存在文件的清单。
     """
     named = only is not None and len(only) > 0
     wanted = {str(n) for n in (only or ()) if str(n) in ATTACHMENT_NAMES}
@@ -2818,24 +2888,34 @@ def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> 
     try:
         rec = (record or {}).get("meta") or {}
         locks = set((record or {}).get("locked") or [])
-        # 补刮只该刷新附件，不能把清单里的视频项弄丢：旧清单（或 files）里的
-        # 媒体项原样带进新清单，大小沿用记录里的，附件项按本次生成的实际大小。
         sidecar = {metadata.JSON_NAME, metadata.NFO_NAME, metadata.POSTER_NAME,
                    metadata.MANIFEST_NAME}
+        # 旧清单里的**全部**条目都先当基底带着，稍后用本次实际写出的文件覆盖同名项。
+        # 视频等媒体不在工作区、本次也不会重写，必须原样保留；海报若本次没生成
+        # （开关关着或取图失败），也要保留旧条目，否则云端清单与实物对不上。
         kept = []
         for entry in ((record or {}).get("manifest") or {}).get("files") or []:
             name = str((entry or {}).get("name") or "")
-            if name and name not in sidecar:
+            if name and name != metadata.MANIFEST_NAME:
                 kept.append({"name": name, "size": int((entry or {}).get("size") or 0),
                              "ext": Path(name).suffix.lower()})
         if not kept:                              # 没有清单就退回记录里的文件清单
             kept = [{"name": str(n), "size": 0, "ext": Path(str(n)).suffix.lower()}
-                    for n in ((record or {}).get("files") or []) if n and str(n) not in sidecar]
+                    for n in ((record or {}).get("files") or []) if n
+                    and str(n) != metadata.MANIFEST_NAME]
+
+        # 海报：开关开着且记录里有封面地址就重建一次；取不到就沿用旧条目（不删）
+        poster = b""
+        if POSTER_ON and rec.get("cover_url"):
+            poster = metadata.fetch_image(rec["cover_url"]) or None
+
         out = metadata.write_sidecar(work, rec, [], code=code, locks=locks,
-                                     want_nfo=NFO_ON, keep=kept)
+                                     poster=poster, want_nfo=NFO_ON, keep=kept)
+        generated = [n for n in out["written"] if n != metadata.MANIFEST_NAME]
         target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
         pushed, failed, skipped = [], [], []
-        for name in out["written"]:
+        manifest_first = metadata.MANIFEST_NAME in out["written"]
+        for name in sorted(generated, key=lambda n: n == metadata.MANIFEST_NAME):
             if named and name not in wanted:
                 skipped.append(name)
                 continue
@@ -2843,12 +2923,69 @@ def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> 
                                 timeout=300.0)
             (pushed if rc == 0 else failed).append(
                 name if rc == 0 else {"name": name, "error": err.strip()[:200]})
-        res = {"synced": pushed, "sync_failed": failed}
+
+        res: dict = {"synced": pushed, "sync_failed": failed}
+        # 生成阶段就失败的（磁盘写不进等）以前被整个丢掉，面板只看到「已同步」
+        if out["failed"]:
+            res["generate_failed"] = out["failed"]
         if named:
             res["skipped"] = skipped
+            # 点名要推却没生成、也没推送的：必须明说，不能返回一个看起来成功的空结果
+            missing = sorted(wanted - set(pushed) - {f["name"] for f in failed})
+            if missing:
+                res["missing"] = missing
+                res["error"] = ("以下附件没有生成，无法重推：" + "、".join(missing)
+                                + ("（海报开关关闭或取图失败）" if metadata.POSTER_NAME in missing
+                                   else ""))
+        # 清单最后推：前提是本次确实写了新清单，且（全量模式或点名要它）
+        if manifest_first and (not named or metadata.MANIFEST_NAME in wanted):
+            rc, _, err = rclone("copyto", str(work / metadata.MANIFEST_NAME),
+                                f"{target}/{metadata.MANIFEST_NAME}", timeout=300.0)
+            if rc == 0:
+                pushed.append(metadata.MANIFEST_NAME)
+            else:
+                failed.append({"name": metadata.MANIFEST_NAME,
+                               "error": err.strip()[:200]})
+        elif manifest_first:
+            skipped.append(metadata.MANIFEST_NAME)
+
+        res["record"] = _record_after_sync(record, work, pushed, failed)
         return res
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _record_after_sync(record: dict, work: Path, pushed: list, failed: list) -> dict:
+    """按**实际推送成功**的附件回写站内清单与待补刮标记。
+
+    以前同步完只上传、不回写：站内 manifest 里还是旧大小，健康校验据此误报；
+    而 scrape_pending 在同步**之前**就按「有没有标题」清掉了，于是三个附件全
+    推失败也照样退出待补刮清单 —— 面板上一切正常，云端却缺文件。
+    """
+    old = dict((record or {}).get("manifest") or {})
+    files = [{"name": str(e.get("name")), "size": int(e.get("size") or 0),
+              "ext": str(e.get("ext") or Path(str(e.get("name"))).suffix.lower())}
+             for e in (old.get("files") or []) if e.get("name")]
+    by = {e["name"]: e for e in files}
+    for name in pushed:
+        path = work / name
+        if path.is_file():                       # 按实际落盘字节更新，不猜
+            by[name] = {"name": name, "size": path.stat().st_size,
+                        "ext": path.suffix.lower()}
+    merged = sorted(by.values(), key=lambda e: e["name"])
+    out = dict(record or {})
+    out["manifest"] = {**old, "files": merged,
+                       "total_size": sum(e["size"] for e in merged)}
+    ok_names = {e for e in pushed}
+    # 只有「该推的都推上去了」才算不再待补刮；生成失败或传输失败都继续挂着
+    out["scrape_pending"] = bool(failed) or (record or {}).get("scrape_pending") is True
+    if ok_names and not failed:
+        out["scrape_pending"] = False
+    if failed:
+        out["sync_failed"] = [f if isinstance(f, str) else f.get("name") for f in failed]
+    else:
+        out.pop("sync_failed", None)
+    return out
 
 
 # ─────────────────────────────────────────── 归档完整性校验（第四批）
@@ -3042,8 +3179,11 @@ def backup_now(target: str = "") -> dict:
 #   · 恢复后**不自动开工**：清空内存状态并写下 reconcile_required，由人确认对账后再放行；
 #   · 不删任何用户数据：当前库先备份到独立路径，路径与信息都回报给用户。
 
-# 恢复后「待对账」标记放 state 表：进程重启也还在，不会一重启就自己跑起来
-RECONCILE_KEY = "reconcile_required"
+# 恢复后「待对账」标记放 state 表：进程重启也还在，不会一重启就自己跑起来。
+# 但覆盖后的库本身可能写不进去（SQLITE_BUSY/磁盘满/权限），所以另有一份旁路
+# 文件标记（store.RECONCILE_FILE，与任务库同目录）—— 库写不动时也拦得住。
+# 「库不可信」因此不是内存状态：进程重启、bot 另起一个进程，都能读到同一个判据。
+RECONCILE_KEY = store.RECONCILE_KEY
 # 内存里「暂停调度」的开关：为 True 时 pump_queue / _resume_loop / _subs_loop 都不干活
 _PAUSED = threading.Event()
 # 在途执行线程（job_id → Thread）：恢复前必须确认它们已经结束
@@ -3068,13 +3208,25 @@ def running_threads() -> list[str]:
         return sorted(_threads)
 
 
+def _db_path() -> str:
+    """当前任务库路径：优先用已打开的 STORE，否则按环境变量推导（不碰库文件）。"""
+    if STORE is not None:
+        return STORE.path
+    return jobs_db_path()
+
+
+def reconcile_mark() -> dict:
+    """读「待对账」标记：库内标记与旁路文件合并，任一为真即待对账。
+
+    交给 store 的纯函数读：它**不抛异常**，库读不出来也按待对账处理 ——
+    以前这里读失败返回 False，等于「库坏了就照常开工」，正好反过来。
+    """
+    return store.read_reconcile_mark(_db_path())
+
+
 def reconcile_pending() -> bool:
-    """当前库是否处于「恢复后待对账」状态。库读不出来就按不拦（别让面板整个停摆）。"""
-    try:
-        return bool(_store().state_get(RECONCILE_KEY).get("required"))
-    except Exception as exc:
-        log.warning("读取对账标记失败：%s", exc)
-        return False
+    """当前库是否处于「恢复后待对账」状态（库内标记或旁路文件，二者任一为真）。"""
+    return bool(reconcile_mark().get("required"))
 
 
 def paused() -> bool:
@@ -3086,6 +3238,16 @@ def set_paused(value: bool) -> None:
         _PAUSED.set()
     else:
         _PAUSED.clear()
+
+
+def scheduling_open() -> bool:
+    """现在允许开工吗？—— **唯一的闸门判据**，所有起线程/自动提交的路径都问它。
+
+    暂停是内存 Event（进程重启即丢），待对账标记在库里+旁路文件（重启仍在），
+    两者任一为真都不开工。以前泵线程、延期、订阅各自查、requeue 直达 admit()
+    不查，恢复窗口里新任务照样开下载。
+    """
+    return not paused() and not reconcile_pending()
 
 
 def _ro_stats(conn) -> dict:
@@ -3302,59 +3464,110 @@ def restore_apply(source: str, confirm: bool = False) -> dict:
 
         _clear_memory_state()
         STORE = None                        # 丢掉缓存的连接，下次按新库重新打开
-        marked = False
-        try:
-            _store().state_put({RECONCILE_KEY: {
-                "required": True, "source": source, "safety": safety,
+        mark = {"required": True, "source": source, "safety": safety,
                 "schema_backup": pre.get("schema_backup"),
-                "at": time.strftime("%Y-%m-%d %H:%M:%S")}})
-            marked = True
+                "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        # 两处都写：state 表跟着库走（备份/覆盖也会带上），旁路文件在库写不动时兜底。
+        # 任一处成功都算「标记成立」；两处全败才算硬失败（E2：以前写库失败只 warn，
+        # 仍返回 ok=True + reconcile_required=False，重启后 _resume_loop 立刻 recover）。
+        marked_in, mark_errors = [], []
+        try:
+            _store().state_put({RECONCILE_KEY: dict(mark)})
+            marked_in.append("db")
         except Exception as exc:
-            log.warning("写入对账标记失败：%s", exc)
+            mark_errors.append(f"库内标记写入失败：{str(exc)[:150]}")
+            log.error("写入对账标记失败：%s", exc)
+        try:
+            store.write_reconcile_mark(mark, _db_path())
+            marked_in.append("file")
+        except Exception as exc:
+            mark_errors.append(f"旁路标记写入失败：{str(exc)[:150]}")
+            log.error("写入旁路对账标记失败：%s", exc)
+        if mark_errors:
+            # 库刚被覆盖、标记却写不进去：这份库不可信。保持暂停（进程内），
+            # 并且把「需要重新恢复」写进旁路文件 —— 只要写成了，重启后 _resume_loop
+            # 仍被拦住；连旁路也写不进去时只能靠内存暂停，必须如实告诉调用方。
+            set_paused(True)
+            log.error("已用 %s 覆盖任务库，但对账标记没能完全写入：%s",
+                      source, "；".join(mark_errors))
+            if "file" in marked_in:
+                error = ("任务库已被备份覆盖，但「待对账」标记没能完整写入："
+                         + "；".join(mark_errors)
+                         + "。当前库状态不可信，已暂停调度；旁路标记已落盘，重启后也不会自动开工")
+            else:
+                error = ("任务库已被备份覆盖，且「待对账」标记处处写不进去："
+                         + "；".join(mark_errors)
+                         + "。当前库状态不可信，已暂停调度；重启后无法阻止自动开工"
+                         " —— 请人工核对后再开机")
+            return {"ok": False, "restored_from": source, "safety": safety,
+                    "reconcile_required": True, "paused": True,
+                    "mark_written": marked_in, "errors": mark_errors,
+                    "trusted": False, "error": error,
+                    "hint": "先确认服务已停止调度，再核对任务表与迅雷面板；"
+                            "修好磁盘/权限后重新执行恢复"}
         log.warning("已用 %s 覆盖任务库，进入待对账；确认前不自动调度", source)
         return {"ok": True, "restored_from": source, "safety": safety,
-                "stats": _store().stats(),
-                "reconcile_required": marked, "paused": paused(),
+                "stats": _store().stats(), "trusted": True,
+                "reconcile_required": True, "paused": paused(),
+                "mark_written": marked_in,
                 "needs_migration": pre.get("needs_migration"),
                 "hint": "已暂停调度。先对账（任务列表与迅雷面板对照），"
                         "确认后调用 /api/restore/confirm 才会继续调度"}
 
 
 def restore_confirm(confirm: bool = False, force: bool = False) -> dict:
-    """对账完成：清掉 reconcile_required 并放开调度。
+    """对账完成：清掉 reconcile_required、放开调度，并**立刻**把未完成任务入队。
 
     默认要求库里没有未完成任务（恢复出来的「未完成」多半是旧状态，直接放行会重复下载）；
-    确实要带着它们继续，就显式 force=true，逐个由人确认。
+    确实要带着它们继续，就显式 force=true。
     """
     pending = _store()
     marks = pending.state_get(RECONCILE_KEY)
     left = pending.unfinished_any()
+    unfinished = [{"id": j.get("id"), "code": j.get("code"), "stage": j.get("stage")}
+                  for j in left]
     if not confirm:
         return {"ok": False, "reconcile_required": bool(marks.get("required")),
-                "unfinished": [{"id": j.get("id"), "code": j.get("code"),
-                                "stage": j.get("stage")} for j in left],
-                "error": "需要 confirm=true"}
+                "unfinished": unfinished, "error": "需要 confirm=true"}
     if left and not force:
         return {"ok": False, "reconcile_required": bool(marks.get("required")),
-                "unfinished": [{"id": j.get("id"), "code": j.get("code"),
-                                "stage": j.get("stage")} for j in left],
+                "unfinished": unfinished,
                 "error": f"库里还有 {len(left)} 个未完成任务，先处理掉或确认无碍后 force=true"}
+    # 两处标记都要清：库内清了而旁路文件还在，闸门会一直关着（反过来也一样）
+    clear_errors = []
     try:
         pending.state_put({RECONCILE_KEY: {}})
     except Exception as exc:
-        return {"ok": False, "error": f"清除对账标记失败：{str(exc)[:150]}"}
+        clear_errors.append(f"清除库内标记失败：{str(exc)[:150]}")
+    try:
+        store.clear_reconcile_mark(_db_path())
+    except Exception as exc:
+        clear_errors.append(f"清除旁路标记失败：{str(exc)[:150]}")
+    if clear_errors:
+        # 留着标记就不算确认成功：宁可多停一会儿，也不能带着旧状态开工
+        return {"ok": False, "reconcile_required": True,
+                "error": "；".join(clear_errors)}
     set_paused(False)
-    log.info("对账完成，恢复调度")
+    # 入队走 requeue → admit（同一道闸门）。以前这里只放开暂停就返回，而
+    # _resume_loop 是启动时的一次性线程，恢复出来的任务再也没人接（E3）。
+    out = requeue_unfinished("对账确认后")
+    log.info("对账完成，恢复调度：入队 %d 个（排队等空间 %d），失败 %d 个",
+             out["requeued"], out["held"], out["failed"])
     return {"ok": True, "reconcile_required": False, "paused": paused(),
-            "unfinished": len(left),
-            "hint": "调度已放开；未完成任务会在下一轮调度时重新入队"}
+            "unfinished": len(left), "requeued": out["requeued"],
+            "held": out["held"], "requeue_failed": out["failed"],
+            "errors": out["errors"],
+            "hint": (f"调度已放开；{out['requeued']} 个未完成任务已重新入队"
+                     f"（其中 {out['held']} 个在排队等磁盘空间）"
+                     + (f"，{out['failed']} 个入队失败，见 errors" if out["failed"] else "")
+                     if out["requeued"] or out["failed"] else "调度已放开；没有未完成任务需要入队")}
 
 
 def restore_status() -> dict:
     """恢复面板用：当前是否待对账、是否暂停、库版本。"""
     return {"ok": True, "reconcile_required": reconcile_pending(), "paused": paused(),
             "blockers": _restore_blockers(), "stats": _store().stats(),
-            "mark": _store().state_get(RECONCILE_KEY)}
+            "mark": _store().state_get(RECONCILE_KEY), "mark_detail": reconcile_mark()}
 
 
 def main() -> None:

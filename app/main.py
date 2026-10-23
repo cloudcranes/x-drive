@@ -223,6 +223,21 @@ def task_event(cfg: Config, job_id: str, kind: str, detail: str = "") -> None:
         log.warning("记录任务 %s 的事件 %s 失败：%s", job_id, kind, exc)
 
 
+def scheduling_gate(cfg: Config) -> dict:
+    """bot 侧的调度闸门：与网页端共用同一判据（库内标记 ∪ 同目录旁路文件）。
+
+    bot 与 web 是两个独立进程，内存里的暂停开关互相看不见，所以这里只认
+    store.read_reconcile_mark —— 它在读不出来时按「待对账」回报，绝不抛异常。
+    """
+    try:
+        mark = store.read_reconcile_mark(cfg.jobs_db)
+    except Exception as exc:            # read_reconcile_mark 自称不抛；保险起见
+        return {"open": False, "reason": f"读取对账标记异常：{str(exc)[:120]}", "mark": {}}
+    if mark.get("required"):
+        return {"open": False, "reason": "库处于待对账状态（恢复后未确认）", "mark": mark}
+    return {"open": True, "reason": "", "mark": mark}
+
+
 def first_line(text, limit: int = 120) -> str:
     """错误原文取首行，多行堆栈只留有用那行。"""
     lines = str(text or "").strip().splitlines()
@@ -250,9 +265,24 @@ def claim_task(cfg: Config, code: str, source: str, chat_id: int | None) -> str:
     return job_id
 
 
-def finish_task(cfg: Config, job_id: str, stage: str, error: str = "") -> None:
-    if job_id:
+def finish_task(cfg: Config, job_id: str, stage: str, error: str = "") -> bool:
+    """把任务落到终态，返回「是否真的写进去了」。**绝不抛异常**：这是失败收口路径本身。
+
+    原先它直接抛：一旦任务表写不进去，except 分支里的 finish_task("failed")
+    会二次抛出，从 run_task 逸出到 deliver（deliver 也不兜），整个 bot handler
+    崩掉 —— 恰恰是最需要报告失败的时刻。与 task_event 同样按旁路处理。
+
+    但"不抛"不等于"可以当成功"：返回 False 时调用方必须如实报告，否则面板里
+    任务卡在旧状态、用户却看到 ✅，比崩溃更难查。
+    """
+    if not job_id:
+        return True
+    try:
         task_store(cfg).finish(job_id, stage, error)
+        return True
+    except Exception as exc:
+        log.warning("任务 %s 终态 %s 落库失败：%s", job_id, stage, exc)
+        return False
 
 
 # ── 执行租约：与网页端同一套（store.claim_owner / beat / release），
@@ -505,10 +535,17 @@ async def run_task(
         task_event(cfg, job_id, "claimed", LEASES.get(job_id) or "")
 
         # 下载目录（迅雷建）与工作区（我们整理）分开，失败不动原件
+        # 投递时用的键：下载目录按它建（迅雷已按它落盘），失败路径的日志也靠它
         key_safe = workspace.key_of(key)
         download_dir = workspace.staging(cfg.tmp_root, key_safe)
         work = workspace.workspace(cfg.state_dir, key_safe)
-        uploaded = False
+        # 清理用的键：以最终归档目录名为准。整理后 folder 可能与投递时的 key 不同
+        # （投递时没给番号、从文件名或磁力信息里才认出来），那时仍按旧键清理，
+        # 工作区名对不上、下载目录标记也对不上，原件会永远留在盘上。
+        clean_key = key_safe
+        uploaded = False          # 上传是否真的完成（只在这里置真，不再被文件清单覆盖）
+        archived = False          # 归档记录是否已成功落盘；与 uploaded 同时成立才允许清原件
+        outcome_ok = False        # 整条链路是否无异常走完；只决定 metrics 口径，不参与清理
         clock = {"download": 0.0, "organize": 0.0, "upload": 0.0}
         retried = {"download": 0, "upload": 0}
         job_size = 0
@@ -560,6 +597,8 @@ async def run_task(
             final_code = code or codes.detect(found[0].name if found else "")
             folder, files = pipeline.organize(work, final_code or "")
             total = pipeline.total_size(files)
+            # 清理按最终归档目录名走；下载目录仍是投递时那个（迅雷已按它建好）
+            clean_key = workspace.key_of(folder)
             clock["organize"] = time.monotonic() - phase
             job_size = total
 
@@ -619,10 +658,13 @@ async def run_task(
             # 与网页 _finish 同一份字段契约（metadata.archive_record）：
             # 以前 bot 写出的记录没有 meta/manifest/infohash/locked/scrape_pending，
             # 之后的补刮、去重、校验对着它就无据可依。
-            uploaded = scraped["files"]
+            # 两个语义分开的变量：uploaded_paths 只是「本次上传清单」（只读，给 names 用，
+            # 绝不拿它当成功标志：以前 uploaded 被这份清单覆盖成真值，记账一步抛异常也会
+            # 走到清理分支，把失败任务的原件删掉）。
+            uploaded_paths = scraped["files"]
             task_extra = task_store(cfg).get(job_id).get("extra") or {} \
                 if job_id else {}
-            names = [f.name for f in uploaded]
+            names = [f.name for f in uploaded_paths]
             state[folder] = metadata.archive_record(
                 folder, target, link, names, total, source, work,
                 scraped=meta_info or scraped["record"] or task_extra.get("scraped") or {},
@@ -633,13 +675,25 @@ async def run_task(
                 at=datetime.now().isoformat(timespec="seconds"),
             )
             core.update_state(cfg.state_path, {folder: state[folder]})
-            uploaded = True
-            finish_task(cfg, job_id, "done")
+            # 「归档记录已落盘」：必须放在所有落盘动作（写状态文件）之后。
+            # finish_task 在库坏了时会抛，那时记录已经写进 state.json，原件清掉是对的；
+            # 但 update_state 抛异常时这份记录没落盘，archived 保持 False → 原件留下可续传。
+            archived = True
+            uploaded = True        # 上传确实成功了：到这里才置真（记账已落盘，顺序固定）
+            # 任务表记账失败不影响归档结果（记录已落盘），但它返回 False 说明
+            # 面板里这条任务会停在旧状态；所以要如实告诉用户，不能只报 ✅。
+            task_done = finish_task(cfg, job_id, "done")
             task_event(cfg, job_id, "done",
                        " · ".join(x for x in (folder, core.human_size(total), link or "") if x))
-            results.append(
-                f"✅ {folder} · {core.human_size(total)}" + (f"\n📁 {link}" if link else "")
-            )
+            line = f"✅ {folder} · {core.human_size(total)}" + (
+                f"\n📁 {link}" if link else "")
+            if not task_done:
+                line += "\n⚠️ 已归档，但任务表没写进去（面板里可能仍显示进行中）"
+            results.append(line)
+            # 统计口径与清理口径**分开**：archived 决定「记录已落盘、可以清原件」，
+            # outcome_ok 决定「这条链路是否完整走完」。任务表没落库时统计记 fail，
+            # 与给用户的 ⚠️ 保持一致 —— 同一任务不能一边说失败一边记 ok。
+            outcome_ok = task_done
         except Exception as exc:
             log.exception("下载失败 %s", source[:80])
             if retry.classify(str(exc)) == retry.QUOTA:
@@ -658,7 +712,8 @@ async def run_task(
             metrics.record_timing(cfg.metrics_path, {
                 "code": key,
                 "size": job_size,
-                "outcome": "ok" if uploaded else "fail",
+                # 只有真正成功（上传完成、记录落盘、且没有走到 except）才算 ok
+                "outcome": "ok" if outcome_ok else "fail",
                 "retries": retried["download"] + retried["upload"],
                 "download": clock["download"],
                 "organize": clock["organize"],
@@ -669,15 +724,20 @@ async def run_task(
             # 前面失败过一次，后面成功任务的目录就再也不会被清，磁盘一路涨。
             # 失败时保留目录，方便 /retry 续传，但整体有容量上限。
             # 清理前必须确认目录仍归自己：失租时另一个执行者可能正在用同一目录。
-            if uploaded and lease_alive(cfg, job_id):
-                workspace.drop_workspace(work, key_safe, "上传成功")
+            if uploaded and archived and lease_alive(cfg, job_id):
+                workspace.drop_workspace(work, clean_key, "上传成功")
+                # 下载目录的归属标记写的是投递时的键，必须按 key_safe 校验
                 workspace.drop(download_dir, key_safe, "上传成功")
                 # 迅雷重名时真实目录是 <键>-N，预设的 dest 删了也不代表原件清掉了
                 real_dir = Path(handle.get("dir") or "")
                 if real_dir and real_dir != download_dir:
                     workspace.drop(real_dir, key_safe, "上传成功")
-            elif uploaded:
+            elif uploaded and archived:
                 log.warning("任务 %s 已失租，跳过目录清理：%s %s", job_id, work, download_dir)
+            elif uploaded:
+                # 传上去了但归档没落盘（记账抛异常）：任务记为失败，原件留着续传排错
+                log.warning("任务 %s 已上传但归档记录未落盘，保留原件：%s %s",
+                            job_id, handle.get("dir") or download_dir, work)
             else:
                 # 失败两份都留着：原件可续传，工作区便于排查
                 log.info("失败任务保留在原地：%s", handle.get("dir") or download_dir)
@@ -980,6 +1040,13 @@ async def resume_pending(application: Application) -> None:
     """启动时补跑上次没完成/失败的下载任务，并把结果发回原会话。"""
     cfg: Config = application.bot_data["cfg"]
     pending: dict = application.bot_data["pending"]
+    # 与网页端同一份调度闸门：恢复后「待对账」期间一律不补跑。
+    # bot 与 web 是两条独立进程，靠库内标记 + 同目录旁路文件互相看见，不靠内存开关。
+    gate = scheduling_gate(cfg)
+    if not gate["open"]:
+        log.warning("调度闸门关闭（%s），本次启动不补跑 %d 条待办；对账后由网页端放行",
+                    gate["reason"], len(pending))
+        return
     if not pending:
         return
     log.info("发现 %d 条待补跑记录", len(pending))
@@ -1090,6 +1157,12 @@ def main() -> None:
         sys.exit("缺少 TELEGRAM_BOT_TOKEN")
     if not cfg.allowed:
         log.warning("ALLOWED_USER_IDS 为空：所有消息都会被拒绝")
+    # 启动时打印一次闸门判定：运维据此确认 bot 与 web 读的是同一个判据
+    gate = scheduling_gate(cfg)
+    if gate["open"]:
+        log.info("调度闸门：开放（%s）", cfg.jobs_db)
+    else:
+        log.warning("调度闸门：关闭 · %s（%s）", gate["reason"], cfg.jobs_db)
     Path(cfg.tmp_root).mkdir(parents=True, exist_ok=True)
 
     async def shutdown(application: Application) -> None:

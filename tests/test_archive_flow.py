@@ -166,17 +166,23 @@ def test_web_flow_attachments_upload_record_rescrape_verify(tmp_path, monkeypatc
     assert json.loads(posted["metadata.json"])["fields"]["title"] == "测试标题"
 
     # ⑤ 校验：远端与清单一致 → 校验通过
+    #
+    # 关键：remote 必须由**实际推送上去的内容**构造，不能拿站内清单自证。
+    # 以前这里用 local 清单直接造 remote，于是「清单说有、云端其实没有」这种
+    # 分叉永远测不出来（补刮把 poster 剔除、附件大小不更新都溜了过去）。
+    # posted 是 rclone copyto 的真实载荷，视频用上传时那个文件的大小。
     record = core.load_state(web.STATE)[CODEC]
-    local = {f["name"]: f["size"] for f in record["manifest"]["files"]}
-    remote_ok = [{"name": n, "size": s} for n, s in local.items()]
+    remote_ok = [{"name": VIDEO_NAME, "size": 4096}]
+    remote_ok += [{"name": n, "size": len(blob.encode("utf-8"))}
+                  for n, blob in posted.items()]
     monkeypatch.setattr(web, "remote_ls", lambda code: remote_ok)
     verdict = web.verify_archive(CODEC)
     assert verdict["state"] == "校验通过", verdict
     assert verdict["missing"] == [] and verdict["size_mismatch"] == []
 
     # ⑤' 远端某个文件 0 字节 → 大小异常
-    remote_zero = [{"name": n, "size": (0 if n == VIDEO_NAME else s)}
-                   for n, s in local.items()]
+    remote_zero = [{"name": e["name"], "size": (0 if e["name"] == VIDEO_NAME else e["size"])}
+                   for e in remote_ok]
     monkeypatch.setattr(web, "remote_ls", lambda code: remote_zero)
     bad = web.verify_archive(CODEC)
     assert bad["state"] == "大小异常", bad

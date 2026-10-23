@@ -2402,23 +2402,47 @@ function renderMetaDiff() {
 }
 
 // 预览：只读。后端 scrape_preview 明确不动任何数据。
+//
+// 两个必须守住的点（都踩过）：
+//   1. 预览一开始就把上一番号的差异**清空**。以前先改 metaState.code 再发请求，
+//      网络异常时 catch 只改提示、不清 changes，残留的「应用」按钮仍指向旧番号的
+//      字段，一按就把 A 的元数据写进 B。
+//   2. 用请求序号丢弃过时响应。慢请求 A 与快请求 B 同时飞时，A 后到会覆盖 B 的
+//      差异表，同样是把结果写到错的番号上。
+// 任何时刻「差异表」都只属于 metaState.code 这一个番号。
+const metaSeq = { preview: 0 };
+
 async function metaPreview() {
   const code = ($("meta-code").value || "").trim();
   if (!code) { setMetaHint("先填番号", "err"); return; }
+  const seq = ++metaSeq.preview;
+  // 先清空再请求：失败路径不再有「可应用的旧差异」这种东西
   metaState.code = code;
+  metaState.changes = {};
+  metaState.locked = [];
+  metaState.found = false;
   metaState.busy = true;
   $("meta-preview").disabled = true;
   setMetaHint("预览中…（只读，不改数据）");
   const report = $("meta-report");
   report.textContent = "";
+  renderMetaDiff();
   try {
     const d = await metaApi("/api/scrape/preview", {code});
+    if (seq !== metaSeq.preview) return;      // 已被更新的预览取代，整条响应丢掉
     metaState.busy = false;
     if (!d.ok) {
       metaState.changes = {}; metaState.locked = []; metaState.found = false;
       renderMetaDiff();
       report.append(el("div", "notice", "预览失败：" + (d.error || "未知错误")));
       setMetaHint("预览失败", "err");
+      return;
+    }
+    // 服务端回报的番号才是这份差异的归属；对不上就整条丢弃，绝不落到别的番号上
+    if (d.code && d.code !== metaState.code) {
+      metaState.changes = {}; metaState.locked = []; metaState.found = false;
+      renderMetaDiff();
+      setMetaHint(`预览结果属于 ${d.code}，与当前 ${metaState.code} 不符，已丢弃`, "err");
       return;
     }
     metaState.locked = d.locked || [];
@@ -2437,18 +2461,30 @@ async function metaPreview() {
     }
     renderMetaDiff();
   } catch (e) {
+    if (seq !== metaSeq.preview) return;
     metaState.busy = false;
+    // 失败时不留可应用的数据：差异表已在本函数开头清空，这里只要不放回就行
+    metaState.changes = {}; metaState.locked = []; metaState.found = false;
+    renderMetaDiff();
     setMetaHint("预览失败：" + (e.message || e), "err");
   } finally {
-    $("meta-preview").disabled = false;
+    if (seq === metaSeq.preview) $("meta-preview").disabled = false;
   }
 }
 
 // 逐字段应用：只把这一个字段作为 fields 传给 sync，后端会顺带锁定它。
 // 不带 confirm —— 这一步只写站内记录，不碰 Drive。
+//
+// 提交前必须确认「字段属于谁」：输入框里的番号与 metaState.code 不一致时，
+// 说明差异表是上一个番号的，宁可不写也不要把 A 的字段写进 B。
 async function metaApplyField(k, btn) {
   const code = metaState.code || ($("meta-code").value || "").trim();
   if (!code) return;
+  const typed = ($("meta-code").value || "").trim();
+  if (typed && typed !== metaState.code) {
+    setMetaHint(`差异表属于 ${metaState.code}，与输入框的 ${typed} 不符；请先重新预览`, "err");
+    return;
+  }
   const v = (metaState.changes[k] || {}).to;
   if (btn) btn.disabled = true;
   setMetaHint(`应用 ${metaFieldName(k)}…`);
@@ -2474,6 +2510,12 @@ async function metaApplyField(k, btn) {
 // 全部应用：把当前差异表里所有未锁定字段一次写进站内记录
 async function metaApplyAll() {
   const code = metaState.code || ($("meta-code").value || "").trim();
+  const typed = ($("meta-code").value || "").trim();
+  if (metaState.code && typed && typed !== metaState.code) {
+    // 与逐字段应用同一道防线：差异表不属于输入框里这个番号就不许写
+    setMetaHint(`差异表属于 ${metaState.code}，与输入框的 ${typed} 不符；请先重新预览`, "err");
+    return;
+  }
   const fields = {};
   for (const [k, v] of Object.entries(metaState.changes || {})) fields[k] = v.to;
   const n = Object.keys(fields).length;
