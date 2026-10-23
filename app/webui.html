@@ -525,6 +525,39 @@
   /* 地址 / 代理 / token 这类长值给宽一点的框，否则「https://javbu…」看不全 */
   .kvrow.setting .sval.wide{width:300px; max-width:70%}
   .kvrow.setting .sval[type="checkbox"]{width:15px; height:15px; accent-color:var(--cyan); cursor:pointer}
+  /* 存储后端 / 链接形态这类「只能从枚举里选」的项，用下拉比让用户手打更不容易写错 */
+  .kvrow.setting select.sval{appearance:none; background:#10161c; color:var(--fg);
+    border:1px solid #29333d; border-radius:6px; padding:4px 8px; font:inherit; cursor:pointer}
+  .kvrow.setting select.sval:focus{outline:none; border-color:var(--cyan)}
+  .kvrow.setting .svalread{font-variant-numeric:tabular-nums}
+
+  /* ── 设置分区（横向子 tab）
+     十来个分组平铺成一长条时，找「存储」要滚好几屏。改成按功能分块的子 tab：
+     标签吸顶，滚到底改存储时也能看到自己在哪个分区；未保存的分区带一个点。 */
+  /* 底色必须不透明：吸顶后下面的行会从标签底下穿过去，半透明会透出文字 */
+  .stabs{display:flex; gap:4px; flex-wrap:wrap; align-items:center;
+    position:sticky; top:0; z-index:3; padding:2px 0 9px; margin:0 0 2px;
+    background:#0d0d0d; border-bottom:1px solid var(--line-soft);
+    box-shadow:0 10px 14px -14px rgba(0,0,0,.95)}
+  .stabs button{display:inline-flex; align-items:center; gap:6px; cursor:pointer;
+    border:1px solid var(--line); background:rgba(13,13,13,.9); color:var(--muted);
+    border-radius:999px; padding:5px 11px; font-size:12.5px; font-family:inherit;
+    white-space:nowrap; transition:color .14s, border-color .14s, background .14s}
+  .stabs button:hover{color:var(--text); border-color:rgba(255,255,255,.2)}
+  .stabs button.on{color:var(--cyan); border-color:rgba(62,186,244,.5);
+    background:var(--cyan-dim); font-weight:600}
+  .stabs button .n{font-family:var(--mono); font-size:10.5px; color:var(--faint)}
+  .stabs button.on .n{color:var(--cyan)}
+  .stabs button.dirty::after{content:""; width:6px; height:6px; border-radius:50%;
+    background:#f0b429; box-shadow:0 0 6px rgba(240,180,41,.75)}
+  .settings-pane[hidden]{display:none}
+  /* 未保存的那一格标黄（与标签上的黄点同一套语义） */
+  .kvrow.setting .sval.dirty, .kvrow.setting select.sval.dirty{
+    border-color:rgba(240,180,41,.55); box-shadow:0 0 0 1px rgba(240,180,41,.22)}
+  @media (max-width:700px){
+    .stabs{flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none}
+    .stabs::-webkit-scrollbar{display:none}
+  }
   .kvrow.setting .why{flex:1 1 100%; white-space:normal; overflow:visible; line-height:1.55}
   .kvrow.setting .hint{flex:none}
   /* 状态汇总格：点一下就是筛选 */
@@ -918,13 +951,18 @@
     </div>
 
     <div class="panel-body">
+      <!-- 分区标签排在最前且吸顶：参数有 50 多项，滚到底部改「存储」时还看得见自己在哪一区 -->
+      <div class="stabs" id="settings-tabs" role="tablist" aria-label="设置分区"></div>
       <div class="notice">这里改的是运行时参数，保存后立即生效（无需改 .env、无需重启）。
         token / 端口 / 挂载路径等启动参数仍走 .env，改了要重启容器才生效。</div>
-      <div class="panel-actions">
-        <button class="primary" id="settings-save" type="button">保存全部改动</button>
-        <button class="ghost" id="settings-reload" type="button">重新加载</button>
-      </div>
       <div id="settings-list"></div>
+    </div>
+
+    <!-- 保存键钉在面板底部：某个分区可能有二十来行，滚到下面也点得到 -->
+    <div class="panel-actrow" style="margin-top:10px">
+      <button class="primary" id="settings-save" type="button">保存全部改动</button>
+      <button class="ghost" id="settings-reload" type="button">重新加载</button>
+      <span class="hint" id="settings-saved"></span>
     </div>
   </section>
 
@@ -1242,7 +1280,7 @@ function card(t) {
   foot.append(el("span", "time", fmt(t.at)));
   const ren = el("button", "card-del", "改名");
   ren.type = "button";
-  ren.title = "改番号：Drive 目录与归档记录一起改";
+  ren.title = "改番号：远端目录与归档记录一起改";
   ren.addEventListener("click", e => {
     e.stopPropagation();
     askRename(t);
@@ -1250,16 +1288,23 @@ function card(t) {
   foot.append(ren);
   const del = el("button", "card-del", "删除");
   del.type = "button";
-  del.title = "删除 Drive 目录与归档记录";
+  del.title = "删除归档目录与记录（不可逆）";
   del.addEventListener("click", e => {
     e.stopPropagation();
     askDelete(t);
   });
   foot.append(del);
   if (t.link) {
-    const a = el("a", null, "Drive ↗");
+    // 换后端后链接可能来自 OpenList 分享页或 CD2 直链，别一律叫 Drive
+    const gdrive = /drive\.google\.com/.test(t.link);
+    const a = el("a", null, gdrive ? "Drive ↗" : "分享 ↗");
     a.href = t.link; a.target = "_blank"; a.rel = "noopener";
     foot.append(a);
+  } else if (t.path) {
+    // 后端没有分享能力（例如 CloudDrive2）：显示真实路径，比一句「无链接」有用
+    const p = el("span", "nolink", t.path);
+    p.title = t.path;
+    foot.append(p);
   } else {
     foot.append(el("span", "nolink", "无链接"));
   }
@@ -3803,6 +3848,9 @@ fetch(BASE + "/api/session", {cache: "no-store"})
 // 后端 /api/settings 返回 {items: {KEY: {value, source, type, default, group, label, note}}}
 // 前端只负责展示与编辑；值怎么解析、怎么生效全由后端决定，不自造第二套口径。
 const settingsDirty = {};   // key -> 用户改后的值（还没保存）
+// 设置按功能分区：分组名 -> 这一区包含哪些键。renderDirty 靠它给标签点「未保存」。
+let settingsGroups = {};
+let settingsTab = "";       // 当前分区（分组名），重载后尽量留在原地
 
 function openSettings() {
   showView("settings");
@@ -3812,12 +3860,38 @@ function closeSettings() {
   showView("archive");
 }
 
+function settingsTabOf(key) {
+  for (const [group, keys] of Object.entries(settingsGroups)) {
+    if (keys.includes(key)) return group;
+  }
+  return "";
+}
+
+function switchSettingsTab(name) {
+  if (!name) return;
+  settingsTab = name;
+  for (const tab of $("settings-tabs").children) {
+    const on = tab.dataset.group === name;
+    tab.classList.toggle("on", on);
+    tab.setAttribute("aria-selected", on ? "true" : "false");
+    tab.tabIndex = on ? 0 : -1;
+  }
+  // 分区是同一批 DOM，只切显隐：用户在某区改了没保存，切走再切回来改动还在
+  for (const pane of $("settings-list").children) {
+    pane.hidden = pane.dataset.group !== name;
+  }
+  renderDirty();
+}
+
 async function loadSettings() {
   const list = $("settings-list");
+  const tabs = $("settings-tabs");
   const st = $("settings-state");
   const hint = $("settings-hint");
   list.textContent = "";
+  tabs.textContent = "";
   for (const k of Object.keys(settingsDirty)) delete settingsDirty[k];
+  settingsGroups = {};
   st.textContent = "加载中";
   try {
     const d = await subsApi("/api/settings");
@@ -3825,18 +3899,77 @@ async function loadSettings() {
     const items = d.items || {};
     const groups = {};
     for (const [key, it] of Object.entries(items)) {
-      (groups[it.group || "其它"] = groups[it.group || "其它"] || []).push([key, it]);
+      const group = it.group || "其它";
+      (groups[group] = groups[group] || []).push([key, it]);
     }
-    for (const [gname, rows] of Object.entries(groups)) {
-      list.append(el("div", "meta-h", gname));
-      for (const [key, it] of rows) list.append(settingsRow(key, it));
-    }
+    const names = Object.keys(groups);
+    for (const group of names) settingsGroups[group] = groups[group].map(([key]) => key);
+    // 保存后会重载一次：不要因为重载把用户弹回第一个分区
+    if (!names.includes(settingsTab)) settingsTab = names[0] || "";
+
+    names.forEach((group, index) => {
+      const tab = el("button", null, group);
+      tab.type = "button";
+      tab.dataset.group = group;
+      tab.id = `stabs-${index}`;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", `spane-${index}`);
+      tab.append(el("span", "n", String(groups[group].length)));
+      tab.addEventListener("click", () => switchSettingsTab(group));
+      tabs.append(tab);
+
+      const pane = el("div", "settings-pane");
+      pane.dataset.group = group;
+      pane.id = `spane-${index}`;
+      pane.setAttribute("role", "tabpanel");
+      pane.setAttribute("aria-labelledby", `stabs-${index}`);
+      // 存储分区最上面一行：当前后端 + 根目录 + 「测试连接」。
+      // 以前改了地址要等到下一次上传才知道通不通，现在点点就能验。
+      if (group === "存储") pane.append(storageStatusRow());
+      for (const [key, it] of groups[group]) pane.append(settingsRow(key, it));
+      list.append(pane);
+    });
+    switchSettingsTab(settingsTab);
     st.textContent = "已加载";
-    hint.textContent = `${Object.keys(items).length} 项 · 来源标注在每项右侧`;
+    hint.textContent = `${Object.keys(items).length} 项 · ${names.length} 个分区 · 来源标注在每项右侧`;
   } catch (e) {
     st.textContent = "读取失败";
     hint.textContent = e.message || e;
   }
+}
+
+function storageStatusRow() {
+  const row = el("div", "kvrow setting");
+  const nm = el("span", "nm", "当前后端");
+  nm.title = "后端与归档根目录（不含任何密钥）";
+  row.append(nm);
+  const val = el("span", "sval wide svalread", "读取中…");
+  row.append(val);
+  const btn = el("button", "ghost", "测试连接");
+  btn.type = "button";
+  btn.title = "按当前保存的配置探一次：连通性、可写、配额";
+  const hint = el("span", "hint", "");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    hint.textContent = "测试中…";
+    try {
+      const d = await subsApi("/api/storage/test", {});
+      hint.textContent = (d.detail || d.error || "无响应")
+        + (d.latency_ms != null ? ` · ${d.latency_ms}ms` : "");
+      hint.className = "hint" + (d.ok ? " ok" : " err");
+    } catch (e) {
+      hint.textContent = "测试失败：" + (e.message || e);
+      hint.className = "hint err";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  row.append(btn);
+  row.append(hint);
+  subsApi("/api/storage").then(d => {
+    val.textContent = d && d.kind ? `${d.kind} · ${d.root}${d.configured ? "" : " · 未配置"}` : "未知";
+  }).catch(() => { val.textContent = "读取失败"; });
+  return row;
 }
 
 function settingsRow(key, it) {
@@ -3849,7 +3982,36 @@ function settingsRow(key, it) {
   // 密钥类（MetaTube Token）：后端只回「是否已设置」，值永远是空的。
   // 输入框留空 = 不改，填了才提交；保存成功后输入框清空、状态变「已设置」。
   const secret = !!it.secret;
-  const wide = secret || /(_URL|_BASE|_PROXY)$/.test(key);
+  // 存的是地址、路径、模板的，窄输入框看不清；密钥类也一律给宽
+  const wide = secret || /(_URL|_BASE|_PROXY|_ROOT|_PATH|_TEMPLATE|_CA_FILE)$/.test(key);
+
+  // 枚举项（存储后端、CD2 链接形态）：后端在 SETTINGS_SPEC 里给了 choices，
+  // 这里直接渲染下拉，省得手打错字之后「保存成功但后端不认识」。
+  if (Array.isArray(it.choices) && it.choices.length) {
+    const sel = el("select", "sval" + (wide ? " wide" : ""));
+    for (const choice of it.choices) {
+      const opt = el("option", null, String(choice));
+      opt.value = String(choice);
+      if (String(it.value) === String(choice)) opt.selected = true;
+      sel.append(opt);
+    }
+    sel.addEventListener("change", () => {
+      if (String(sel.value) === String(it.value)) delete settingsDirty[key];
+      else settingsDirty[key] = sel.value;
+      sel.classList.toggle("dirty", key in settingsDirty);
+      renderDirty();
+    });
+    row.append(sel);
+    const srcSel = el("span", "hint", settingsSource(it.source));
+    row.append(srcSel);
+    if (it.note) {
+      const nt = el("div", "why");
+      nt.textContent = it.note;
+      row.append(nt);
+    }
+    return row;
+  }
+
   const input = el("input", "sval" + (wide ? " wide" : ""));
   input.type = it.type === "bool" ? "checkbox" : (secret ? "password" : "text");
   input.autocomplete = "off";
@@ -3865,15 +4027,16 @@ function settingsRow(key, it) {
     if (secret) {
       if (input.value) settingsDirty[key] = input.value;
       else delete settingsDirty[key];
-      renderDirty();
-      return;
-    }
-    const v = it.type === "bool" ? input.checked : input.value;
-    if (String(v) === String(it.type === "bool" ? !!it.value : it.value)) {
-      delete settingsDirty[key];
     } else {
-      settingsDirty[key] = v;
+      const v = it.type === "bool" ? input.checked : input.value;
+      if (String(v) === String(it.type === "bool" ? !!it.value : it.value)) {
+        delete settingsDirty[key];
+      } else {
+        settingsDirty[key] = v;
+      }
     }
+    // 改了还没存的那一格标黄：光靠「N 项待保存」看不出来是哪一项
+    input.classList.toggle("dirty", key in settingsDirty);
     renderDirty();
   });
   row.append(input);
@@ -3898,6 +4061,15 @@ function renderDirty() {
   const n = Object.keys(settingsDirty).length;
   $("settings-state").textContent = n ? `${n} 项待保存` : "已加载";
   $("settings-save").disabled = !n;
+  // 未保存的改动可能散在别的分区里：每个标签上点一个黄点，否则用户不知道还剩哪几处
+  const dirty = new Set(Object.keys(settingsDirty).map(settingsTabOf).filter(Boolean));
+  const tabs = $("settings-tabs");
+  if (!tabs) return;
+  for (const tab of tabs.children) {
+    const on = dirty.has(tab.dataset.group);
+    tab.classList.toggle("dirty", on);
+    tab.title = on ? `${tab.dataset.group}：有未保存的改动` : "";
+  }
 }
 
 async function saveSettings() {
@@ -3911,13 +4083,17 @@ async function saveSettings() {
   try {
     const d = await subsApi("/api/settings", { updates });
     if (!d || !d.ok) throw new Error((d && d.error) || "保存失败");
-    $("settings-hint").textContent =
-      `已保存 ${n} 项` + (d.failed && Object.keys(d.failed).length
-        ? `，失败 ${Object.keys(d.failed).length} 项：${Object.values(d.failed).join("；")}` : "");
+    const saved = `已保存 ${n} 项` + (d.failed && Object.keys(d.failed).length
+      ? `，失败 ${Object.keys(d.failed).length} 项：${Object.values(d.failed).join("；")}`
+      : "");
+    $("settings-hint").textContent = saved;
+    if ($("settings-saved")) $("settings-saved").textContent = saved;
     for (const k of Object.keys(settingsDirty)) delete settingsDirty[k];
     await loadSettings();
   } catch (e) {
-    $("settings-hint").textContent = "保存失败：" + (e.message || e);
+    const why = "保存失败：" + (e.message || e);
+    $("settings-hint").textContent = why;
+    if ($("settings-saved")) $("settings-saved").textContent = why;
     btn.disabled = false;
   }
 }
@@ -3928,6 +4104,18 @@ $("settings-close").addEventListener("click", closeSettings);
 $("settings-reload").addEventListener("click", loadSettings);
 $("settings-save").addEventListener("click", saveSettings);
 $("settings-save").disabled = true;
+// 分区标签支持左右方向键切换（和常见 tab 组件一致）
+$("settings-tabs").addEventListener("keydown", e => {
+  if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+  const tabs = Array.from($("settings-tabs").children);
+  const index = tabs.findIndex(t => t.dataset.group === settingsTab);
+  if (index < 0) return;
+  e.preventDefault();
+  const step = e.key === "ArrowRight" ? 1 : tabs.length - 1;
+  const next = tabs[(index + step) % tabs.length];
+  switchSettingsTab(next.dataset.group);
+  next.focus();
+});
 </script>
 </body>
 </html>

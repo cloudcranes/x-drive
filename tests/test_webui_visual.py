@@ -268,3 +268,69 @@ def test_normalize_actions_live_outside_scroll_area():
     foot = page[body_end:page.index('</section>', body_end)]
     assert 'id="norm-rename-run"' in foot, "改名按钮应在 panel-body 之外"
     assert 'id="norm-adopt-run"' in foot
+
+
+# ---------------------------------------------------------------- 8. 存储后端面板
+
+def test_settings_renders_choices_as_select():
+    """存储后端 / 链接形态是枚举：必须渲染下拉，别让人手打错字。"""
+    js = script(html())
+    assert "Array.isArray(it.choices)" in js, "设置项要支持 choices"
+    assert 'el("select"' in js, "枚举项应渲染 <select>"
+    assert "select.sval" in css(html()), "下拉框也要跟着深色面板走"
+
+
+def test_settings_has_storage_status_row():
+    """存储分区顶部：当前后端 + 测试连接（改完地址不用等下一次上传才知道通不通）。"""
+    js = script(html())
+    assert "function storageStatusRow()" in js
+    assert 'subsApi("/api/storage/test"' in js
+    assert 'group === "存储"' in js, "存储分区要单独插一行状态 + 测试连接"
+
+
+# ---------------------------------------------------------------- 9. 设置分区 tab
+
+def test_settings_have_horizontal_tabs():
+    """十来个分组平铺成一长条找起来太费劲：按功能分成横向子 tab。"""
+    page = html()
+    js = script(page)
+    assert 'id="settings-tabs"' in page and 'role="tablist"' in page
+    assert "function switchSettingsTab(" in js
+    # 每个分组一个 tab，面板只显示当前分区
+    assert 'tab.dataset.group = group' in js
+    assert 'pane.hidden = pane.dataset.group !== name' in js
+    # 标签吸顶：滚到底部改「存储」时还看得见自己在哪个分区
+    assert "position:sticky" in css(page)
+    assert ".settings-pane[hidden]{display:none}" in css(page)
+
+
+def test_settings_tabs_mark_unsaved_groups():
+    """改动可能散在别的分区：标签上要有点，否则用户不知道还剩哪几处没保存。"""
+    js = script(html())
+    assert "function settingsTabOf(" in js
+    assert 'tab.classList.toggle("dirty"' in js
+    assert ".stabs button.dirty::after" in css(html())
+
+
+def test_settings_tab_survives_reload_and_arrow_keys():
+    """保存后重载不该把用户弹回第一页；左右方向键能换分区。"""
+    js = script(html())
+    assert "if (!names.includes(settingsTab)) settingsTab = names[0]" in js
+    assert 'e.key !== "ArrowRight" && e.key !== "ArrowLeft"' in js
+    assert "switchSettingsTab(next.dataset.group)" in js
+
+
+def test_card_shows_path_when_no_share_link():
+    """没有分享能力的后端（CloudDrive2）：卡片要显示真实路径，不是一句「无链接」。"""
+    js = script(html())
+    assert "} else if (t.path) {" in js
+    assert "分享 ↗" in js, "非 Drive 链接不该再叫 Drive"
+
+
+def test_settings_marks_unsaved_rows_and_wide_paths():
+    """「N 项待保存」看不出是哪一项：改过没存的输入框自己标黄；路径类给宽框。"""
+    js = script(html())
+    assert 'input.classList.toggle("dirty", key in settingsDirty)' in js
+    assert 'sel.classList.toggle("dirty", key in settingsDirty)' in js
+    assert ".kvrow.setting .sval.dirty" in css(html())
+    assert "_ROOT|_PATH|_TEMPLATE|_CA_FILE" in js, "路径/模板类字段要用宽输入框"

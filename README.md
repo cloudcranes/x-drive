@@ -174,12 +174,93 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
 | `DISK_RESERVE_GB` | 磁盘闸门：永远预留不参与分配的空间，默认 5 |
 | `DISK_CHECK_INTERVAL` | 排队任务复查空间的间隔（秒），默认 30 |
 | `DISK_QUEUE_TIMEOUT` | 排队最久等多久（秒），0 = 一直等 |
+| `STORAGE_BACKEND` | 存储后端：`rclone`（默认）/ `openlist` / `clouddrive2`，详见下节；网页里改即可，不必重启 |
 | `UPLOAD_TRANSFERS` / `UPLOAD_CHUNK` | 上传并发与分片，默认 4 / 64M（实测最优） |
 | `RETRIES` / `RETRY_BASE_DELAY` | 失败重试次数与首次退避（指数增长，封顶 60s）；按失败性质分级：网络给满次数、死种只给一次且退避 ×6、配额留待办等明天、配置错立刻报 |
 | `SUBS_INTERVAL` | 订阅轮询间隔（秒），默认 3600，最小 300 |
 | `CLEANUP_MAX_GB` | 归档回收：总容量上限，0 = 关闭（默认关） |
 | `CLEANUP_KEEP_RECENT` | 归档回收：永远保留最近几个，默认 10 |
 | `CLEANUP_OLDER_DAYS` | 归档回收：只考虑这么久的归档 |
+
+## 存储后端（rclone / OpenList / CloudDrive2）
+
+归档往哪儿放是三选一，**不需要 rclone 也能接网络存储**。三种后端共用同一套
+「上传 → 记清单 → 校核 → 改名 → 回收」流程，行为约定写在 `app/storage/base.py`。
+
+| 后端 | 通道 | 凭据 | 分享链接 | 额外依赖 |
+|---|---|---|---|---|
+| `rclone`（默认） | 子进程 + `rclone.conf` | `.env` 里 `RCLONE_REMOTE` / 挂载的配置文件 | `rclone link`（Drive / OneDrive 等） | 镜像自带 rclone |
+| `openlist` | HTTP（AList v3 兼容 REST） | OpenList 账号密码（建议用管理员或有写权限的账号） | `POST /api/share/create` → `…/s/{id}` | 无（用现有 httpx） |
+| `clouddrive2` | gRPC（默认 `19798`，与 Web 同端口） | CloudDrive2 账号（注册邮箱 + 密码） | 没有「创建分享」接口，见下文 `CD2_LINK_MODE` | `grpcio` + `protobuf`（约 25MB） |
+
+切换步骤（改完**下一次上传**就生效，不用重启容器）：
+
+1. 网页左下角「设置 → 存储」，在「当前后端」那一行点「测试连接」先确认通；
+2. 选后端、填地址与账号（密码类只写不回显，留空表示不改）；
+3. 「保存全部改动」。归档根目录默认 `X-Drive`，在 OpenList / CD2 里是一个虚拟路径。
+
+### OpenList
+
+- 归档落在 `/<归档根目录>/<番号>/`，即 `/X-Drive/SSIS-555/`；这个目录要对应你在
+  OpenList 里挂的一个存储（本地盘、阿里云盘、115…都行），程序只认虚拟路径。
+- 分享链接需要账号有分享权限（管理员默认有）。没权限时**不会阻断上传**，
+  卡片退回显示路径。归档被删除时，当初建的分享会一并删掉。
+- 默认单次 PUT 上传（与 OpenList 网页端同一条路）。服务端支持分片时可在设置里
+  打开「OpenList 分片上传」：超过阈值的文件走 `multipart/init|chunk|complete`，
+  服务端没启用（403）会自动退回单次 PUT。
+- 登录 token 有效期 48 小时：过期后自动重登一次。开了两步验证的账号，`OPENLIST_OTP`
+  只能填一次性的码，长期跑建议单独开一个不带 2FA 的账号。
+- 一个实现细节（排障时有用）：OpenList 的业务错误常常是 **HTTP 200 + body 里 code≠200**，
+  程序按 body 判断，所以日志里看到 200 不等于成功。
+
+### CloudDrive2
+
+- 走 gRPC，不再经 WebDAV，也不需要 rclone。凭据是 CD2 自己的账号。
+- **上传是异步任务**：写到 CD2 只是进它的上传队列，程序会轮询
+  `GetUploadFileList` 到 `Status_Finished` 才认为传完（面板上能看到字节进度与速度）。
+  所以「本地上传完成」与「云端真的有了」是两件事，这里等的是后者。
+- **文件名会被归一化**：CD2 把 `* ? : / \ < > | "` 换成全角，并削掉尾部空白与点号。
+  程序按 `CreateFolder` 返回的**真实名**记账（否则校核/改名/删除会指向不存在的路径）。
+  番号目录一般不受影响，但标题里带这些字符时目录名会变，面板显示的就是真实名。
+- **没有「创建分享」接口**（`AddSharedLink` 是「把别人的分享加进来」），用
+  `CD2_LINK_MODE` 决定卡片上的链接：
+  - `none`（默认）：只显示路径；
+  - `static`：目录里只有一个媒体文件时，给 CD2 的 `/static/...` 直链（**仅内网可播**）；
+  - `template`：按 `SHARE_LINK_TEMPLATE` 拼，`{path}` 会被替换成 URL 编码后的路径。
+- 删除：先试「永久删除」，云盘不支持就退回回收站，回执里会注明是哪一种。
+- 依赖：`grpcio` / `protobuf`。不想装就把镜像用 `--build-arg WITH_CD2=0` 构建，
+  这时只有 CD2 后端不可用，其它照常（适配器是延迟导入的）。
+
+### 构建参数与镜像体积
+
+```bash
+# 只用 OpenList：不要 rclone，也不要 grpc
+docker compose build --build-arg WITH_RCLONE=0 --build-arg WITH_CD2=0 web
+# 用 CD2：rclone 可以去掉
+docker compose build --build-arg WITH_RCLONE=0 web
+```
+
+`RCLONE_CONFIG_HOST` 现在是**可选**挂载：不设就指向 `./.rclone/rclone.conf`（可以不存在），
+只要不选 rclone 后端就没人读它。
+
+### 换后端之后，老归档怎么办
+
+程序**不搬迁**历史归档。切换后：
+
+- 新归档走新后端；
+- 旧记录原样留着，`path` 里写着它当初落在哪个后端（`gdrive:X-Drive/…`、
+  `openlist:/X-Drive/…`、`clouddrive2:/X-Drive/…`）；
+- 对旧记录做「归档校验 / 改名 / 删除」时作用于**当前**后端，找不到就报错 ——
+  不会误删别的目录。要按后端分别操作，就把设置切回那个后端再点。
+
+### 自己写一个后端
+
+`app/storage/example.py` 是照着填的骨架：实现那十个方法（保证「上传返回即落地」、
+「错误分可重试与不可重试两类」），在 `app/storage/__init__.py` 的 `KINDS` 与
+`_build()` 里各加一行，设置项加进 `app/settings.py` 的「存储」分组，网页的下拉框与
+「测试连接」会自动带出来。回归测试照 `tests/test_storage_cd2.py`（进程内假服务端）。
+
+自检：`python -m app.main --check` 会按当前后端报连通性、可写与配额。
 
 ## 看板
 
@@ -197,6 +278,9 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
   再按规范批量修正（先出清单，撞车的整组跳过）；命名规范为 `YYYY-MM-DD 番号 标题`
 - 清理失败任务：侧栏底部按钮，删 7 天前的失败任务记录（不动文件）；`PANEL_CLEAN_DAYS>0` 时每日自动跑
 - 归档删除：显示将删除的内容，需二次确认，进 Drive 回收站可恢复
+- 设置面板：50 来项参数按功能分成横向子 tab（配额 / 重试 / 上传 / 磁盘 / 刮削 /
+  归档回收 / 面板 / 其它 / 数据源 / 存储），标签吸顶、未保存的分区带黄点、
+  改过没存的输入框自己标黄；保存键钉在面板底部，跨分区的改动一次保存
 
 ![看板](docs/preview.jpg)
 
