@@ -110,7 +110,7 @@ def test_modal_close_button_has_room_for_text():
 
 def test_queue_keeps_scroll_position_on_poll():
     js = script(html())
-    body = js[js.index("async function loadJobs"):js.index("// 搜磁力")]
+    body = js[js.index("async function loadJobs"):js.index("// ── 任务时间线")]
     assert "scrollTop" in body, "轮询重建队列时要保留滚动位置"
     assert body.count("box.scrollTop = keepTop") >= 2, "空队列与有队列两条路径都要还原"
 
@@ -212,3 +212,33 @@ def test_queue_open_close_switch_views():
     assert 'showView("queue")' in body
     assert '"archive"' in body, "关闭队列要回到归档"
     assert "localStorage" not in body, "不再记抽屉开合状态"
+
+
+# ---------------------------------------------------------------- 12. 新建下载并入搜索框
+
+def test_new_task_panel_is_gone():
+    """「新建下载」与搜索框重复：侧栏入口与面板都撤掉，能力并入搜索框。"""
+    page = html()
+    assert 'id="new-task"' not in page, "侧栏不该再有新建下载"
+    assert 'id="panel"' not in page and "dl-text" not in page, "下载面板应已移除"
+    assert 'id="submit-slot"' in page, "磁力/直链提交区要顶上来"
+
+
+def test_pasting_magnet_opens_submit_panel():
+    js = script(html())
+    assert "function queryKind" in js, "搜索框要能分辨番号 / 磁力 / 直链"
+    assert "function renderSubmit" in js and "function submitDownload" in js
+    assert 'magnet:\\?[^\\s"\']+' in js or "magnet:" in js
+    q = js[js.index('$("q").addEventListener("input"'):]
+    assert 'renderSubmit(' in q, "粘磁力要出提交区"
+    key = js[js.index('$("q").addEventListener("keydown"'):]
+    assert 'submitDownload(' in key, "粘磁力后回车直接提交"
+
+
+def test_magnet_is_not_a_local_filter():
+    """磁力/直链不是筛选词：不能拿整串 URL 去比本地文本，也别做成筛选胶囊。"""
+    js = script(html())
+    body = js[js.index("function matches"):js.index("// 一个归档在某个维度上")]
+    assert "queryKind(view.q)" in body, "matches 要先判断输入类型"
+    filters = js[js.index("function renderActiveFilters"):js.index("function card")]
+    assert 'qk.kind !== "magnet"' in filters

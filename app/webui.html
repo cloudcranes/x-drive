@@ -317,11 +317,11 @@
   .sub-row button:hover{color:var(--text); border-color:rgba(62,186,244,.4)}
   .subs-tip{margin-top:9px; font-size:11px; color:var(--faint); line-height:1.6}
 
-  .panel #dl-text{width:100%; padding:10px 12px; border-radius:8px; font-family:var(--mono);
-    font-size:12.5px; border:1px solid var(--line); background:rgba(0,0,0,.6); color:var(--text);
-    outline:none; transition:border-color .16s, box-shadow .16s}
-  .panel #dl-text::placeholder{color:var(--faint)}
-  .panel #dl-text:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+  /* 搜索框里粘磁力 / 直链时的提交区 */
+  .submit-row{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+  .submit-text{flex:1 1 320px; min-width:0; font-family:var(--mono); font-size:12px; color:var(--text-2);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:8px 12px; border-radius:8px;
+    border:1px solid var(--line-soft); background:rgba(0,0,0,.45)}
   /* 其余文本输入（订阅的演员 ID、元数据番号、设置项）以前没写样式，
      在深色面板里落回浏览器默认白框，非常刺眼。统一到同一套深色底。 */
   .panel input[type="text"], .panel input[type="password"], .panel input:not([type]){
@@ -667,10 +667,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>
         <span class="t">归档</span></button>
-      <button class="it" id="new-task" type="button" title="粘贴磁力或直链，按番号下载">
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round">
-          <path d="M12 5v14M5 12h14"/></svg>
-        <span class="t">新建下载</span></button>
       <button class="it" id="queuebtn" type="button" title="查看进行中 / 排队 / 失败的任务">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 6h11M3 12h11M3 18h7"/><path d="m16 12 3 3 3-3"/><path d="M19 15V6"/></svg>
@@ -768,21 +764,6 @@
     </div>
     <div class="tb-row filters" id="activefilters"></div>
   </div>
-
-  <section class="panel" id="panel" hidden>
-    <input id="dl-text" type="text" placeholder="粘贴磁力或直链，可带番号：SSIS-123 magnet:?xt=urn:btih:…"
-           autocomplete="off" spellcheck="false">
-    <div class="panel-actions">
-      <button class="primary" id="dl-submit" type="button">开始下载</button>
-      <button class="ghost" id="dl-peek" type="button">预览信息</button>
-      <button class="ghost" id="dl-find" type="button" title="按面板里的番号搜磁力">搜磁力</button>
-      <label class="chk"><input type="checkbox" id="dl-dedupe" checked>按番号去重</label>
-      <button class="ghost" id="dl-cancel" type="button">关闭</button>
-      <span class="hint" id="dl-hint"></span>
-    </div>
-    <div class="preview" id="dl-preview" hidden></div>
-    <div class="preview" id="dl-finds" hidden></div>
-  </section>
 
   <section class="panel" id="subpanel" hidden>
     <div class="subs-head">
@@ -928,6 +909,9 @@
     </span>
   </div>
 
+  <!-- 搜索框里粘贴磁力 / 直链时的提交区（原「新建下载」面板的功能并入搜索框） -->
+  <section class="panel" id="submit-slot" hidden aria-label="提交下载"></section>
+
   <!-- 搜索框直接搜网络资源的结果：本地没有这条番号时的出口 -->
   <section class="panel res" id="resource-slot" hidden aria-label="网络资源"></section>
 
@@ -1020,7 +1004,10 @@ function matches(t) {
     if (!v.includes(view.series)) return false;
   }
   if (view.month && t.month !== view.month) return false;
-  const q = norm(view.q);
+  // 搜索框里粘的是磁力 / 直链时，那不是「筛选词」：别拿整串 URL 去比本地文本
+  const qk = queryKind(view.q);
+  const qtext = (qk.kind === "magnet" || qk.kind === "link") ? "" : view.q;
+  const q = norm(qtext);
   if (!q) return true;
   // 原文 + 去掉分隔符的两份文本都比一遍，SSIS123 / fc2ppv4422 都能搜到
   const m = t.meta || {};
@@ -1028,7 +1015,7 @@ function matches(t) {
                m.title, m.maker, m.director, (m.actors || []).join(" "),
                (m.categories || []).join(" "), m.date]
     .map(v => (v || "").toLowerCase()).join(" ");
-  return hay.includes(view.q.trim().toLowerCase()) || strip(hay).includes(q);
+  return hay.includes(qtext.trim().toLowerCase()) || strip(hay).includes(q);
 }
 
 // 一个归档在某个维度上有哪些取值（演员/片商可能多个）
@@ -1123,7 +1110,11 @@ function renderActiveFilters() {
   if (view.kind !== "all") chips.push(["类型：" + (view.kind === "video" ? "视频" : "图片"), () => { view.kind = "all"; syncKindSeg(); }]);
   if (view.series) chips.push([DIM_LABEL[view.dim] + "：" + view.series, () => { view.series = ""; renderSidebar(); }]);
   if (view.month) chips.push([fmtMonth(view.month), () => { view.month = ""; renderSidebar(); }]);
-  if (view.q.trim()) chips.push(["“" + view.q.trim() + "”", () => { view.q = ""; $("q").value = ""; }]);
+  // 磁力 / 直链不是筛选条件（上面已经出了提交区），别把它做成筛选胶囊
+  const qk = queryKind(view.q);
+  if (view.q.trim() && qk.kind !== "magnet" && qk.kind !== "link") {
+    chips.push(["“" + view.q.trim() + "”", () => { view.q = ""; $("q").value = ""; }]);
+  }
 
   if (!chips.length) {
     box.append(el("span", "lb", "筛选"));
@@ -1466,7 +1457,9 @@ function applyFilter() {
 
   const slot = $("empty-slot");
   slot.textContent = "";
-  if (!tasks.length) {
+  // 搜索框里粘着磁力/直链时，上方就是提交区，不用再报一句「没有匹配的番号」
+  const submitting = !!$("submit-slot") && $("submit-slot").childElementCount > 0;
+  if (!tasks.length && !submitting) {
     const box = el("div", "empty");
     const cta = (label, run) => {
       const b = el("button", "primary", label);
@@ -1479,8 +1472,10 @@ function applyFilter() {
       box.append(el("b", null, "还没有归档记录"));
       box.append(el("span", null, resShown
         ? "上面的网络资源就是搜到的候选：点「下载」才会进队列。"
-        : "点「新建下载」粘贴磁力，或在 Telegram 里直接发给机器人。"));
-      if (!resShown) cta(resCode ? "搜网络资源" : "新建下载", () => (resCode ? searchResources(resCode) : openPanel()));
+        : "在上面搜索框输入番号搜资源，或直接粘贴磁力 / 直链；也可以让 Telegram 机器人收。"));
+      if (!resShown) {
+        if (resCode) cta("搜网络资源", () => searchResources(resCode));
+      }
     } else if (resCode && resShown) {
       box.append(el("b", null, "站内没有 " + resCode));
       box.append(el("span", null, "上面的网络资源就是搜到的候选：点「下载」才会进队列。"));
@@ -1668,10 +1663,15 @@ $("resbtn").addEventListener("click", () => {
 // 搜索框回车 = 直接搜这个番号的资源（筛本地是即时的，不用回车）
 $("q").addEventListener("keydown", e => {
   if (e.key !== "Enter") return;
-  const code = codeOfQuery(view.q);
-  if (!code) return;
+  const q = queryKind(view.q);
+  if (q.kind === "magnet" || q.kind === "link") {
+    e.preventDefault();
+    submitDownload(q.value, null);
+    return;
+  }
+  if (q.kind !== "code") return;
   e.preventDefault();
-  searchResources(code);
+  searchResources(q.code);
 });
 $("clear-series").addEventListener("click", () => { view.series = ""; renderSidebar(); applyFilter(); });
 $("dimtabs").addEventListener("click", e => {
@@ -1687,6 +1687,17 @@ $("clear-month").addEventListener("click", () => { view.month = ""; renderSideba
 let qTimer = null;
 $("q").addEventListener("input", e => {
   view.q = e.target.value;
+  const q = queryKind(view.q);
+  // 磁力 / 直链：就地出提交区，清掉上一次的资源候选
+  if (q.kind === "magnet" || q.kind === "link") {
+    closeResources();
+    renderSubmit(q.value, q.kind, q.code);
+    if ($("q").value && $("feed").hidden) showView("archive");
+    clearTimeout(qTimer);
+    qTimer = setTimeout(applyFilter, 160);
+    return;
+  }
+  clearSubmit();
   // 关键词换了，上一次的资源结果就过期了（别让人对着 A 的候选去下 B）
   if (resState.code && codeOfQuery(view.q) !== resState.code) closeResources();
   // 在设置/元数据/订阅界面里搜索：先回到归档列表再筛，
@@ -1703,7 +1714,7 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
     if ($("metapanel").hidden === false) closeMeta();
     if ($("healthpanel").hidden === false) closeHealth();
-    if ($("panel").hidden === false) closePanel();
+
     closeQueue();
     closeSide();
   }
@@ -2079,7 +2090,9 @@ function showView(name) {
     ["resultbar", isArchive], ["feed", isArchive], ["empty-slot", isArchive],
     // 资源结果面板只在归档视图、且真的搜过（有内容）时才显示
     ["resource-slot", isArchive && !!resBox && resBox.childElementCount > 0],
-    ["panel", name === "download"], ["subpanel", name === "subs"],
+    // 提交区同理：只有输入里真的粘着磁力/直链时才显示
+    ["submit-slot", isArchive && !!($("submit-slot") || {}).childElementCount],
+    ["subpanel", name === "subs"],
     ["metapanel", name === "meta"], ["healthpanel", name === "health"],
     ["settingspanel", name === "settings"], ["queue", name === "queue"],
   ];
@@ -2091,7 +2104,7 @@ function showView(name) {
   // 侧栏导航高亮：只有当前视图那一项 on（add/remove，不用 toggle，兼容假 DOM）
   // queuebtn（下载队列抽屉）单独维护 on，切视图时一并清掉，避免双高亮
   const navOn = [
-    ["archive-open", isArchive], ["new-task", name === "download"],
+    ["archive-open", isArchive],
     ["subs-open", name === "subs"], ["metatool-open", name === "meta"],
     ["health-open", name === "health"], ["settings-open", name === "settings"],
     // 队列也是视图：在这一页时侧栏同样高亮，切走就清掉（别双高亮）
@@ -2112,26 +2125,83 @@ function showArchive() { showView("archive"); }
 
 $("archive-open").addEventListener("click", showArchive);
 
-function openPanel() {
-  showView("download");
-  $("dl-text").focus();
+// ── 搜索框的三种输入：番号 / 磁力 / 直链
+// 「新建下载」面板已并入搜索框：粘贴磁力或直链就地出提交区，不再另开一页。
+function queryKind(text) {
+  const t = (text || "").trim();
+  const magnet = t.match(/magnet:\?[^\s"']+/i);
+  if (magnet) return {kind: "magnet", value: magnet[0], code: codeInText(t)};
+  if (/^https?:\/\/\S+$/i.test(t)) return {kind: "link", value: t, code: codeInText(t)};
+  const code = codeOfQuery(t);
+  return code ? {kind: "code", value: t, code} : {kind: "", value: t, code: ""};
 }
-function closePanel() {
-  showView("archive");
-  $("dl-hint").textContent = "";
-  $("dl-hint").className = "hint";
-}
-$("new-task").addEventListener("click", () => $("panel").hidden ? openPanel() : closePanel());
-$("dl-cancel").addEventListener("click", closePanel);
 
-function setHint(text, kind) {
-  const h = $("dl-hint");
-  h.textContent = text;
+// 磁力 / 直链里夹带的番号（「SSIS-123 magnet:…」这种写法）
+function codeInText(text) {
+  const t = text || "";
+  const fc2 = t.match(/FC2[-_ ]?PPV[-_ ]?(\d{6,8})/i);
+  if (fc2) return "FC2-PPV-" + fc2[1];
+  const m = t.match(/\b([A-Za-z]{2,6})[-_ ]?(\d{2,5})\b/);
+  return m ? `${m[1].toUpperCase()}-${m[2]}` : "";
+}
+
+function setSubmitHint(text, kind) {
+  const h = $("submit-hint");
+  if (!h) return;
+  h.textContent = text || "";
   h.className = "hint" + (kind ? " " + kind : "");
 }
 
+function clearSubmit() {
+  const slot = $("submit-slot");
+  if (!slot) return;
+  slot.hidden = true;
+  slot.textContent = "";
+}
+
+// 提交区：显示待提交的链接 + 「提交下载 / 预览信息（磁力）」
+function renderSubmit(text, kind, code) {
+  const slot = $("submit-slot");
+  slot.hidden = false;
+  slot.textContent = "";
+  const head = el("div", "res-head");
+  head.append(el("h3", null, kind === "magnet" ? "提交磁力" : "提交直链"));
+  const hint = el("span", "hint", code ? `识别到番号 ${code}，按它归档` : "没识别到番号：按文件名归档");
+  hint.id = "submit-hint";
+  head.append(hint);
+  const close = el("button", "ghost", "关闭");
+  close.type = "button";
+  close.addEventListener("click", () => { clearSubmit(); applyFilter(); });
+  head.append(close);
+  slot.append(head);
+
+  const row = el("div", "submit-row");
+  const txt = el("div", "submit-text", text);
+  txt.title = text;
+  row.append(txt);
+  const submit = el("button", "primary", "提交下载");
+  submit.type = "button";
+  submit.addEventListener("click", () => submitDownload(text, submit));
+  row.append(submit);
+  if (kind === "magnet") {
+    const peek = el("button", "ghost", "预览信息");
+    peek.type = "button";
+    peek.title = "用 whatslink 查这条磁力的文件名 / 体积 / 截图";
+    peek.addEventListener("click", () => peekMagnet(text, peek));
+    row.append(peek);
+  }
+  slot.append(row);
+
+  const pv = el("div", "preview");
+  pv.id = "submit-preview";
+  pv.hidden = true;
+  slot.append(pv);
+}
+
+// 预览信息：沿用原来「新建下载 → 预览信息」的能力，渲染在提交区里
 function showProbePreview(info) {
-  const box = $("dl-preview");
+  const box = $("submit-preview");
+  if (!box) return;
   if (!info) { box.hidden = true; return; }
   box.textContent = "";
   const meta = el("div", "meta");
@@ -2154,54 +2224,57 @@ function showProbePreview(info) {
   box.hidden = false;
 }
 
-$("dl-peek").addEventListener("click", async () => {
-  const magnet = ($("dl-text").value.match(/magnet:\?[^\s"']+/) || [""])[0];
-  if (!magnet) { setHint("先粘贴磁力链接", "err"); return; }
-  $("dl-peek").disabled = true;
-  setHint("查询中…");
+async function peekMagnet(text, btn) {
+  const magnet = (String(text || "").match(/magnet:\?[^\s"']+/) || [""])[0];
+  if (!magnet) { setSubmitHint("这不是磁力链接", "err"); return; }
+  if (btn) btn.disabled = true;
+  setSubmitHint("查询中…");
   try {
-    const r = await fetch(BASE + "/api/peek?magnet=" + encodeURIComponent(magnet), authInit({cache: "no-store"}));
-    const d = await r.json();
+    const r = await fetch(BASE + "/api/peek?magnet=" + encodeURIComponent(magnet),
+                          authInit({cache: "no-store"}));
+    const d = await r.json().catch(() => ({}));
     if (r.ok && d.info) {
       showProbePreview(d.info);
-      setHint("已获取磁力信息", "ok");
+      setSubmitHint("已获取磁力信息", "ok");
     } else {
-      setHint("查不到信息（磁力可能无人做种或格式不完整）", "err");
+      setSubmitHint("查不到信息（磁力可能无人做种或格式不完整）", "err");
     }
   } catch (e) {
-    setHint("查询失败：" + e.message, "err");
+    setSubmitHint("查询失败：" + (e.message || e), "err");
   } finally {
-    $("dl-peek").disabled = false;
+    if (btn) btn.disabled = false;
   }
-});
+}
 
-$("dl-submit").addEventListener("click", async () => {
-  const text = $("dl-text").value.trim();
-  if (!text) { setHint("先粘贴磁力或直链", "err"); return; }
-  $("dl-submit").disabled = true;
-  setHint("提交中…");
+// 提交到下载队列：与资源候选的「下载」同一条 /api/download，按番号去重
+async function submitDownload(text, btn) {
+  if (btn) btn.disabled = true;
+  setSubmitHint("提交中…");
   try {
     const r = await fetch(BASE + "/api/download", authInit({
       method: "POST", cache: "no-store",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text, dedupe: $("dl-dedupe").checked}),
+      body: JSON.stringify({text, dedupe: true}),
     }));
-    const d = await r.json();
-    if (r.ok && d.ok) {
-      setHint(`已提交 ${d.count} 个任务` + (d.code ? ` · 番号 ${d.code}` : ""), "ok");
-      if (d.preview) showProbePreview(d.preview);
-      $("dl-text").value = "";
-      openQueue();
-      loadJobs();
-    } else {
-      setHint(d.error || "提交失败", "err");
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) {
+      setSubmitHint((d && d.error) || `提交失败（HTTP ${r.status}）`, "err");
+      return;
     }
+    setSubmitHint(`已提交 ${d.count || 1} 个任务` + (d.code ? ` · 番号 ${d.code}` : ""), "ok");
+    // 交完就把搜索框清掉，避免再按一次回车重复提交
+    view.q = "";
+    $("q").value = "";
+    clearSubmit();
+    applyFilter();
+    openQueue();
+    loadJobs();
   } catch (e) {
-    setHint("提交失败：" + e.message, "err");
+    setSubmitHint("提交失败：" + (e.message || e), "err");
   } finally {
-    $("dl-submit").disabled = false;
+    if (btn) btn.disabled = false;
   }
-});
+}
 
 // ── 任务队列
 const STAGE_TEXT = {queued: "等空间", downloading: "下载中", organizing: "整理中",
@@ -2640,90 +2713,6 @@ async function loadJobs() {
     if (active > 0) loadJobs._done = false;
   } catch (e) { /* 静默 */ }
 }
-
-// 搜磁力：按输入框里的番号查 javbus，列候选；点一条就填进输入框，不自动下载
-$("dl-find").addEventListener("click", async () => {
-  const box = $("dl-finds");
-  const text = ($("dl-text").value || "").trim();
-  // FC2 是「字母-字母-数字」三段，普通番号两段；先试长的，别把 FC2-PPV-4519894 截成 PPV-45198
-  const code = (text.match(/FC2[-_ ]?PPV[-_ ]?\d{6,8}/i)
-    || text.match(/[A-Za-z]{2,6}[-_ ]?\d{2,5}/) || [""])[0];
-  if (!code) { $("dl-hint").textContent = "先写上番号，例如 SSIS-123"; return; }
-  $("dl-find").disabled = true;
-  $("dl-hint").textContent = "搜索中…";
-  try {
-    const r = await fetch(BASE + "/api/magnets?code=" + encodeURIComponent(code), authInit({cache: "no-store"}));
-    const data = await r.json().catch(() => ({}));
-    box.textContent = "";
-    box.hidden = false;
-    if (!data.ok) {
-      $("dl-hint").textContent = data.error || "搜索失败";
-      return;
-    }
-    const items = data.items || [];
-    if (!items.length) {
-      $("dl-hint").textContent = `${data.code} 没搜到磁力`;
-      return;
-    }
-    $("dl-hint").textContent = `${data.code} 共 ${items.length} 条候选 · 点上方信息卡看详情`;
-    const info = data.info || {};
-    if (info.title || info.cover) {
-      // 资源信息：封面 + 标题 + 日期/时长/片商/演员 + 系列/类别/评分；点卡片看预览图
-      const card = el("div", "findcard");
-      card.title = "点开看详情与预览图";
-      card.addEventListener("click", () => showDetail(data.code, info));
-      if (info.cover) {
-        const img = el("img", "findcover");
-        img.alt = data.code;
-        img.loading = "lazy";
-        img.addEventListener("error", () => img.remove());
-        img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
-        card.append(img);
-      }
-      const body = el("div", "findbody");
-      body.append(el("div", "findtitle", info.title || data.code));
-      const bits = [info.date, info.duration, info.maker].filter(Boolean);
-      if (info.cover_size) bits.push(info.cover_size);
-      if (bits.length) body.append(el("div", "findmeta", bits.join(" · ")));
-      if (info.actors && info.actors.length) {
-        body.append(el("div", "findmeta", "演员 " + info.actors.slice(0, 4).join(" / ")));
-      }
-      const extra = [info.series ? "系列 " + info.series : "",
-                     (info.categories || []).slice(0, 5).join(" / "),
-                     info.review ? "评分 " + info.review : "",
-                     info.want ? info.want + " 想看" : ""].filter(Boolean);
-      if (extra.length) body.append(el("div", "findmeta", extra.join(" · ")));
-      card.append(body);
-      card.append(el("span", "findmore", "详情 ›"));
-      box.append(card);
-    }
-    for (const item of items) {
-      const row = el("div", "sub-row");
-      row.append(el("span", "tag", item.has_subtitle ? "字幕" : (item.is_hd ? "高清" : "磁力")));
-      row.append(el("span", "nm", item.size_text || "体积未知"));
-      const r2 = el("div", "r");
-      const info2 = el("button", null, "详情");
-      info2.addEventListener("click", () => showDetail(data.code, data.info || {}));
-      r2.append(info2);
-      const pv = el("button", null, "预览");
-      pv.title = "用 whatslink 查这条磁力的文件名/体积/截图（按 infohash 缓存）";
-      pv.addEventListener("click", () => showMagnetPreview(item, pv));
-      r2.append(pv);
-      const use = el("button", null, "用这条");
-      use.addEventListener("click", () => {
-        $("dl-text").value = `${data.code} ${item.magnet}`;
-        $("dl-hint").textContent = "已填入，点「开始下载」提交";
-      });
-      r2.append(use);
-      row.append(r2);
-      box.append(row);
-    }
-  } catch (e) {
-    $("dl-hint").textContent = "搜索失败：" + (e.message || e);
-  } finally {
-    $("dl-find").disabled = false;
-  }
-});
 
 // ── 任务时间线（下载队列里的「时间线」展开）
 // 数据源：/api/jobs 里每条任务的 events（后端 job_events 表，按时间升序）。

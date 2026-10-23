@@ -243,7 +243,7 @@ def test_webui_layout_structure():
     html = web.HTML_PATH.read_text(encoding="utf-8")
     for hook in ('id="side"', 'id="nav-series"', 'id="nav-month"', 'id="activefilters"',
                  'id="kindseg"', 'id="sortsel"', 'id="queue"', 'class="shell"',
-                 'id="s-series"', 'id="dl-dedupe"'):
+                 'id="s-series"', 'id="q"', 'id="submit-slot"', 'id="resource-slot"'):
         assert hook in html, f"缺少 {hook}"
     assert "grid-template-columns:repeat(auto-fill" in html, "卡片应使用 auto-fill 网格"
     assert "column-count" not in html, "瀑布流应被网格取代"
