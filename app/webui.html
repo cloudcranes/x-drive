@@ -389,8 +389,26 @@
   .dv{color:var(--text); word-break:break-word}
   .dsub{margin:14px 0 8px; font-family:var(--mono); font-size:11px; color:var(--faint)}
   .dwall{display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:8px}
-  .dthumb{display:block; aspect-ratio:16/9; overflow:hidden; border-radius:6px; border:1px solid var(--line)}
+  .dthumb{display:block; aspect-ratio:16/9; overflow:hidden; border-radius:6px; border:1px solid var(--line);
+    cursor:zoom-in}
+  .dthumb:hover{border-color:rgba(62,186,244,.45)}
   .dthumb img{width:100%; height:100%; object-fit:cover}
+  /* 图片灯箱：预览图在站内看，不再新开标签页 */
+  .lightbox{position:fixed; inset:0; z-index:300; display:flex; align-items:center; justify-content:center;
+    padding:26px; background:rgba(0,0,0,.9); backdrop-filter:blur(3px); animation:fadein .12s ease-out}
+  .lightbox img{max-width:100%; max-height:calc(100vh - 104px); object-fit:contain; border-radius:8px;
+    background:#0a0a0a; box-shadow:0 24px 70px -28px #000}
+  .lb-close{position:absolute; top:16px; right:16px; color:var(--text-2);
+    background:rgba(22,22,22,.82); border-color:var(--line)}
+  .lb-close:hover{color:var(--text); border-color:rgba(255,255,255,.24)}
+  .lb-nav{position:absolute; top:50%; transform:translateY(-50%); width:44px; height:72px;
+    display:grid; place-items:center; border:1px solid var(--line); border-radius:10px;
+    background:rgba(20,20,20,.72); color:var(--text-2); font-size:22px; line-height:1; cursor:pointer}
+  .lb-nav:hover{color:var(--cyan); border-color:rgba(62,186,244,.45)}
+  .lb-nav.prev{left:16px}
+  .lb-nav.next{right:16px}
+  .lb-count{position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
+    font-family:var(--mono); font-size:11.5px; color:var(--muted); letter-spacing:.06em}
   .dactions{display:flex; gap:8px; margin-top:14px}
   .findcard{display:flex; gap:10px; padding:8px; margin:4px 0 8px; border:1px solid var(--line);
     border-radius:9px; background:rgba(17,17,17,.85); cursor:pointer; position:relative;
@@ -608,6 +626,11 @@
        手机上交由搜索框回车 / 空态按钮触发搜资源，这里藏掉按钮保全标题。 */
     #resbtn{display:none}
     /* 详情/磁力预览弹层：封面 220px 固定宽会把右边字段挤成一条，窄屏改成上下排 */
+    /* 灯箱：手机屏幕窄，两侧按钮收窄一点，别把整张图挡住 */
+    .lb-nav{width:34px; height:56px; font-size:18px}
+    .lb-nav.prev{left:8px}
+    .lb-nav.next{right:8px}
+    .lightbox{padding:14px}
     .dtop{flex-direction:column}
     .dcover{width:100%; max-height:190px; object-fit:cover}
     .dpanel{padding:13px}
@@ -2279,6 +2302,93 @@ const PHASE_TEXT = {
   PHASE_TYPE_COMPLETE: "完成", PHASE_TYPE_ERROR: "失败",
 };
 
+// ── 图片灯箱
+// 预览图以前是 <a target="_blank">：点一下新开标签页，看完还得手动关，手机上
+// 更是直接把页面顶走。改成原地铺一层：Esc / 点背景 / 关闭按钮都退，
+// 左右方向键或两侧按钮翻页；右键「在新标签打开图片」仍然照旧可用。
+let lightbox = null;
+
+function lightboxOpen() { return !!lightbox; }
+
+function closeLightbox() {
+  if (!lightbox) return;
+  document.removeEventListener("keydown", lightbox.onKey, true);
+  lightbox.node.remove();
+  lightbox = null;
+  // 背景滚动锁归「还有没有别的弹层」决定：详情层还开着就继续锁
+  const still = document.getElementById("detail-layer") || document.getElementById("preview-layer");
+  document.body.style.overflow = still ? "hidden" : "";
+}
+
+function showLightbox(srcs, index) {
+  const list = (srcs || []).filter(Boolean);
+  if (!list.length) return;
+  closeLightbox();
+  const node = el("div", "lightbox");
+  node.id = "lightbox";
+  const img = el("img");
+  img.alt = "预览图";
+  const count = el("span", "lb-count");
+  const prev = el("button", "lb-nav prev", "\u2039");
+  const next = el("button", "lb-nav next", "\u203a");
+  const close = el("button", "iconbtn txt lb-close", "关闭");
+  prev.type = "button";
+  next.type = "button";
+  close.type = "button";
+  prev.title = "上一张（←）";
+  next.title = "下一张（→）";
+  let cur = Math.min(Math.max(Number(index) || 0, 0), list.length - 1);
+  const paint = () => {
+    img.src = list[cur];
+    count.textContent = `${cur + 1} / ${list.length}`;
+    const many = list.length > 1;
+    prev.hidden = !many;
+    next.hidden = !many;
+  };
+  const step = d => {
+    if (list.length < 2) return;
+    cur = (cur + d + list.length) % list.length;
+    paint();
+  };
+  prev.addEventListener("click", e => { e.stopPropagation(); step(-1); });
+  next.addEventListener("click", e => { e.stopPropagation(); step(1); });
+  close.addEventListener("click", closeLightbox);
+  node.addEventListener("click", e => { if (e.target === node) closeLightbox(); });
+  const onKey = e => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeLightbox(); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
+  };
+  // 捕获阶段挂：抢在详情层自己的 Esc 关闭之前处理，避免一张图关两层
+  document.addEventListener("keydown", onKey, true);
+  node.append(img, count, prev, next, close);
+  document.body.append(node);
+  lightbox = {node, onKey};
+  paint();
+}
+
+// 预览图 / 截图墙：点开在站内看。href 保留（右键仍可「在新标签打开图片」），
+// 左键一律 preventDefault 交给灯箱。
+function thumbWall(srcs, label) {
+  const wall = el("div", "dwall");
+  const full = (srcs || []).map(s => BASE + "/proxy?u=" + encodeURIComponent(s));
+  full.forEach((href, i) => {
+    const a = el("a", "dthumb");
+    a.href = href;
+    a.rel = "noopener";
+    a.addEventListener("click", e => { e.preventDefault(); showLightbox(full, i); });
+    const img = el("img");
+    img.loading = "lazy";
+    img.alt = label || "预览";
+    // 单张图挂了就抽掉这一格，别在网格里留一张破图
+    img.addEventListener("error", () => a.remove());
+    img.src = href;
+    a.append(img);
+    wall.append(a);
+  });
+  return wall;
+}
+
 // 番号详情：封面大图 + 全部字段 + 预览图墙（javbus 的「樣品圖像」）
 function showDetail(code, info) {
   const old = document.getElementById("detail-layer");
@@ -2288,11 +2398,16 @@ function showDetail(code, info) {
   // 三个出口（点遮罩 / Esc / 关闭）都走同一个 close：背景滚动锁必须成对解开，
   // 否则关掉弹层后整页再也滚不动。
   const closeLayer = () => {
+    closeLightbox();               // 灯箱不是独立入口，跟着所在弹层一起收
     document.removeEventListener("keydown", onKey);
     layer.remove();
     document.body.style.overflow = "";
   };
-  const onKey = e => { if (e.key === "Escape") closeLayer(); };
+  const onKey = e => {
+    if (e.key !== "Escape") return;
+    if (lightboxOpen()) return;      // 灯箱开着时 Esc 只关灯箱
+    closeLayer();
+  };
   layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
   document.addEventListener("keydown", onKey);
   document.body.style.overflow = "hidden";
@@ -2337,22 +2452,7 @@ function showDetail(code, info) {
 
   if ((info.previews || []).length) {
     panel.append(el("div", "dsub", `预览图 · ${info.previews.length}`));
-    const wall = el("div", "dwall");
-    for (const src of info.previews) {
-      const a = el("a", "dthumb");
-      a.href = BASE + "/proxy?u=" + encodeURIComponent(src);
-      a.target = "_blank";
-      a.rel = "noopener";
-      const img = el("img");
-      img.loading = "lazy";
-      img.alt = "预览";
-      // 单张预览图挂了就抽掉这一格，别在网格里留一张破图
-      img.addEventListener("error", () => a.remove());
-      img.src = a.href;
-      a.append(img);
-      wall.append(a);
-    }
-    panel.append(wall);
+    panel.append(thumbWall(info.previews, "预览"));
   }
 
   const actions = el("div", "dactions");
@@ -2387,11 +2487,16 @@ async function showMagnetPreview(item, btn) {
   const layer = el("div", "dlayer");
   layer.id = "preview-layer";
   const closeLayer = () => {
+    closeLightbox();               // 灯箱不是独立入口，跟着所在弹层一起收
     document.removeEventListener("keydown", onKey);
     layer.remove();
     document.body.style.overflow = "";
   };
-  const onKey = e => { if (e.key === "Escape") closeLayer(); };
+  const onKey = e => {
+    if (e.key !== "Escape") return;
+    if (lightboxOpen()) return;      // 灯箱开着时 Esc 只关灯箱
+    closeLayer();
+  };
   layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
   document.addEventListener("keydown", onKey);
   document.body.style.overflow = "hidden";
@@ -2424,19 +2529,7 @@ async function showMagnetPreview(item, btn) {
     panel.append(box);
     if ((info.screenshots || []).length) {
       panel.append(el("div", "dsub", `截图 · ${info.screenshots.length}`));
-      const wall = el("div", "dwall");
-      for (const src of info.screenshots) {
-        const a = el("a", "dthumb");
-        a.href = BASE + "/proxy?u=" + encodeURIComponent(src);
-        a.target = "_blank"; a.rel = "noopener";
-        const img = el("img");
-        img.loading = "lazy";
-        img.alt = "截图";
-        img.addEventListener("error", () => a.remove());
-        img.src = a.href;
-        a.append(img); wall.append(a);
-      }
-      panel.append(wall);
+      panel.append(thumbWall(info.screenshots, "截图"));
     }
   }
   layer.append(panel);

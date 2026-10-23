@@ -157,3 +157,32 @@ def test_code_of_query_normalizes():
     js = script(html())
     body = js[js.index("function codeOfQuery"):js.index("const resState")]
     assert "FC2-PPV-" in body and "toUpperCase()" in body
+
+
+# ---------------------------------------------------------------- 10. 预览图灯箱
+
+def test_preview_images_open_in_place_not_new_tab():
+    """预览图/截图点开要走站内灯箱：以前 target=_blank，点一下新开标签页。"""
+    page = html()
+    js = script(page)
+    assert "function showLightbox" in js and "function thumbWall" in js
+    assert "lightbox" in css(page), "灯箱样式缺失"
+    # 图片墙本身不能带 target=_blank（右键另存仍可用 href）
+    body = js[js.index("function thumbWall"):js.index("// 番号详情")]
+    assert 'target = "_blank"' not in body, "图片墙不该再新开标签页"
+    assert 'showLightbox(full, i)' in body, "点击要进灯箱"
+    # 详情 / 磁力预览两个弹层都用同一个图片墙
+    detail = js[js.index("function showDetail"):js.index("// 单条磁力预览")]
+    assert "thumbWall(info.previews" in detail
+    preview = js[js.index("async function showMagnetPreview"):js.index("async function panelControl")]
+    assert "thumbWall(info.screenshots" in preview
+
+
+def test_lightbox_escape_does_not_close_parent_modal():
+    """Esc 只关灯箱：父弹层的 keydown 处理要先看灯箱在不在。"""
+    js = script(html())
+    assert js.count("if (lightboxOpen()) return;") == 2, "两个弹层都要让位给灯箱"
+    light = js[js.index("function showLightbox"):js.index("function thumbWall")]
+    assert 'document.addEventListener("keydown", onKey, true)' in light, "灯箱要用捕获阶段抢 Esc"
+    assert "closeLightbox();" in js[js.index("function showDetail"):js.index("async function showMagnetPreview")], \
+        "关掉父弹层时要顺带收灯箱"
