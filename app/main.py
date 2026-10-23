@@ -511,6 +511,30 @@ async def scrape_bot_attachments(cfg: Config, work: Path, folder: str,
     return out
 
 
+async def next_candidate_magnet(code: str, tried_btih: set[str],
+                                client: httpx.AsyncClient | None = None) -> str:
+    """死种换源：搜候选，跳过已试过的 infohash，返回下一条候选磁力。
+
+    返回空串表示没有可换的候选。按 **infohash** 判同源，而不是磁力字符串 ——
+    同一种子换不同 tracker 参数不该被当成「新候选」反复撞同一条死种。
+    排序口径沿用 sources.rank（字幕 → 高清 → 做种 → 体积），挑到的第一条
+    没试过的就是下一条。
+    """
+    if not code:
+        return ""
+    try:
+        items = await sources.search(code, client=client, limit=30)
+    except Exception as exc:
+        log.warning("换源搜候选失败 %s：%s", code, exc)
+        return ""
+    for item in items:
+        magnet = item.get("magnet") or ""
+        btih = xunlei.info_hash_of(magnet)
+        if btih and btih not in tried_btih:
+            return magnet
+    return ""
+
+
 async def run_task(
     cfg: Config,
     client: httpx.AsyncClient,
@@ -600,11 +624,17 @@ async def run_task(
 
             await progress(f"⏳ 下载 {index}/{len(sources)}…{hint or '（磁力可能较慢）'}")
 
+            # 换源重试的状态：cur["magnet"] 是当前要下的磁力（死种时会换成候选池里的
+            # 下一条），tried_btih 记下已试过并失败的**infohash**（换源时跳过同一种子，
+            # 避免 infohash 相同、tracker 参数不同被当成「新候选」反复撞同一条死种）。
+            cur = {"magnet": source}
+            tried_btih = {h for h in (xunlei.info_hash_of(source),) if h}
+
             async def do_download():
                 # 同上：带本任务上次投递的证据，重试时识别自己的任务而不是拒绝
                 prev = task_store(cfg).get(job_id) or {}
                 got = await pipeline.download(
-                    xl, client, source, download_dir, progress=on_progress,
+                    xl, client, cur["magnet"], download_dir, progress=on_progress,
                     poll=cfg.xunlei_poll, timeout=cfg.magnet_timeout,
                     stall_timeout=cfg.stall_timeout, settle=cfg.xunlei_settle,
                     on_task=lambda task_id, meta=None: handle.update(
@@ -624,7 +654,26 @@ async def run_task(
 
             policy = retry.RetryPolicy(retries=cfg.retries, base_delay=cfg.retry_base_delay)
             phase = time.monotonic()
-            await retry.run_with_retry(do_download, policy, on_retry=on_dl_retry)
+            # 下载 + 死种换源：先按 policy 重试当前磁力；若是死种（不是网络抖动），
+            # 反复撞同一条没有意义，去候选池换一条全新的重下，直到候选耗尽才放弃。
+            while True:
+                try:
+                    await retry.run_with_retry(do_download, policy, on_retry=on_dl_retry)
+                    break                      # 下载成功
+                except Exception as exc:
+                    if retry.classify(str(exc)) != retry.DEAD or not code:
+                        raise
+                    new_magnet = await next_candidate_magnet(code, tried_btih, client)
+                    if not new_magnet:
+                        raise                      # 没有可换的候选了，按死种收尾
+                    new_btih = xunlei.info_hash_of(new_magnet)
+                    if new_btih:
+                        tried_btih.add(new_btih)
+                    cur["magnet"] = new_magnet
+                    policy.reset()               # 换源后重试计数重新开始
+                    task_event(cfg, job_id, "stage",
+                               f"死种换源：换一条候选重下（已试 {len(tried_btih)} 个种子）")
+                    await progress(f"↻ {code} 疑似死种，已换一条候选重下（第 {len(tried_btih)} 个）")
             clock["download"] = time.monotonic() - phase
             retried["download"] = policy.attempts
 
