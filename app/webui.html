@@ -662,6 +662,16 @@
     </div>
     <div class="subs-list" id="subs-list"></div>
     <div class="subs-tip">订阅只会抓「添加之后」新出的片，不会回填历史。每轮受条数和体积上限约束。</div>
+
+    <!-- 待办中心：订阅发现但还没下到的片。以前这里只有一个数字，用户看不出
+         卡在哪、也动不了它；后端 /api/subs 已经把每条的「为什么」算好了
+         （why 字段是人话），这里只负责把它显示出来并给两个操作入口。 -->
+    <div class="meta-h">待办中心 · 没下到的片都在这儿</div>
+    <div class="panel-actions">
+      <span class="hint" id="backlog-hint"></span>
+      <button class="ghost" id="backlog-refresh" type="button">刷新待办</button>
+    </div>
+    <div id="backlog-list"><span class="hint">打开订阅面板后自动列出</span></div>
   </section>
 
   <section class="panel wide" id="metapanel" hidden aria-label="元数据维护台">
@@ -1454,11 +1464,15 @@ async function renderSubs() {
   } catch (e) {
     box.textContent = "";
     box.append(el("div", "meta", "读取订阅失败：" + e.message));
+    renderBacklog(null);              // 读不到订阅时，待办也一并说清楚
     return;
   }
   box.textContent = "";
   const subs = (data && data.subs) || [];
   renderSuggest(box, (data && data.suggest) || {}, subs);
+  // 待办与订阅是同一条链路（订阅发现 → 待办 → 下载），所以跟着 /api/subs
+  // 一起渲染；放在「没有订阅」的提前返回之前，免得没订阅就看不到待办。
+  renderBacklog((data && data.backlog) || null);
   if (!subs.length) {
     box.append(el("div", "meta", "还没有订阅。粘贴演员页链接后点「添加订阅」。"));
     return;
@@ -1511,8 +1525,129 @@ function closeSubs() {
   setSubHint("");
 }
 
+// ───────────────────────────────── 待办中心
+//
+// 后端 backlog_view() 已经把每条待办翻译成人话了（why 字段：「多少分钟后再查」
+// 「任务 downloading：xxx错误」），前端只负责显示，不再自己算一套解释 ——
+// 两套口径一旦分叉，用户看到的和实际卡住的原因就对不上。
+const BACKLOG_STATE = {
+  pending: "待重查",
+  queued: "进行中",
+  skipped: "已跳过",
+  done: "已归档",
+};
+// 状态 → 颜色 class。页面上已有 badge / tag 两套，用 tag 表示状态更贴切。
+const BACKLOG_TONE = {
+  pending: "tag",
+  queued: "tag",
+  skipped: "tag",
+  done: "tag",
+};
+
+function backlogTime(ts) {
+  // next_at 是 unix 秒。0 或没有就是「下一轮就会试」，不显示时间。
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  if (isNaN(d)) return "";
+  return d.toLocaleString("zh-CN",
+    {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"});
+}
+
+function setBacklogHint(text, kind) {
+  const h = $("backlog-hint");
+  if (!h) return;
+  h.textContent = text || "";
+  h.className = "hint" + (kind ? " " + kind : "");
+}
+
+function renderBacklog(backlog) {
+  const box = $("backlog-list");
+  if (!box) return;
+  box.textContent = "";
+  if (!backlog) {
+    setBacklogHint("待办读取失败", "err");
+    box.append(el("div", "meta", "待办读取失败，稍后点「刷新待办」重试。"));
+    return;
+  }
+  const items = backlog.items || [];
+  const counts = backlog.counts || {};
+  const parts = ["pending", "queued", "skipped", "done"]
+    .map(s => `${BACKLOG_STATE[s]} ${counts[s] || 0}`);
+  setBacklogHint(parts.join(" · "));
+  if (!items.length) {
+    box.append(el("div", "meta", "没有待办：订阅发现的新片要么已经下好，要么暂时还没有资源。"));
+    return;
+  }
+  for (const it of items) {
+    const row = el("div", "kvrow");
+    row.append(el("span", "nm", it.code || "—"));
+    const stateTag = el("span", BACKLOG_TONE[it.state] || "tag",
+                        BACKLOG_STATE[it.state] || it.state || "");
+    row.append(stateTag);
+    // 标题有就显示，没有就只留番号，别显示空白占位
+    if (it.title) row.append(el("span", "meta", it.title));
+    // why 是后端算好的解释，最要紧，单独放一行
+    const bits = [];
+    if (it.why) bits.push(it.why);
+    if (it.tries) bits.push(`试过 ${it.tries} 次`);
+    const next = backlogTime(it.next_at);
+    if (next) bits.push(`下次 ${next}`);
+    if (it.note && it.note !== it.why) bits.push(it.note);
+    row.append(el("span", "why", bits.join(" · ")));
+    const r = el("div", "r");
+    // 已归档/已跳过的行没有可点的操作：跳过是用户的决定，再点「忽略」没意义；
+    // 给「立刻重试」更不对 —— 那等于让用户自己撤销自己的决定。
+    if (it.state !== "done" && it.state !== "skipped") {
+      const again = el("button", null, "立刻重试");
+      again.addEventListener("click", async () => {
+        again.disabled = true;
+        setBacklogHint(`重新排队 ${it.code}…`);
+        await backlogAction("/api/backlog/retry", it, again);
+      });
+      r.append(again);
+      const skip = el("button", null, "忽略");
+      skip.addEventListener("click", async () => {
+        if (!confirm(`不再等 ${it.code}？\n之后可以重新加回心愿单。`)) return;
+        skip.disabled = true;
+        await backlogAction("/api/backlog/ignore", it, skip);
+      });
+      r.append(skip);
+    }
+    row.append(r);
+    box.append(row);
+  }
+}
+
+// 两个操作的公共部分：失败要看得见，不能静默（静默的话用户点了没反应，
+// 会以为已经生效，下次又点一遍）。
+async function backlogAction(path, item, btn) {
+  let res = null;
+  try {
+    res = await subsApi(path, {code: item.code, sub: item.sub || ""});
+  } catch (e) {
+    setBacklogHint(`操作失败：${e.message}`, "err");
+    if (btn) btn.disabled = false;
+    return;
+  }
+  if (!res || !res.ok) {
+    setBacklogHint(`操作失败：${(res && res.error) || "未知错误"}`, "err");
+    if (btn) btn.disabled = false;
+    return;
+  }
+  setBacklogHint(path.includes("retry")
+    ? `${item.code} 已重新排队，下一轮会再查`
+    : `${item.code} 已忽略`, "ok");
+  renderSubs();                      // 待办状态变了，跟着刷新一次
+}
+
 $("subs-open").addEventListener("click", () => $("subpanel").hidden ? openSubs() : closeSubs());
 $("sub-close").addEventListener("click", closeSubs);
+// 待办不另开定时器：面板打开时 renderSubs 会带上最新的 backlog，
+// 用户也可以手动刷一次 —— 订阅轮询本身是分钟级的，秒级刷新没有意义。
+$("backlog-refresh").addEventListener("click", async () => {
+  setBacklogHint("刷新中…");
+  await renderSubs();
+});
 $("sub-add").addEventListener("click", async () => {
   const actor = $("sub-actor").value.trim();
   if (!actor) { setSubHint("先填演员页 ID 或链接", "err"); return; }

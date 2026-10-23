@@ -76,7 +76,13 @@ def test_configured_ignores_unknown_names(monkeypatch):
 
 # ---------------------------------------------------------------- 汇总
 
-def test_search_returns_first_source_with_hits(monkeypatch):
+def test_search_asks_every_source_and_merges(monkeypatch):
+    """所有源都要问一遍，候选合并。
+
+    旧语义是「先到先得」：第一个有结果的源即采用，后面的源根本不打。
+    那样候选池只有一个源的大小 —— 同一个番号在 sukebei 只有老种、在 bt4g
+    才有带种的高清时，那条更好的永远看不见。所以改成问遍所有源再合并。
+    """
     calls = []
 
     async def first(code, client):
@@ -96,7 +102,8 @@ def test_search_returns_first_source_with_hits(monkeypatch):
     monkeypatch.setitem(sources.REGISTRY, "bt4g", third)
     monkeypatch.setattr(sources, "configured", lambda: ["javbus", "sukebei", "bt4g"])
     got = asyncio.run(sources.search("SSIS-123"))
-    assert calls == ["javbus", "sukebei"], "拿到结果就停，别再打后面的源"
+    assert sorted(calls) == ["bt4g", "javbus", "sukebei"], \
+        f"每个源都该被问过，实际问了 {calls}"
     assert got[0]["seeders"] == 21, "字幕 + 做种多者排前"
 
 def test_search_survives_broken_source(monkeypatch):

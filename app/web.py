@@ -89,6 +89,11 @@ DEFAULT_SIZE_GB = float(os.getenv("DEFAULT_SIZE_GB", "4") or 0)
 DISK_CHECK_INTERVAL = max(5.0, float(os.getenv("DISK_CHECK_INTERVAL", "30") or 30))
 # 排队最久等多久（秒），0 表示不限
 DISK_QUEUE_TIMEOUT = float(os.getenv("DISK_QUEUE_TIMEOUT", "0") or 0)
+# 每日 tick 的清理力度：任务表保留 30 天、待办保留 90 天且每个订阅最多留 500 条
+# 已结束的任务与已结束的待办记录留着没用（只让表变大），pending 永不删。
+DAILY_PRUNE_DAYS = float(os.getenv("DAILY_PRUNE_DAYS", "30") or 30)
+DAILY_BACKLOG_PRUNE_DAYS = float(os.getenv("DAILY_BACKLOG_PRUNE_DAYS", "90") or 90)
+DAILY_BACKLOG_KEEP = int(os.getenv("DAILY_BACKLOG_KEEP", "500") or 500)
 
 BIND = os.getenv("WEB_BIND", "0.0.0.0")
 PORT = int(os.getenv("WEB_PORT", "8080"))
@@ -1144,11 +1149,95 @@ def _panel_clean_tick() -> None:
     except Exception as exc:
         log.warning("清理面板失败任务出错：%s", exc)
 
+# ─────────────────────────────────────────── 每日 tick
+#
+# 每天做四件以前只有人能手动触发的事：
+#   · daily_digest()        今日汇总（完成/失败/额度等待/待办/待补刮）
+#   · notify_long_pending()  长期等不到资源的番号（按 since 算天数，去重）
+#   · Store.prune()         清理旧任务与事件行（任务表只增不减）
+#   · backlog.prune()       清理待办里的老记录（pending 永不删）
+#
+# 「一天只跑一次」由两道保险保证：
+#   1. 记住上次跑过的日期（state 表里的 daily_tick_day），跨天才触发；
+#      状态写在库里 → 进程重启也不会把当天的汇总重跑一遍。
+#   2. notify 自身还有一层按事件键的去重（notify._SENT），两层不冲突：
+#      第一层管「今天这轮跑不跑」，第二层管「同一条消息发不发」。
+
+DAILY_TICK_KEY = "daily_tick_day"
+
+
+def _daily_tick(now: float | None = None) -> dict:
+    """跑一次每日任务。返回本次做了什么，便于测试与排查。
+
+    **一天只跑一次**：日期记在任务库的 state 表里，跨天才再跑。进程重启后
+    读到的还是今天，于是不会把当天的汇总重发一遍（notify 那层去重只管 30 分钟
+    窗口，重启后早就过期，靠不住）。
+    """
+    now = time.time() if now is None else now
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    try:
+        last = _store().state_get(DAILY_TICK_KEY).get("day") or ""
+    except Exception as exc:
+        # 读不出来就不能确定今天是不是已经跑过 —— 此时宁可今天不跑，
+        # 也不能一天发好几次汇总（发第二遍是骚扰，漏一次只是少一条消息）。
+        log.warning("读每日 tick 状态失败，今天先不跑：%s", exc)
+        return {"ok": False, "skipped": True, "reason": "读状态失败"}
+    if last == day:
+        return {"ok": True, "skipped": True, "day": day, "reason": "今天已跑过"}
+
+    out: dict = {"ok": True, "skipped": False, "day": day}
+    # 先发消息再记日期：发失败就当作没跑过，明天还会重试，不会静默漏掉。
+    # 反过来先记日期再发，一旦发失败这一天就永远补不上了。
+    try:
+        digest = daily_digest(now)
+        out["digest"] = digest
+    except Exception as exc:
+        log.warning("每日汇总出错：%s", exc)
+        out["digest_error"] = str(exc)[:200]
+    try:
+        out["long_pending"] = len(notify_long_pending(now=now))
+    except Exception as exc:
+        log.warning("长期未达提醒出错：%s", exc)
+        out["long_pending_error"] = str(exc)[:200]
+    try:
+        out["jobs_pruned"] = _store().prune(days=DAILY_PRUNE_DAYS)
+    except Exception as exc:
+        log.warning("清理旧任务出错：%s", exc)
+        out["prune_error"] = str(exc)[:200]
+    try:
+        todo = backlog_load()
+        removed = backlog.prune(todo, days=DAILY_BACKLOG_PRUNE_DAYS,
+                                keep=DAILY_BACKLOG_KEEP)
+        if removed:
+            # 走 subs_save 那条路：待办存在任务库的 state 表里，要写回去
+            subs_save(subs_load(), todo)
+        out["backlog_pruned"] = removed
+    except Exception as exc:
+        log.warning("清理待办老记录出错：%s", exc)
+        out["backlog_prune_error"] = str(exc)[:200]
+
+    try:
+        _store().state_put({DAILY_TICK_KEY: {"day": day,
+                                            "at": time.strftime("%Y-%m-%d %H:%M:%S")}})
+    except Exception as exc:
+        # 记不住日期 = 明天会再跑一遍（重复一条汇总），但不会丢消息。
+        # 这比记住了却没发出去好。
+        log.warning("记录每日 tick 日期失败：%s", exc)
+        out["state_error"] = str(exc)[:200]
+    log.info("每日 tick %s：汇总已发，清理旧任务 %s 条、待办 %s 条",
+             day, out.get("jobs_pruned"), out.get("backlog_pruned"))
+    return out
+
 def _queue_loop() -> None:
     """后台调度：定期重算空间，够一个就放一个。"""
     while True:
         try:
             _panel_clean_tick()
+            try:
+                _daily_tick()
+            except Exception:
+                # 每日 tick 是「顺便做」的事，绝不能因为它出错就跳过本轮调度
+                log.exception("每日 tick 出错")
             pump_queue()
             if DISK_QUEUE_TIMEOUT:
                 now = time.time()
@@ -1626,9 +1715,12 @@ def reconcile_backlog(todo: dict) -> list[dict]:
       任务失败/取消       → 放回 pending，带退避重试
       任务记录已不存在     → 也放回 pending（可能被 prune 或手工清掉）
     """
-    jobs = {j["id"]: j for j in _store().recent(200)}
+    # 按 job_id 精确查任务，不要用 recent(200) 兜底：recent 取的是**最新 200 条**，
+    # 待办里的任务一多（订阅跑久了很容易），老任务就查不到 → job 为 None →
+    # 走「任务记录已不存在」分支被放回 pending → 重复下载。
     archived = archived_codes()
     changed = []
+    store = _store()
     for sub_key, bucket in (todo or {}).items():
         for code, item in bucket.items():
             if item.get("state") != backlog.QUEUED:
@@ -1639,7 +1731,7 @@ def reconcile_backlog(todo: dict) -> list[dict]:
                 item["note"] = "已归档"
                 changed.append({"code": code, "result": "archived"})
                 continue
-            job = jobs.get(job_id)
+            job = store.get(job_id) if job_id else {}
             if job and job.get("stage") in ("queued", "downloading", "organizing", "uploading"):
                 continue                     # 还在跑，别动
             if job and job.get("stage") == "deferred":

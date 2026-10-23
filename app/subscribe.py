@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import core, javbus
+from . import core, javbus, sources
 
 log = logging.getLogger("x-drive.subscribe")
 
@@ -28,6 +28,9 @@ BASE = "https://javdb.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 TIMEOUT = 25.0
+# 订阅流程一次要搜的候选池大小：多源合并后候选池变大，多取一些让「有字幕/有做种」
+# 的那条能被挑到；太多会让每部都去翻几十条记录。
+SEARCH_POOL = 30
 
 _ITEM_SPLIT = re.compile(r'<div class="item">')
 _PATH_RE = re.compile(r'href="(/v/[A-Za-z0-9]+)"')
@@ -280,16 +283,38 @@ async def discover_javbus(sub_id: str, cursor: str, client: httpx.AsyncClient | 
         return result
 
 
-async def fetch_best(code: str, max_size_gb: float = 0,
-                     client: httpx.AsyncClient | None = None,
-                     tried: list[str] | None = None) -> tuple[dict | None, str]:
-    """给一个番号挑磁力。返回 (候选, 说明)。说明用于告诉用户为什么没下。
+def pick_candidate(items: list[dict]) -> dict | None:
+    """从多源候选里挑一条。
 
-    先按体积/已试过的过滤，**再**排序挑最优：以前是先挑最优再看体积，
-    首选超限就整部放弃，明明还有合规候选也不下。
-    tried 是「这个番号已经试过并失败的磁力」，换源时跳过，避免反复撞同一条死种。
+    口径用**做种数优先**（sources.rank 的顺序：字幕 → 高清 → 做种数 → 体积），
+    而不是 javbus.pick_magnet 的「字幕 → 高清 → 体积」。理由：合并多源之后，
+    候选池里混着 bt4g 的老种和 sukebei 的有人做的种，做种数是「这条能不能下
+    下来」最直接的信号；只看体积的话，一条 4GB 没人做的老种会赢过 2GB 有几十
+    个种的。字幕与高清仍然排在最前，因为它们是内容需求，做种数只是可达性。
+    体积仍作最后一项 —— 同等条件下大体积通常是画质更好的一版。
     """
-    found = await javbus.magnets_for(code, client=client)
+    if not items:
+        return None
+    # 不能直接用 sources.rank：它按 item["has_subtitle"] 下标取字段，
+    # 而 javbus.magnets_for 返回的那套候选没有 seeders（javbus 不给做种数），
+    # 少一个键就 KeyError。这里自己排，口径与 sources.rank 一致。
+    def score(item: dict) -> tuple:
+        return (0 if item.get("has_subtitle") else 1,
+                0 if item.get("is_hd") else 1,
+                -int(item.get("seeders") or 0),
+                -int(item.get("size_bytes") or 0))
+
+    return sorted(items, key=score)[0]
+
+
+def _choose(found: list[dict], code: str, max_size_gb: float,
+            tried: list[str] | None) -> tuple[dict | None, str]:
+    """从候选里挑一条：先过滤（体积上限、已试过），再排序挑最优。
+
+    顺序不能反：以前是先挑最优再看体积，首选超限就整部放弃，明明还有合规
+    候选也不下。tried 是「这个番号已经试过并失败的磁力」，换源时跳过，
+    避免反复撞同一条死种。
+    """
     if not found:
         return None, "还没有磁力"
     tried_set = {t for t in (tried or []) if t}
@@ -303,7 +328,7 @@ async def fetch_best(code: str, max_size_gb: float = 0,
             too_big += 1
             continue
         usable.append(m)
-    best = javbus.pick_magnet(usable)
+    best = pick_candidate(usable)
     if not best:
         if too_big:
             return None, f"{too_big} 条候选都超过上限 {max_size_gb}GB"
@@ -318,8 +343,44 @@ async def fetch_best(code: str, max_size_gb: float = 0,
         "tags": list(best.get("tags") or []),
         "has_subtitle": bool(best.get("has_subtitle")),
         "is_hd": bool(best.get("is_hd")),
+        "seeders": int(best.get("seeders") or 0),
+        "source": best.get("source") or "",
         "candidates": len(usable),
     }, ""
+
+
+async def fetch_best(code: str, max_size_gb: float = 0,
+                     client: httpx.AsyncClient | None = None,
+                     tried: list[str] | None = None) -> tuple[dict | None, str]:
+    """给一个番号挑磁力。返回 (候选, 说明)。说明用于告诉用户为什么没下。
+
+    候选来源：走 sources.search（问遍 javbus/sukebei/bt4g 全部源并合并）。
+    以前这里只问 javbus.magnets_for 一个源，于是「JavBus 没收录、但 sukebei
+    有」的番号永远下不来 —— 用户手动 /find 能搜到，订阅却像坏了。订阅是自动
+    流程，没有人在旁边换源，所以候选池必须够宽。
+
+    sources 的 javbus 源内部就是 javbus.search_magnets → javbus.magnets_for，
+    与原先那条路径**同源**，所以不存在「两条 javbus 路径重复取数」的问题；
+    同一资源在多个源出现时由 sources.dedupe 按 infoHash 去重。
+    """
+    # 候选要多取一些：体积上限与「已试过」的过滤要在**排序之后、截断之前**做，
+    # 否则合规的候选排在第 9 条以后就被截掉了，这里会误判成「都超过上限」。
+    # 多取 30 条足够覆盖过滤损耗，又不会让每部都翻上百条记录。
+    found = await sources.search(code, client=client, limit=SEARCH_POOL)
+    return _choose(found, code, max_size_gb, tried)
+
+
+async def fetch_best_javbus(code: str, max_size_gb: float = 0,
+                            client: httpx.AsyncClient | None = None,
+                            tried: list[str] | None = None) -> tuple[dict | None, str]:
+    """只问 JavBus 一个源的版本。
+
+    给「来源明确是 javbus 的订阅」用：那条链路的契约就是只查 JavBus，
+    换源会改变它的语义（游标与已知番号的判定都建立在「JavBus 没有就是没有」
+    之上）。通用订阅与心愿单走 fetch_best 的多源路径。
+    """
+    found = await javbus.magnets_for(code, client=client)
+    return _choose(found, code, max_size_gb, tried)
 
 
 async def check_javbus(sub_id: str, cursor: str, max_per_run: int = 1,
@@ -343,7 +404,10 @@ async def check_javbus(sub_id: str, cursor: str, max_per_run: int = 1,
             if it["code"] not in known and it["date"] < today]
     result["backlog"] = len(todo)
     for it in todo[:max(1, int(max_per_run))]:
-        item, why = await fetch_best(it["code"], max_size_gb, client=client)
+        # 这条链路的来源明确是 javbus，契约就是只查 JavBus 一个源
+        # （游标与「已知番号」的判定都建立在「JavBus 没有就是没有」之上）。
+        # 通用订阅与心愿单走 fetch_best 的多源路径。
+        item, why = await fetch_best_javbus(it["code"], max_size_gb, client=client)
         if not item:
             log.info("%s 暂不下载：%s", it["code"], why)
             result["skipped"] += 1

@@ -1,15 +1,17 @@
-"""按番号搜磁力：多源注册表，先到先得 + 统一字段 + 去重排序。
+"""按番号搜磁力：多源注册表，合并全部源 + 统一字段 + 去重排序。
 
 只按番号查，不做关键词乱搜。每个源一个 `async fetch(code, client) -> list[dict]`，
 统一成：
     {"magnet", "title", "size_bytes", "size_text", "has_subtitle", "is_hd",
      "seeders", "source"}
 
-路由：FC2 系列 javbus 必然 404，直接跳过；其余按 `SOURCES` 顺序逐个试，
-第一个有结果的源即采用（先到先得，省流量）。单个源失败只记日志，不影响其他。
+路由：FC2 系列 javbus 必然 404，直接跳过；其余按 `SOURCES` 顺序**全部**问一遍，
+把各源候选合并后按 infoHash 去重、按质量排序（先到先得只用一个源会漏掉别的源
+里更好的那条）。单个源失败只记日志，不影响其他源。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -24,6 +26,18 @@ log = logging.getLogger("x-drive.sources")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 TIMEOUT = 20.0
+# 一次搜索的总预算（秒）：各源并发问，超过这个时间就采用已回来的结果。
+# 比单个源的 TIMEOUT 短，因为慢源的候选缺席可以接受，卡住不能接受 ——
+# 订阅轮询里每一部都要搜一次，一部卡 20 秒会拖垮整轮。
+#
+# 12 秒是按实测定出来的（2026-10-23，SSIS-123，三个源并发）：
+#   javbus 1.2s / bt4g 5.4s / sukebei 6.4s，合计 6.4s。
+# 8 秒偏紧 —— sukebei 稍慢一点就会被整源丢弃，白白少 22 条候选。
+# 12 秒留了将近一倍的余量，又远小于单源 TIMEOUT=20（不会比原来更慢）。
+SEARCH_DEADLINE = 12.0
+# 预算用尽后取消慢源时，给它响应取消的宽限（秒）。超时就直接放弃：
+# 等一个不配合的源把慢的时间等回来，比缺一条候选更糟。
+CANCEL_GRACE = 0.5
 
 # 拼磁力用的 tracker：sukebei 的 RSS 只给 infoHash
 TRACKERS = (
@@ -163,26 +177,63 @@ REGISTRY = {
 # ---------------------------------------------------------------- 汇总
 
 def rank(item: dict) -> tuple:
-    """字幕优先，其次高清，再看做种数，最后体积。"""
-    return (0 if item["has_subtitle"] else 1,
-            0 if item["is_hd"] else 1,
-            -int(item["seeders"] or 0),
-            -int(item["size_bytes"] or 0))
+    """字幕优先，其次高清，再看做种数，最后体积。
+
+    用 .get 而不是下标：这条排序会用在两种形状不同的数据上 —— sources 的
+    统一字段（has_subtitle / is_hd / seeders / size_bytes 都在）与
+    javbus.magnets_for 的原始字段（键名不同）。缺哪个都当「没有」，
+    不能因为少一个键就抛 KeyError。
+    """
+    return (0 if item.get("has_subtitle") else 1,
+            0 if item.get("is_hd") else 1,
+            -int(item.get("seeders") or 0),
+            -int(item.get("size_bytes") or 0))
 
 def dedupe(items: list[dict]) -> list[dict]:
-    seen, out = set(), []
+    """按 infoHash 去重；同一资源在多个源都出现时**保留信息更全的那条**。
+
+    合并多源后，同一个种子常常同时出现在 sukebei 与 bt4g：javbus 不给做种数，
+    bt4g 也不给，只有 sukebei 给。原先「先到先留」会让 bt4g 那条的 seeders=0
+    覆盖掉 sukebei 的真实做种数，排序时这条就被当成没人做种的。
+    所以这里不丢字段：同 key 时逐字段取「有信息的那一份」。
+    """
+    seen: dict = {}
+    order: list[str] = []
     for item in items:
         hit = re.search(r"btih:([0-9a-zA-Z]+)", item.get("magnet") or "")
         key = hit.group(1).lower() if hit else item.get("magnet")
-        if key in seen:
+        if key not in seen:
+            seen[key] = dict(item)
+            order.append(key)
             continue
-        seen.add(key)
-        out.append(item)
-    return out
+        old = seen[key]
+        for field in ("title", "size_bytes", "size_text", "seeders"):
+            # 0 视为「没有信息」：javbus/bt4g 的 seeders 恒为 0，别盖掉真实值
+            if not old.get(field) and item.get(field):
+                old[field] = item[field]
+        # 字幕/高清是布尔，认「真」的那个：任一源说带字幕就带字幕
+        for field in ("has_subtitle", "is_hd"):
+            if item.get(field):
+                old[field] = True
+    return [seen[k] for k in order]
 
 async def search(code: str, client: httpx.AsyncClient | None = None,
                  limit: int = 8) -> list[dict]:
-    """按番号搜候选；第一个有结果的源即采用。全失败返回 []。"""
+    """按番号搜候选：问遍所有可用源，合并后去重排序。全失败返回 []。
+
+    以前是「先到先得」：第一个有结果的源即采用，后面的源根本不打。代价是
+    候选池只有一个源的大小 —— 同一个番号在 sukebei 只有老种、在 bt4g 才有
+    带种的高清时，那条更好的就永远看不见。现在合并全部源的候选，
+    dedupe 按 infoHash 去重（同一资源只留一条），rank 决定先后。
+
+    合并要等齐所有源，但**不等慢源**：给整次搜索一个总预算 SEARCH_DEADLINE，
+    到点就用已经回来的结果，剩下还在跑的源取消掉。各源并发问（串行叠加三个源
+    各 20 秒的超时会把一次搜索拖成一分钟），共享同一个 client（httpx 支持并发），
+    但只有自己建的 client 才在 finally 里关 —— 传进来的 client 归调用方所有。
+
+    慢源的候选因此可能缺席：这是刻意的取舍。宁可少一条候选，也不能让一次
+    搜索卡住半分钟 —— 用户等不起，而且订阅轮询里每一部都要搜一次。
+    """
     code = (code or "").strip().upper()
     if not code:
         return []
@@ -190,19 +241,49 @@ async def search(code: str, client: httpx.AsyncClient | None = None,
     cli = client or httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT,
                                       headers={"User-Agent": UA})
     try:
-        for name in route(code):
-            fetch = REGISTRY.get(name)
-            if not fetch:
+        names = [n for n in route(code) if REGISTRY.get(n)]
+        if not names:
+            return []
+
+        async def ask(name: str) -> list[dict]:
+            return await REGISTRY[name](code, cli)
+
+        tasks = {name: asyncio.ensure_future(ask(name)) for name in names}
+        done, pending = await asyncio.wait(tasks.values(),
+                                           timeout=SEARCH_DEADLINE)
+        for name in names:
+            if name in pending:
+                # 预算用尽还没回：取消掉，别让它在后台挂着
+                tasks[name].cancel()
+        merged: list[dict] = []
+        for name in names:
+            task = tasks[name]
+            if not task.done():
+                log.info("源 %s 搜 %s 超时（超过 %.0fs），本次不采用",
+                         name, code, SEARCH_DEADLINE)
                 continue
-            try:
-                items = await fetch(code, cli)
-            except Exception as exc:          # 单个源坏掉不该拖垮整次搜索
+            if task.cancelled():
+                continue
+            exc = task.exception()
+            if exc is not None:
                 log.warning("源 %s 搜 %s 失败：%s", name, code, str(exc)[:120])
                 continue
+            items = task.result()
             if items:
                 log.info("源 %s 命中 %s 共 %d 条", name, code, len(items))
-                return sorted(dedupe(items), key=rank)[:max(1, limit)]
-        return []
+                merged.extend(items)
+        if pending:
+            # 收尾要**有上限**：被取消的源如果迟迟不响应取消（慢 DNS、被占住的连接），
+            # 在这里等下去等于把慢源的时间又等回来。给一个短的收尾预算，到点就走。
+            # 未收尾的任务会在事件循环关闭时被回收，不至于留下未 await 的警告 ——
+            # 它们已经被 cancel() 标记，asyncio.run 会替我们收尾。
+            await asyncio.wait(pending, timeout=CANCEL_GRACE)
+            for task in pending:
+                if not task.done():
+                    log.debug("源取消未即时生效，本次直接放弃")
+        if not merged:
+            return []
+        return sorted(dedupe(merged), key=rank)[:max(1, limit)]
     finally:
         if own:
             await cli.aclose()
