@@ -186,3 +186,29 @@ def test_lightbox_escape_does_not_close_parent_modal():
     assert 'document.addEventListener("keydown", onKey, true)' in light, "灯箱要用捕获阶段抢 Esc"
     assert "closeLightbox();" in js[js.index("function showDetail"):js.index("async function showMagnetPreview")], \
         "关掉父弹层时要顺带收灯箱"
+
+
+# ---------------------------------------------------------------- 11. 队列不再是右侧抽屉
+
+def test_queue_is_a_main_view_not_a_right_drawer():
+    """下载队列和设置/元数据一样是主内容区视图：不再从右侧滑出。"""
+    page = html()
+    c = css(page)
+    # 不能还有 fixed/sticky 的右侧栏与「展开宽度」那套 transitional 尺寸
+    assert "position:sticky; top:0; height:100vh" not in c, "队列不该再是粘性右栏"
+    assert "translateX(101%)" not in c, "队列不该再是滑出抽屉"
+    # 队列容器在主内容区里，并且是 .panel 视图、默认隐藏
+    m = re.search(r'<section class="panel[^"]*queuepanel" id="queue" hidden', page)
+    assert m, "队列应是 panel 视图"
+    js = script(page)
+    body = js[js.index("function showView"):js.index("function showArchive")]
+    assert '["queue", name === "queue"]' in body, "showView 要管队列视图"
+    assert '["queuebtn", name === "queue"]' in body, "进队列时侧栏要高亮"
+
+
+def test_queue_open_close_switch_views():
+    js = script(html())
+    body = js[js.index("function openQueue"):js.index("function syncScrim")]
+    assert 'showView("queue")' in body
+    assert '"archive"' in body, "关闭队列要回到归档"
+    assert "localStorage" not in body, "不再记抽屉开合状态"
