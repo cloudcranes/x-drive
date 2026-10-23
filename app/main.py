@@ -27,8 +27,8 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import (codes, core, fetcher, meta, metrics, pipeline, retry, sources, store,
-               whatslink, workspace, xunlei)
+from . import (codes, core, fetcher, meta, metadata, metrics, metatube, pipeline, retry,
+               sources, store, whatslink, workspace, xunlei)
 
 log = logging.getLogger("x-drive")
 
@@ -60,6 +60,10 @@ class Config:
     upload_chunk: str = "64M"
     retries: int = 2
     retry_base_delay: float = 3.0
+    # 刮削附件：默认全开，与网页侧同名环境变量同语义；关掉就退回「只有视频」
+    scrape: bool = True
+    scrape_nfo: bool = True
+    scrape_poster: bool = True
 
     @property
     def max_bytes(self) -> int:
@@ -96,10 +100,18 @@ class Config:
             upload_chunk=os.getenv("UPLOAD_CHUNK", "64M").strip() or "64M",
             retries=max(0, int(os.getenv("RETRIES", "2") or 2)),
             retry_base_delay=float(os.getenv("RETRY_BASE_DELAY", "3") or 3),
+            scrape=_flag("SCRAPE", "1"),
+            scrape_nfo=_flag("SCRAPE_NFO", "1"),
+            scrape_poster=_flag("SCRAPE_POSTER", "1"),
         )
 
 
 # ---------------------------------------------------------------- 外部命令
+
+
+def _flag(name: str, default: str = "1") -> bool:
+    """环境变量开关：0/false/False 视为关。与网页侧同一套写法。"""
+    return os.getenv(name, default) not in ("0", "false", "False")
 
 
 async def rclone(cfg: Config, *args: str, timeout: float = 180.0) -> tuple[int, str, str]:
@@ -335,6 +347,46 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message, for
     return text
 
 
+async def scrape_bot_attachments(cfg: Config, work: Path, folder: str,
+                                 files: list[Path], job_id: str = "") -> dict:
+    """bot 侧的刮削附件：核心逻辑与网页共用 metadata.build_attachments。
+
+    这里只做 bot 独有的事：读 cfg 开关、按任务 extra 的 locked 保住手改字段、
+    把结果登记回任务 extra。刮削失败只记待补刮，绝不阻断上传。
+    """
+    if not cfg.scrape:
+        return {"record": {}, "files": files, "written": [], "failed": [], "pending": False}
+
+    code = codes.canonical(folder) or folder
+    store_ = task_store(cfg)
+    extra = (store_.get(job_id) or {}).get("extra") or {} if job_id else {}
+    locks = set(extra.get("locked") or [])
+
+    # 这里在 bot 的事件循环里：必须 await，不能在协程里 asyncio.run
+    # （那样会抛「cannot be called from a running event loop」，刮削永远失败）。
+    found: dict = {}
+    try:
+        found = await metatube.scrape(code) if metatube.configured() else {}
+    except Exception as exc:                 # 刮削是可选环节
+        log.info("刮 %s 失败（不影响上传）：%s", code, exc)
+        found = {}
+    # 番号对不上就不用：宁可留待补刮，也不把别人的元数据塞进归档
+    if found and not metatube.matches(code, found):
+        log.warning("MetaTube 返回 %s 与 %s 不符，丢弃", found.get("code"), code)
+        found = {}
+
+    out = metadata.build_attachments(work, code, files, lambda _c: found, locks=locks,
+                                     old=extra.get("scraped") or {},
+                                     want_nfo=cfg.scrape_nfo,
+                                     want_poster=cfg.scrape_poster)
+    if job_id:
+        store_.update(job_id, extra={**(store_.get(job_id).get("extra") or {}),
+                                     "scraped": out["record"],
+                                     "scrape_pending": out["pending"],
+                                     "scrape_failed": out["failed"]})
+    return out
+
+
 async def run_task(
     cfg: Config,
     client: httpx.AsyncClient,
@@ -408,6 +460,7 @@ async def run_task(
         job_started = time.monotonic()
         # 迅雷任务 id：失败时要在面板里一并清掉，否则僵尸任务越积越多
         handle: dict[str, str] = {}
+        meta_info: dict = {}
         try:
             async def on_progress(percent, speed, status, _p=progress, _i=index):
                 mb = (speed or 0) / 1048576
@@ -457,9 +510,18 @@ async def run_task(
                     f"今日上传量已达 {cfg.daily_upload_gb}GB 上限，文件留在 /downloads 可明天重试"
                 )
 
+            # ── 刮削并生成附件（失败不阻断）：NFO/JSON/封面/清单跟视频一起传
+            scraped = await scrape_bot_attachments(cfg, work, folder, files, job_id)
+            if scraped["written"]:
+                task_store(cfg).update(job_id, extra={
+                    **(task_store(cfg).get(job_id).get("extra") or {}),
+                    "files": [f.name for f in scraped["files"]]})
+
             require_lease(cfg, job_id)          # organizing→uploading 前
             target = f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
-            await progress(f"⏳ 上传 {folder}（{core.human_size(total)}）…")
+            await progress(f"⏳ 上传 {folder}（{core.human_size(total)}）…（含附件）"
+                           if scraped["files"] != files else
+                           f"⏳ 上传 {folder}（{core.human_size(total)}）…")
 
             async def do_upload():
                 await rclone(cfg, "mkdir", target, timeout=120.0)
@@ -487,16 +549,28 @@ async def run_task(
             add_usage(cfg, total)
 
             link = await folder_link(cfg, target)
+            # 兜底元数据（与网页 _finish 的 meta.lookup 同语义）：查不到/出异常都不影响记账
+            try:
+                meta_info = await meta.lookup(folder)
+            except Exception as exc:
+                log.warning("查 %s 的元数据失败：%s", folder, exc)
             require_lease(cfg, job_id)          # 写归档前
-            state[folder] = {
-                "code": folder,
-                "path": target,
-                "link": link,
-                "files": [f.name for f in files],
-                "size": total,
-                "source": source[:300],
-                "at": datetime.now().isoformat(timespec="seconds"),
-            }
+            # 与网页 _finish 同一份字段契约（metadata.archive_record）：
+            # 以前 bot 写出的记录没有 meta/manifest/infohash/locked/scrape_pending，
+            # 之后的补刮、去重、校验对着它就无据可依。
+            uploaded = scraped["files"]
+            task_extra = task_store(cfg).get(job_id).get("extra") or {} \
+                if job_id else {}
+            names = [f.name for f in uploaded]
+            state[folder] = metadata.archive_record(
+                folder, target, link, names, total, source, work,
+                scraped=meta_info or scraped["record"] or task_extra.get("scraped") or {},
+                manifest_files=names,
+                infohash=str(task_extra.get("infohash") or ""),
+                locks=task_extra.get("locked") or (),
+                pending=bool(scraped["pending"] or task_extra.get("scrape_pending")),
+                at=datetime.now().isoformat(timespec="seconds"),
+            )
             core.update_state(cfg.state_path, {folder: state[folder]})
             uploaded = True
             finish_task(cfg, job_id, "done")

@@ -262,11 +262,11 @@
   .sub-row button:hover{color:var(--text); border-color:rgba(62,186,244,.4)}
   .subs-tip{margin-top:9px; font-size:11px; color:var(--faint); line-height:1.6}
 
-  .panel input[type=text]{width:100%; padding:10px 12px; border-radius:8px; font-family:var(--mono);
+  .panel #dl-text{width:100%; padding:10px 12px; border-radius:8px; font-family:var(--mono);
     font-size:12.5px; border:1px solid var(--line); background:rgba(0,0,0,.6); color:var(--text);
     outline:none; transition:border-color .16s, box-shadow .16s}
-  .panel input[type=text]::placeholder{color:var(--faint)}
-  .panel input[type=text]:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+  .panel #dl-text::placeholder{color:var(--faint)}
+  .panel #dl-text:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
   .panel-actions{display:flex; align-items:center; gap:9px; margin-top:10px; flex-wrap:wrap}
   .chk{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);
     cursor:pointer; user-select:none}
@@ -364,6 +364,98 @@
   /* 遮罩：抽屉/侧栏在窄屏展开时用 */
   .scrim{position:fixed; inset:0; z-index:25; background:rgba(0,0,0,.62); backdrop-filter:blur(2px)}
   #sidebtn{display:none}
+
+  /* ───────────────────────── 元数据维护台 / 归档健康（宽面板，可同时开着不互相挤） */
+  .panel.wide{max-width:none}
+  .panel-body{max-height:56vh; overflow-y:auto; margin-top:10px; min-height:0}
+  .panel-actrow{display:flex; gap:6px; align-items:center; flex-wrap:wrap}
+  .meta-h{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--faint); margin:12px 0 6px}
+  .meta-h:first-child{margin-top:0}
+  /* 体检条：配置状态、版本、源，一格一句 */
+  .kv{display:flex; flex-wrap:wrap; gap:6px 14px; font-family:var(--mono); font-size:11.5px;
+    color:var(--muted); align-items:center}
+  .kv .k{color:var(--faint); margin-right:4px}
+  .kv .v{color:var(--text-2)}
+  .badge{display:inline-flex; align-items:center; gap:5px; font-family:var(--mono); font-size:10.5px;
+    padding:2px 8px; border-radius:999px; border:1px solid var(--line-soft);
+    background:rgba(255,255,255,.03); color:var(--muted)}
+  .badge.ok{color:var(--green); border-color:rgba(95,211,141,.35); background:rgba(95,211,141,.08)}
+  .badge.err{color:#ff9b9b; border-color:rgba(239,106,106,.38); background:rgba(239,106,106,.09)}
+  .badge.warn{color:#ffc98a; border-color:rgba(255,201,138,.32); background:rgba(255,201,138,.07)}
+  .chips{display:flex; flex-wrap:wrap; gap:5px}
+  .chip{font-family:var(--mono); font-size:10.5px; padding:2px 8px; border-radius:5px; cursor:pointer;
+    border:1px solid rgba(62,186,244,.3); background:rgba(62,186,244,.07); color:var(--cyan)}
+  .chip:hover{border-color:rgba(62,186,244,.6); background:rgba(62,186,244,.14)}
+  .chip.plain{cursor:default; color:var(--muted); border-color:var(--line-soft);
+    background:rgba(255,255,255,.03)}
+  /* 差异表：字段 / 现值 → 新值 / 锁定 / 单条应用 */
+  /* 差异表在窄屏会挤：套一层可横向滚动的容器，别把列压变形 */
+  .diffwrap{width:100%; overflow-x:auto; margin-top:4px; -webkit-overflow-scrolling:touch}
+  .diff{width:100%; min-width:520px; border-collapse:collapse; font-size:12px}
+  .diff th{font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--faint); text-align:left; font-weight:700; padding:4px 8px;
+    border-bottom:1px solid var(--line)}
+  .diff td{padding:5px 8px; border-bottom:1px solid var(--line-soft); vertical-align:top; color:var(--text-2)}
+  .diff tr:last-child td{border-bottom:0}
+  .diff .fld{font-family:var(--mono); font-size:11px; color:var(--cyan); white-space:nowrap}
+  .diff .from{color:var(--dim); text-decoration:line-through; overflow-wrap:anywhere}
+  .diff .to{color:var(--green); overflow-wrap:anywhere}
+  .diff .act{white-space:nowrap; text-align:right}
+  .diff .act button{font:inherit; font-size:10.5px; padding:3px 8px; margin-left:4px; border-radius:5px;
+    cursor:pointer; border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
+  .diff .act button:hover{color:var(--text); border-color:rgba(62,186,244,.45)}
+  .diff .act button.warnful:hover{color:#ffc98a; border-color:rgba(255,201,138,.45)}
+  .diff tr.locked .fld{color:#ffc98a}
+  /* 结果行：同步明细、失败重试、重复项，都复用卡片式一行 */
+  .kvrow{display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px;
+    border:1px solid var(--line-soft); background:rgba(255,255,255,.02); font-size:12px; margin-top:6px}
+  .kvrow.bad{border-color:rgba(239,106,106,.28); background:rgba(239,106,106,.05)}
+  .kvrow .nm{font-family:var(--mono); font-weight:700; color:var(--text-2); flex:none}
+  .kvrow .why{font-family:var(--mono); font-size:10.5px; color:var(--dim); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; min-width:0}
+  .kvrow .r{margin-left:auto; display:flex; gap:5px; flex:none}
+  .kvrow .r button{font:inherit; font-size:10.5px; padding:3px 8px; border-radius:5px; cursor:pointer;
+    border:1px solid var(--line-soft); background:transparent; color:var(--muted)}
+  .kvrow .r button:hover{color:var(--cyan); border-color:rgba(62,186,244,.45)}
+  /* 状态汇总格：点一下就是筛选 */
+  .vsum{display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:1px;
+    background:var(--line-soft); border:1px solid var(--line); border-radius:10px; overflow:hidden}
+  .vsum button{border:0; background:rgba(10,10,10,.9); padding:9px 11px; text-align:left;
+    display:flex; flex-direction:column; gap:1px; transition:background .14s}
+  .vsum button:hover{background:rgba(26,26,26,.95)}
+  .vsum button.on{background:rgba(62,186,244,.11); box-shadow:inset 0 0 0 1px rgba(62,186,244,.4)}
+  .vsum b{font-family:var(--mono); font-size:16px; font-weight:800; color:var(--text);
+    font-variant-numeric:tabular-nums}
+  .vsum span{font-size:10.5px; color:var(--dim)}
+  .vsum button.on b{color:var(--cyan)}
+  .vsum b.warn{color:#ffc98a}
+  .vsum b.bad{color:#ff9b9b}
+  .notice{margin-top:9px; padding:7px 10px; border-radius:8px; font-size:11.5px; line-height:1.6;
+    color:#ffc98a; border:1px solid rgba(255,201,138,.28); background:rgba(255,201,138,.06)}
+  .notice.quiet{color:var(--dim); border-color:var(--line); background:rgba(255,255,255,.02)}
+  .progress{height:4px; border-radius:2px; background:rgba(255,255,255,.08); overflow:hidden;
+    margin-top:9px}
+  .progress i{display:block; height:100%; width:0; background:var(--cyan); transition:width .3s}
+  .tly{display:flex; flex-direction:column; gap:0; margin-top:6px}
+  .tl-row{display:flex; gap:10px; font-size:11.5px; line-height:1.55; position:relative;
+    padding:0 0 9px 14px; border-left:1px solid var(--line-soft); margin-left:4px}
+  .tl-row:last-child{border-left-color:transparent; padding-bottom:2px}
+  .tl-row::before{content:""; position:absolute; left:-3.5px; top:6px; width:6px; height:6px;
+    border-radius:50%; background:var(--dim)}
+  .tl-row.on::before{background:var(--cyan); box-shadow:0 0 8px rgba(62,186,244,.8)}
+  .tl-row.bad::before{background:#ff8a8a; box-shadow:0 0 8px rgba(239,106,106,.7)}
+  .tl-row.ok::before{background:var(--green); box-shadow:0 0 8px rgba(95,211,141,.7)}
+  .tl-prog{display:flex; flex-direction:column; gap:2px; min-width:0; flex:1}
+  .tl-prog b{font-weight:600; color:var(--text-2)}
+  .tl-prog .why{font-family:var(--mono); font-size:10.5px; color:var(--dim); overflow-wrap:anywhere}
+  .tl-time{font-family:var(--mono); font-size:10.5px; color:var(--faint); flex:none;
+    font-variant-numeric:tabular-nums; padding-top:1px; min-width:86px; text-align:right}
+  .tl-time.soft{color:var(--dim); font-style:italic}
+  .jacts .jtl{font-size:10.5px; padding:2px 6px; border-radius:5px; border:1px solid var(--line-soft);
+    background:transparent; color:var(--dim)}
+  .jacts .jtl:hover{color:var(--cyan); border-color:rgba(62,186,244,.45)}
+  .jacts .jtl.on{color:var(--cyan); border-color:rgba(62,186,244,.45)}
 
   /* ───────────────────────── 响应式 */
   @media(max-width:1180px){
@@ -510,6 +602,20 @@
         </svg>
         <span class="lbl">规范名</span>
       </button>
+      <button class="ghostbtn" id="health-open" type="button" title="归档健康：只报告，不自动补传或删除">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 13h4l2.5 5 5-11L17 13h4"/>
+        </svg>
+        <span class="lbl">健康</span>
+      </button>
+      <button class="ghostbtn" id="metatool-open" type="button" title="元数据维护：补刮、对照、手工纠正">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 6h16M4 12h16M4 18h10"/><path d="m16.5 16.5 1.5 1.5 3-3"/>
+        </svg>
+        <span class="lbl">元数据</span>
+      </button>
       <button class="queuebtn" id="queuebtn" type="button" title="下载队列">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 6h11M3 12h11M3 18h7"/><path d="m16 12 3 3 3-3"/><path d="M19 15V6"/>
@@ -556,6 +662,83 @@
     </div>
     <div class="subs-list" id="subs-list"></div>
     <div class="subs-tip">订阅只会抓「添加之后」新出的片，不会回填历史。每轮受条数和体积上限约束。</div>
+  </section>
+
+  <section class="panel wide" id="metapanel" hidden aria-label="元数据维护台">
+    <div class="panel-actrow">
+      <b style="font-size:13px">元数据维护台</b>
+      <span class="badge" id="meta-state">未检查</span>
+      <span class="hint" id="meta-hint"></span>
+      <button class="ghost" id="meta-close" type="button">关闭</button>
+    </div>
+
+    <div class="panel-body">
+      <div class="meta-h">配置体检</div>
+      <div class="kv" id="meta-conn"></div>
+      <div class="meta-h">待补刮番号 · 点一个填进输入框</div>
+      <div class="chips" id="meta-pending"></div>
+
+      <div class="meta-h">番号 · 对照与纠正</div>
+      <input id="meta-code" type="text" autocomplete="off" spellcheck="false"
+             placeholder="例如 SSIS-123；预览只读不写，点开先看清楚再决定">
+      <div class="panel-actions">
+        <button class="primary" id="meta-preview" type="button">预览差异</button>
+        <button class="ghost" id="meta-resync" type="button" title="重新刮一次：只补缺失字段，尊重锁定">
+          重新刮削
+        </button>
+        <button class="ghost warnful" id="meta-applyall" type="button" disabled
+                title="把下面所有未锁定的差异一次写进站内记录">全部应用</button>
+        <button class="ghost" id="meta-unlock" type="button"
+                title="把输入框里这个番号的锁定字段全部解开">解除本番号全部锁定</button>
+      </div>
+      <div class="notice quiet" id="meta-note-rule">
+        预览绝不改数据；「应用」只改站内记录，要动云端附件得在下面显式同步。
+      </div>
+      <div id="meta-report"></div>
+      <div id="meta-diff"></div>
+
+      <div class="meta-h">附件同步到 Drive</div>
+      <div class="panel-actions">
+        <button class="ghost warnful" id="meta-sync" type="button" title="重新生成 NFO / JSON / 封面并逐文件推到 Drive">
+          同步附件到 Drive
+        </button>
+        <span class="hint" id="meta-synchint">会改动云端附件：确认后才去碰 Drive，不重传视频</span>
+      </div>
+      <div id="meta-syncout"></div>
+    </div>
+  </section>
+
+  <section class="panel wide" id="healthpanel" hidden aria-label="归档健康">
+    <div class="panel-actrow">
+      <b style="font-size:13px">归档健康</b>
+      <span class="badge" id="health-state">未检查</span>
+      <span class="hint" id="health-hint"></span>
+      <button class="ghost" id="health-close" type="button">关闭</button>
+    </div>
+
+    <div class="panel-body">
+      <div class="notice">只报告，不自动补传或删除：缺文件可能是历史上传没传完，也可能有人手工动过，
+        程序不自作主张，结论交给你判断。</div>
+
+      <div class="meta-h">核对清单（只读）</div>
+      <div class="vsum" id="verify-sum"></div>
+      <div class="panel-actions">
+        <label class="chk">每批
+          <input id="verify-limit" type="number" min="1" max="200" value="20"
+                 style="width:56px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);
+                        background:rgba(0,0,0,.6);color:var(--text);font-family:var(--mono);font-size:11.5px">
+        </label>
+        <button class="primary" id="verify-run" type="button">检查一批</button>
+        <button class="ghost" id="verify-cancel" type="button" disabled>取消</button>
+        <button class="ghost" id="verify-dups" type="button">查重复归档</button>
+        <span class="hint" id="verify-prog"></span>
+      </div>
+      <div class="progress" id="verify-bar" hidden><i></i></div>
+      <div id="verify-list"></div>
+
+      <div class="meta-h">重复归档</div>
+      <div id="dups-list"><span class="hint">点「查重复归档」列出同番号多条记录 / 同 infohash 多份</span></div>
+    </div>
   </section>
 
   <div class="resultbar">
@@ -1110,6 +1293,8 @@ document.addEventListener("keydown", e => {
     $("q").focus();
   }
   if (e.key === "Escape") {
+    if ($("metapanel").hidden === false) closeMeta();
+    if ($("healthpanel").hidden === false) closeHealth();
     if ($("panel").hidden === false) closePanel();
     closeQueue();
     closeSide();
@@ -1460,6 +1645,10 @@ function jobNode(j) {
   const top = el("div", "jtop");
   top.append(el("span", "jcode", j.code || j.name || (j.source || "").slice(0, 22) || j.id));
   top.append(el("span", "jst", STAGE_TEXT[j.stage] || j.stage || "—"));
+
+  // 右上角动作：停止（进行中才有）与时间线开关。都放 jacts 里，
+  // 这样「停止」不会再单独抢 margin-left:auto 的位。
+  const acts = el("span", "jacts");
   if (ACTIVE.has(j.stage)) {
     const stop = el("button", "jstop", "停止");
     stop.type = "button";
@@ -1470,8 +1659,13 @@ function jobNode(j) {
         headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: j.id})})); } catch (e) {}
       loadJobs();
     });
-    top.append(stop);
+    acts.append(stop);
   }
+  const tl = el("button", "jtl", "时间线");
+  tl.type = "button";
+  tl.title = "这个任务的关键节点与原因";
+  acts.append(tl);
+  top.append(acts);
   node.append(top);
 
   const bar = el("div", "jbar");
@@ -1497,8 +1691,29 @@ function jobNode(j) {
     meta.append(a);
   }
   node.append(meta);
+
+  // 时间线按需展开：轮询重建卡片时保持展开状态，否则 3 秒一次会被收起
+  let tlBox = null;
+  const showTl = () => {
+    if (tlBox) return;
+    tlBox = jobTimeline(j);
+    node.append(tlBox);
+  };
+  tl.addEventListener("click", () => {
+    const open = !!tlBox;
+    if (open) { tlBox.remove(); tlBox = null; } else showTl();
+    tl.classList.toggle("on", !open);
+    if (open) tlOpen.delete(j.id); else tlOpen.add(j.id);
+  });
+  if (tlOpen.has(j.id)) {
+    showTl();
+    tl.classList.add("on");
+  }
   return node;
 }
+
+// 展开中的时间线（按 job id 记），loadJobs 重建卡片时据此复原
+const tlOpen = new Set();
 
 const PHASE_TEXT = {
   PHASE_TYPE_PENDING: "排队", PHASE_TYPE_RUNNING: "下载中", PHASE_TYPE_PAUSED: "已暂停",
@@ -1829,6 +2044,761 @@ $("dl-find").addEventListener("click", async () => {
     $("dl-find").disabled = false;
   }
 });
+
+// ── 任务时间线（下载队列里的「时间线」展开）
+// 只用 /api/jobs 已经返回的字段拼节点，不猜、不编。每个节点的时间都用**中性措辞**：
+//   created_at   → 「入队」（store.start 写的就是它，确定）
+//   updated_at   → 「最近更新」（库里只有最后一次动作的时间，没有阶段历史，所以不写「完成于」）
+//   defer_until  → 「计划唤醒」（后端 store.defer 写下的唤醒时刻，是计划值；被唤醒后会被清掉）
+//   error        → 后端原样写下的原因（「…｜Ns 后重试」是真实的重试间隔说明）
+//   retries      → 已发生的重试次数（只是计数，没有逐次时间）
+//   resume_from  → 记录里的续传标记（upload = 从上传阶段续跑）；但后端不写「何时恢复」，
+//                  所以只作为「当前状态」的一句话，不冒充成一个带时间的节点。
+//   kept         → 任务中止时保留的下载目录（同样只有值，没有时间）
+//   owner/stage  → 发起方与当前阶段
+//
+// 缺口（本批次没有、所以这里不画）：阶段迁移历史（queued→downloading→organizing→uploading
+// →done 各自的时间戳）、逐次重试的原错误与间隔、延期真正被唤醒的时刻、真正的完成/取消时刻、
+// 单任务阶段耗时与吞吐（timing/throughput 只落在 metrics.json，没进 /api/jobs 字段表）。
+const JOB_OWNER_TEXT = {web: "网页提交", bot: "Telegram 机器人"};
+const JOB_STAGE_WHY = {
+  queued: "等磁盘空间或排队位置",
+  downloading: "下载中",
+  organizing: "整理文件名与目录",
+  uploading: "上传到 Drive",
+  deferred: "额度等待，到点自动重跑",
+  done: "已归档",
+  cancelled: "用户主动停止",
+  failed: "失败",
+};
+const JOB_RESUME_TEXT = {upload: "从上传阶段续跑（下载不重来）"};
+
+// epoch 秒 → 本地时间字符串；0 / 空返回空串，交给调用方写「时间未知」
+function jobTime(sec) {
+  const n = Number(sec);
+  if (!n || !isFinite(n)) return "";
+  return fmt(new Date(n * 1000).toISOString());
+}
+
+function jobTimeline(j) {
+  const box = el("div", "tly");
+  const line = (title, why, when, tone) => {
+    const row = el("div", "tl-row" + (tone ? " " + tone : ""));
+    const mid = el("div", "tl-prog");
+    mid.append(el("b", null, title));
+    if (why) mid.append(el("span", "why", why));
+    row.append(mid);
+    row.append(el("span", "tl-time" + (when ? "" : " soft"), when || "时间未知"));
+    box.append(row);
+  };
+  const err = String(j.error || "").trim();
+  const retried = /后重试/.test(err);
+  const waiting = retried || j.stage === "deferred";
+
+  line("入队", JOB_OWNER_TEXT[j.owner] || (j.owner ? "发起方 " + j.owner : ""),
+    j.created_at ? fmt(new Date(j.created_at).toISOString()) : "", "on");
+
+  if (j.retries) {
+    // retries 是「已发生的重试次数」，后端没有逐次时间，只能挂在最近一次更新上
+    line(`重试 ${j.retries} 次`, retried ? err : "重试计数见左；每次的时间后端没记",
+      jobTime(j.updated_at), waiting ? "" : "err");
+  } else if (retried) {
+    line("重试中", err, jobTime(j.updated_at), "");
+  }
+
+  if (j.defer_until) {
+    line("计划唤醒", err || JOB_STAGE_WHY.deferred, jobTime(j.defer_until), "on");
+  } else if (waiting) {
+    // 没有 defer_until 却写着要重试：只能确认「在等」，不能确认何时
+    line("等待重跑", err, "");
+  }
+
+  if (j.resume_from) {
+    // 只有标记没有时刻：不单独成节点，挂在「最近更新」那行的说明里
+    const note = JOB_RESUME_TEXT[j.resume_from] || `续传标记 ${j.resume_from}`;
+    line("续传状态", note, jobTime(j.updated_at), "");
+  }
+
+  const tone = j.stage === "done" ? "ok" : (j.stage === "failed" || j.stage === "cancelled") ? "err" : "on";
+  const bits = [];
+  if (j.stage === "done") {
+    bits.push("已归档");
+    if (j.total) bits.push(gb(j.total));
+  } else if (j.stage === "failed") {
+    bits.push(err || "后端没给错误原因");
+  } else if (j.stage === "cancelled") {
+    bits.push(err || "用户主动停止");
+  } else if (j.stage === "deferred") {
+    bits.push(JOB_STAGE_WHY.deferred);          // 计划唤醒那行已单独画，这里只说状态
+  } else {
+    bits.push(JOB_STAGE_WHY[j.stage] || j.stage || "");
+    if (j.queued_position) bits.push(`第 ${j.queued_position} 位`);
+    if (j.percent) bits.push(j.percent.toFixed(0) + "%");
+  }
+  if (j.kept) bits.push("保留目录 " + j.kept);
+  // 标题中性：「最近更新」，因为这里只有最后一次动作的时间，不是真正的终态时刻
+  line("最近更新 · " + (JOB_STAGE_WHY[j.stage] || j.stage || "状态未知"),
+    bits.filter(Boolean).join(" · "), jobTime(j.updated_at), tone);
+
+  const note = el("div", "why");
+  note.style.fontSize = "10px";
+  note.style.color = "var(--faint)";
+  note.style.paddingLeft = "14px";
+  note.textContent = "仅显示可确认的节点，细粒度阶段历史待后端补齐";
+  box.append(note);
+  return box;
+}
+
+// ── 元数据维护台
+// 纪律：预览只读；写站内记录要逐条点「应用」或「全部应用」；动云端附件必须再点
+// 「同步附件到 Drive」并回 confirm。这里不提供任何批量自动同步，也没有远端删除入口。
+const META_LABEL = {
+  title: "标题", original_title: "原标题", summary: "简介", release_date: "发行日期",
+  runtime: "时长", director: "导演", maker: "片商", label: "发行商", series: "系列",
+  actors: "演员", genres: "类别", score: "评分",
+};
+const META_FIELD_ORDER = Object.keys(META_LABEL);
+const metaState = {
+  code: "",
+  locked: [],        // 最近一次预览返回的锁定字段
+  changes: {},       // 最近一次预览的差异 {字段: {from,to}}，按它渲染表格
+  found: false,
+  busy: false,
+  failed: [],        // 最近一次同步失败的附件，用于逐条重试
+};
+
+function metaFieldName(k) { return META_LABEL[k] || k; }
+
+// 字段值可能是字符串、数字、数组；统一成一行能看的文本
+function metaText(v) {
+  if (v == null || v === "") return "（空）";
+  if (Array.isArray(v)) return v.length ? v.join("、") : "（空）";
+  if (typeof v === "object") {
+    try { return JSON.stringify(v); } catch (e) { return String(v); }
+  }
+  return String(v);
+}
+
+function setMetaHint(text, kind) {
+  const h = $("meta-hint");
+  h.textContent = text || "";
+  h.className = "hint" + (kind ? " " + kind : "");
+}
+
+function setMetaState(text, kind) {
+  const b = $("meta-state");
+  b.textContent = text;
+  b.className = "badge" + (kind ? " " + kind : "");
+}
+
+// 所有元数据动作走同一个入口：与 subsApi 一样，POST JSON，读回 JSON。
+async function metaApi(path, body) {
+  const opts = body === undefined ? {cache: "no-store"}
+    : {method: "POST", headers: {"Content-Type": "application/json"},
+       body: JSON.stringify(body)};
+  const r = await fetch(BASE + path, authInit(opts));
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok && data && !data.error) data.error = "HTTP " + r.status;
+  return data || {};
+}
+
+// 体检区：配置通不通、版本、可用源、哪些归档待补刮
+function renderMetaHealth(d) {
+  const box = $("meta-conn");
+  box.textContent = "";
+  const add = (k, v) => {
+    const span = el("span");
+    span.append(el("span", "k", k));
+    span.append(el("span", "v", v));
+    box.append(span);
+  };
+  const ok = !!(d && d.ok);
+  box.append(el("span", "badge " + (d && d.configured ? (ok ? "ok" : "err") : "err"),
+    d && d.configured ? (ok ? "服务可用" : "服务不可达") : "未配置 MetaTube"));
+  add("地址", (d && d.url) || "—");
+  add("版本", (d && d.version) || "—");
+  const provs = (d && d.providers) || [];
+  add("源", provs.length ? provs.join("、") : "—");
+  const caps = [];
+  if (d && d.scrape) caps.push("刮削");
+  if (d && d.nfo) caps.push("NFO");
+  if (d && d.poster) caps.push("封面");
+  add("附件", caps.length ? caps.join(" / ") : "全部关闭");
+  if (d && d.error) {
+    // 未配置时后端给的就是「未配置 METATUBE_URL」这类原文，照抄给用户看
+    const e = el("div", "notice", "错误原文：" + d.error);
+    box.append(e);
+  }
+  setMetaState(ok ? "可用" : (d && d.configured ? "不可达" : "未配置"), ok ? "ok" : "err");
+
+  const pend = $("meta-pending");
+  pend.textContent = "";
+  const list = (d && d.pending) || [];
+  if (!list.length) {
+    pend.append(el("span", "chip plain", "没有待补刮的番号"));
+    return;
+  }
+  pend.append(el("span", "chip plain", `共 ${list.length} 个`));
+  for (const code of list.slice(0, 60)) {
+    const b = el("button", "chip", code);
+    b.type = "button";
+    b.title = "填进番号输入框并预览";
+    b.addEventListener("click", () => {
+      $("meta-code").value = code;
+      metaPreview();
+    });
+    pend.append(b);
+  }
+  if (list.length > 60) pend.append(el("span", "chip plain", `…另有 ${list.length - 60} 个`));
+}
+
+async function loadMetaStatus() {
+  setMetaState("检查中…");
+  try {
+    const d = await metaApi("/api/scrape/status", {});
+    renderMetaHealth(d);
+  } catch (e) {
+    setMetaState("检查失败", "err");
+    $("meta-conn").textContent = "";
+    $("meta-conn").append(el("span", "badge err", "体检失败：" + (e.message || e)));
+  }
+}
+
+// 差异表：每行一个字段，带「应用」「锁」「解锁」三个动作。
+// locked=true 只用于「已锁定但本次预览没有差异」的那种字段（后端不会把它们放进 changes），
+// 这里单独补一行，让用户看得见锁定状态，也解得开。
+function renderMetaDiff() {
+  const box = $("meta-diff");
+  box.textContent = "";
+  const changes = metaState.changes || {};
+  const locked = new Set(metaState.locked || []);
+  const keys = Object.keys(changes).sort(
+    (a, b) => META_FIELD_ORDER.indexOf(a) - META_FIELD_ORDER.indexOf(b));
+  const lockedOnly = [...locked].filter(k => !(k in changes))
+    .sort((a, b) => META_FIELD_ORDER.indexOf(a) - META_FIELD_ORDER.indexOf(b));
+  $("meta-applyall").disabled = metaState.busy || metaState.found === false || !keys.length;
+
+  // 只有锁定字段时也要把锁定表画出来，所以「空」只按 keys 判
+  if (!keys.length) {
+    box.append(el("span", "hint",
+      metaState.code ? "没有差异：现有字段已是最新（预览不改任何数据）" : "先填番号再点「预览差异」"));
+    if (!lockedOnly.length) return;
+  }
+  const table = el("table", "diff");
+  const wrap = el("div", "diffwrap");
+  const head = el("tr");
+  for (const h of ["字段", "现有", "刮到", "动作"]) head.append(el("th", null, h));
+  table.append(head);
+
+  for (const k of keys) {
+    const row = el("tr");
+    row.append(el("td", "fld", metaFieldName(k)));
+    row.append(el("td", "from", metaText((changes[k] || {}).from)));
+    row.append(el("td", "to", metaText((changes[k] || {}).to)));
+    const act = el("td", "act");
+    const apply = el("button", "warnful", "应用");
+    apply.type = "button";
+    apply.title = `只把 ${metaFieldName(k)} 写进站内记录，并自动锁定它`;
+    apply.addEventListener("click", () => metaApplyField(k, apply));
+    const lock = el("button", null, "锁");
+    lock.type = "button";
+    lock.title = `锁定 ${metaFieldName(k)}：以后自动刮削不再覆盖它`;
+    lock.addEventListener("click", () => metaLockField(k, true, lock));
+    act.append(apply, lock);
+    row.append(act);
+    table.append(row);
+  }
+  for (const k of lockedOnly) {
+    const row = el("tr", "locked");
+    row.append(el("td", "fld", metaFieldName(k) + " 🔒"));
+    row.append(el("td", "from", "已锁定"));
+    row.append(el("td", "to", "不会覆盖"));
+    const act = el("td", "act");
+    const un = el("button", null, "解锁");
+    un.type = "button";
+    // 后端只认 lock（加锁），没有解锁分支：点了解释清楚，不发请求、不假装成功
+    un.title = `解锁 ${metaFieldName(k)}：后端暂不支持解锁，点了会说明原因`;
+    un.addEventListener("click", () => metaLockField(k, false, un));
+    act.append(un);
+    row.append(act);
+    table.append(row);
+  }
+  wrap.append(table);
+  box.append(wrap);
+  if (lockedOnly.length) {
+    box.append(el("div", "notice quiet",
+      `已锁定 ${lockedOnly.length} 个字段：自动刮削与「重新刮削」都会跳过它们，只有手工「应用」才会改。`));
+  }
+}
+
+// 预览：只读。后端 scrape_preview 明确不动任何数据。
+async function metaPreview() {
+  const code = ($("meta-code").value || "").trim();
+  if (!code) { setMetaHint("先填番号", "err"); return; }
+  metaState.code = code;
+  metaState.busy = true;
+  $("meta-preview").disabled = true;
+  setMetaHint("预览中…（只读，不改数据）");
+  const report = $("meta-report");
+  report.textContent = "";
+  try {
+    const d = await metaApi("/api/scrape/preview", {code});
+    metaState.busy = false;
+    if (!d.ok) {
+      metaState.changes = {}; metaState.locked = []; metaState.found = false;
+      renderMetaDiff();
+      report.append(el("div", "notice", "预览失败：" + (d.error || "未知错误")));
+      setMetaHint("预览失败", "err");
+      return;
+    }
+    metaState.locked = d.locked || [];
+    metaState.found = !!d.found;
+    metaState.changes = d.changes || {};
+    const n = Object.keys(metaState.changes).length;
+    if (!d.found) {
+      // 没刮到就明确说保留现有字段，不要让人以为「点了没反应」
+      report.append(el("div", "notice",
+        `${d.code}：没刮到，保留现有字段（服务没有返回这部作品的数据）。`));
+      setMetaHint("没刮到，未做任何改动", "err");
+    } else {
+      report.append(el("div", "kv",
+        `共 ${n} 项差异 · 来源 ${d.provider || "未知"} · 锁定 ${metaState.locked.length} 个字段`));
+      setMetaHint(n ? `差异 ${n} 项（预览不改数据）` : "无差异", "ok");
+    }
+    renderMetaDiff();
+  } catch (e) {
+    metaState.busy = false;
+    setMetaHint("预览失败：" + (e.message || e), "err");
+  } finally {
+    $("meta-preview").disabled = false;
+  }
+}
+
+// 逐字段应用：只把这一个字段作为 fields 传给 sync，后端会顺带锁定它。
+// 不带 confirm —— 这一步只写站内记录，不碰 Drive。
+async function metaApplyField(k, btn) {
+  const code = metaState.code || ($("meta-code").value || "").trim();
+  if (!code) return;
+  const v = (metaState.changes[k] || {}).to;
+  if (btn) btn.disabled = true;
+  setMetaHint(`应用 ${metaFieldName(k)}…`);
+  try {
+    const d = await metaApi("/api/scrape/sync", {code, fields: {[k]: v}});
+    if (!d.ok) {
+      setMetaHint((d.error || "应用失败"), "err");
+      return;
+    }
+    delete metaState.changes[k];
+    metaState.locked = d.locked || metaState.locked;
+    renderMetaDiff();
+    setMetaHint(`${metaFieldName(k)} 已写入站内记录（已锁定）`, "ok");
+    // 字段已经一致了，刷新一次让差异表少一行
+    if (!Object.keys(metaState.changes).length) metaPreview();
+  } catch (e) {
+    setMetaHint("应用失败：" + (e.message || e), "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 全部应用：把当前差异表里所有未锁定字段一次写进站内记录
+async function metaApplyAll() {
+  const code = metaState.code || ($("meta-code").value || "").trim();
+  const fields = {};
+  for (const [k, v] of Object.entries(metaState.changes || {})) fields[k] = v.to;
+  const n = Object.keys(fields).length;
+  if (!code || !n) return;
+  $("meta-applyall").disabled = true;
+  setMetaHint(`应用 ${n} 个字段…`);
+  try {
+    const d = await metaApi("/api/scrape/sync", {code, fields});
+    if (!d.ok) { setMetaHint((d.error || "应用失败"), "err"); return; }
+    metaState.changes = {};
+    metaState.locked = d.locked || metaState.locked;
+    renderMetaDiff();
+    setMetaHint(`${n} 个字段已写入站内记录`, "ok");
+    loadMetaStatus();
+  } catch (e) {
+    setMetaHint("应用失败：" + (e.message || e), "err");
+  } finally {
+    renderMetaDiff();
+  }
+}
+
+// 锁定 / 解锁：只走 lock 参数，不带 fields，也不带 confirm
+async function metaLockField(k, on, btn) {
+  const code = metaState.code || ($("meta-code").value || "").trim();
+  if (!code) { setMetaHint("先预览一个番号", "err"); return; }
+  if (!on) {
+    // 后端 scrape_sync 只会 locks |= set(lock)，没有解锁分支；
+    // 发什么参数都解不开，所以宁可不发请求、如实说明，也不伪造「已解锁」。
+    const still = (metaState.locked || []).includes(k);
+    setMetaHint(`后端只接受 lock（加锁），暂不支持解锁：${metaFieldName(k)}`
+      + (still ? "仍在锁定列表里" : "本来就没锁"), still ? "err" : "ok");
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const d = await metaApi("/api/scrape/sync", {code, lock: [k]});
+    if (!d.ok) { setMetaHint((d.error || "锁定失败"), "err"); return; }
+    metaState.locked = d.locked || metaState.locked;
+    if (!metaState.locked.includes(k)) metaState.locked = [...metaState.locked, k];
+    setMetaHint(`${metaFieldName(k)} 已锁定`, "ok");
+    renderMetaDiff();
+  } catch (e) {
+    setMetaHint("锁定失败：" + (e.message || e), "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 全部解锁：后端只认 lock（加锁），没有解锁 / 覆盖锁定的参数，
+// 所以这里先如实告诉用户做不到，再给出「重新刮削会怎么做」的替代说明。
+// 不要在前端伪造解锁 —— 那只会让人以为下次刮削会覆盖，实际不会。
+async function metaUnlockAll() {
+  const code = metaState.code || ($("meta-code").value || "").trim();
+  if (!code) { setMetaHint("先预览一个番号", "err"); return; }
+  const locked = metaState.locked || [];
+  setMetaHint(locked.length
+    ? `后端 /api/scrape/sync 只接受 lock 参数，暂不支持解锁；${locked.length} 个字段仍锁定`
+    : "这个番号没有锁定字段", locked.length ? "err" : "ok");
+}
+
+// 同步附件：会改动云端附件，必须用户显式点 + 再 confirm 一次
+async function metaSync() {
+  const code = metaState.code || ($("meta-code").value || "").trim();
+  if (!code) { setMetaHint("先在预览里选好番号", "err"); return; }
+  if (!confirm(`${code}\n\n重新生成 NFO / JSON / 封面并推到 Drive？\n\n`
+    + `会改动云端附件（视频不会重传）。站内记录先保存，附件失败会逐条列出来。`)) return;
+  await runMetaSync(code);
+}
+
+// 真正发 sync(confirm=true) 的地方：首次同步与失败重试共用
+async function runMetaSync(code) {
+  metaState.busy = true;
+  const btn = $("meta-sync");
+  btn.disabled = true;
+  $("meta-synchint").textContent = "同步中…";
+  $("meta-synchint").className = "hint";
+  try {
+    const d = await metaApi("/api/scrape/sync", {code, confirm: true});
+    const out = $("meta-syncout");
+    out.textContent = "";
+    if (!d.ok) {
+      out.append(el("div", "notice", "同步失败：" + (d.error || "未知错误")));
+      $("meta-synchint").textContent = "同步失败";
+      $("meta-synchint").className = "hint err";
+      return;
+    }
+    const synced = d.synced || [];
+    const failed = d.sync_failed || [];
+    metaState.failed = failed.slice();
+    out.append(el("div", "kv",
+      `已推送 ${synced.length} 个附件 · 失败 ${failed.length} 个`
+      + (Object.keys(d.changed || {}).length ? " · 记录已更新" : "")));
+    if (synced.length) {
+      const chips = el("div", "chips");
+      for (const name of synced) chips.append(el("span", "chip plain", typeof name === "string" ? name : JSON.stringify(name)));
+      out.append(chips);
+    }
+    for (const item of failed) {
+      const name = (item && item.name) || String(item);
+      const why = (item && item.error) || "未知原因";
+      out.append(metaFailedRow(code, name, why));
+    }
+    $("meta-synchint").textContent = failed.length ? `失败 ${failed.length} 个，可逐条重试` : "已同步";
+    $("meta-synchint").className = "hint " + (failed.length ? "err" : "ok");
+    if (synced.length) loadMetaStatus();
+  } catch (e) {
+    $("meta-synchint").textContent = "同步失败：" + (e.message || e);
+    $("meta-synchint").className = "hint err";
+  } finally {
+    metaState.busy = false;
+    btn.disabled = false;
+  }
+}
+
+// 失败项一行：「重试」= 再发一次整个附件的 sync(confirm=true)，
+// 后端没有「只补某个附件」的参数，这一点在 title 里写明。
+function metaFailedRow(code, name, why) {
+  const row = el("div", "kvrow bad");
+  row.append(el("span", "nm", name));
+  row.append(el("span", "why", why));
+  const r = el("div", "r");
+  const re = el("button", null, "重试");
+  re.type = "button";
+  re.title = "重新推一次附件（后端没有单文件接口，会整体重推；视频不重传）";
+  re.addEventListener("click", async () => {
+    if (!confirm(`${code}\n\n重试推送附件？会再动一次云端附件。`)) return;
+    re.disabled = true;
+    await runMetaSync(code);
+  });
+  r.append(re);
+  row.append(r);
+  return row;
+}
+
+function openMeta() {
+  $("metapanel").hidden = false;
+  $("metatool-open").classList.add("on");
+  loadMetaStatus();
+  if ($("meta-code").value.trim() || metaState.code) renderMetaDiff();
+}
+function closeMeta() {
+  $("metapanel").hidden = true;
+  $("metatool-open").classList.remove("on");
+  setMetaHint("");
+}
+
+$("metatool-open").addEventListener("click",
+  () => $("metapanel").hidden ? openMeta() : closeMeta());
+$("meta-close").addEventListener("click", closeMeta);
+$("meta-preview").addEventListener("click", metaPreview);
+$("meta-applyall").addEventListener("click", metaApplyAll);
+$("meta-sync").addEventListener("click", metaSync);
+$("meta-unlock").addEventListener("click", metaUnlockAll);
+$("meta-code").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); metaPreview(); }
+});
+// 「重新刮削」= 预览的加重版：会真的补缺失字段（尊重锁定），但不碰 Drive，所以只提示一次
+$("meta-resync").addEventListener("click", async () => {
+  const code = ($("meta-code").value || "").trim() || metaState.code;
+  if (!code) { setMetaHint("先填番号", "err"); return; }
+  if (!confirm(`${code}\n\n重新刮一次并补进站内缺失的字段？\n\n`
+    + `已锁定的字段不会被覆盖；这一步不动 Drive 附件。`)) return;
+  setMetaHint("重新刮削中…");
+  try {
+    const d = await metaApi("/api/scrape/sync", {code, resync: true});
+    if (!d.ok) { setMetaHint((d.error || "重新刮削失败"), "err"); return; }
+    const n = Object.keys(d.changed || {}).length;
+    setMetaHint(n ? `已补 ${n} 个字段` : "没有需要补的字段", n ? "ok" : "ok");
+    metaState.code = code;
+    loadMetaStatus();
+    metaPreview();
+  } catch (e) {
+    setMetaHint("重新刮削失败：" + (e.message || e), "err");
+  }
+});
+
+// ── 归档健康面板
+// 纪律：只报告。这里不放任何远端文件删除入口，也没有自动重传按钮，一个都不加。
+const VERIFY_ORDER = ["校验通过", "缺文件", "大小异常", "大小未知", "无清单", "检查失败"];
+const VERIFY_TONE = {"校验通过": "", "缺文件": "bad", "大小异常": "bad",
+  "大小未知": "warn", "无清单": "warn", "检查失败": "bad"};
+const verifyState = {
+  rows: [],        // 已检查的每一条 {code,state,missing,extra,...}
+  filter: "",      // 点汇总格筛选
+  done: 0,         // 已查条数
+  total: 0,        // 计划查的条数（起点 + 每批上限）
+  running: false,
+  cancelled: false,
+  batch: 20,
+};
+
+function setVerifyHint(text, kind) {
+  const h = $("verify-hint");
+  h.textContent = text || "";
+  h.className = "hint" + (kind ? " " + kind : "");
+}
+
+function setVerifyState(text, kind) {
+  const b = $("health-state");
+  b.textContent = text;
+  b.className = "badge" + (kind ? " " + kind : "");
+}
+
+// 汇总格：六个状态各一格，点一下筛选（再点取消筛选）
+function renderVerifySummary() {
+  const box = $("verify-sum");
+  box.textContent = "";
+  const counts = {};
+  for (const k of VERIFY_ORDER) counts[k] = 0;
+  for (const r of verifyState.rows) {
+    const s = r.state || "检查失败";
+    counts[s] = (counts[s] || 0) + 1;
+  }
+  for (const k of VERIFY_ORDER) {
+    const b = el("button");
+    b.type = "button";
+    b.className = verifyState.filter === k ? "on" : "";
+    const num = el("b", VERIFY_TONE[k], String(counts[k] || 0));
+    b.append(num);
+    b.append(el("span", null, k));
+    b.title = `只看「${k}」的番号`;
+    b.addEventListener("click", () => {
+      verifyState.filter = verifyState.filter === k ? "" : k;
+      renderVerifySummary();
+      renderVerifyList();
+    });
+    box.append(b);
+  }
+}
+
+function verifyDiffBits(r) {
+  const bits = [];
+  if ((r.missing || []).length) bits.push("缺 " + r.missing.join("、"));
+  if ((r.extra || []).length) bits.push("多 " + r.extra.join("、"));
+  for (const m of (r.size_mismatch || [])) {
+    bits.push(`${m.name} 本地 ${gb(m.local)} / 远端 ${gb(m.remote)}`);
+  }
+  if ((r.size_unknown || []).length) bits.push("大小未知 " + r.size_unknown.join("、"));
+  if (r.error) bits.push(r.error);
+  return bits;
+}
+
+function renderVerifyList() {
+  const box = $("verify-list");
+  box.textContent = "";
+  const rows = verifyState.rows.filter(r => !verifyState.filter || (r.state || "检查失败") === verifyState.filter);
+  if (!verifyState.rows.length) {
+    box.append(el("span", "hint", "还没查。点「检查一批」开始（只读核对，不会改任何东西）"));
+    return;
+  }
+  if (!rows.length) {
+    box.append(el("span", "hint", `没有「${verifyState.filter}」的番号`));
+    return;
+  }
+  for (const r of rows) {
+    const row = el("div", "kvrow" + ((r.state === "校验通过") ? "" : " bad"));
+    row.append(el("span", "badge " + (VERIFY_TONE[r.state] || "ok"), r.state || "未知"));
+    row.append(el("span", "nm", r.code || "—"));
+    const bits = verifyDiffBits(r);
+    row.append(el("span", "why", bits.length ? bits.join(" · ")
+      : `本地 ${r.local_count != null ? r.local_count : "?"} 个 / 远端 ${r.remote_count != null ? r.remote_count : "?"} 个`));
+    const act = el("div", "r");
+    const b = el("button", null, "再看一次");
+    b.type = "button";
+    b.title = "单独核对这一个番号（只读）";
+    b.addEventListener("click", () => verifyOne(r.code, b));
+    act.append(b);
+    row.append(act);
+    box.append(row);
+  }
+}
+
+// 单条核对：走 verify 的 {code} 分支，只读
+async function verifyOne(code, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const d = await metaApi("/api/archive/verify", {code});
+    if (!d.ok) { flash((d.error || `${code} 核对失败`), true); return; }
+    const i = verifyState.rows.findIndex(r => r.code === code);
+    const row = {...d, code: d.code || code};
+    if (i >= 0) verifyState.rows[i] = row; else verifyState.rows.push(row);
+    renderVerifySummary();
+    renderVerifyList();
+  } catch (e) {
+    flash("核对失败：" + (e.message || e), true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 分批检查：每批一次 POST，前端串起来；取消只停止后续请求，已查到的结果保留，
+// 不补造没查的那部分的结论。
+async function verifyBatch() {
+  if (verifyState.running) return;
+  const limit = Math.max(1, Math.min(200, parseInt($("verify-limit").value || "20", 10) || 20));
+  verifyState.batch = limit;
+  verifyState.running = true;
+  verifyState.cancelled = false;
+  $("verify-run").disabled = true;
+  $("verify-cancel").disabled = false;
+  $("verify-bar").hidden = false;
+  $("verify-bar").firstElementChild.style.width = "0%";
+  setVerifyState("检查中", "warn");
+
+  // 一次批量调用就代表「这一批查完了」，进度按「已提交批量 × limit」算，
+  // 后端 verify_all 一次最多先看 limit 条，所以每批都是同一批前缀 —— 这里
+  // 只按用户设定的上限累加，不做超出后端能力的事。查不完就直说。
+  try {
+    const d = await metaApi("/api/archive/verify", {limit});
+    if (!d.ok) {
+      setVerifyHint(d.error || "检查失败", "err");
+      setVerifyState("检查失败", "err");
+      return;
+    }
+    const items = d.items || [];
+    verifyState.rows = items.map(i => ({...i}));
+    verifyState.done = items.length;
+    verifyState.total = items.length;
+    $("verify-bar").firstElementChild.style.width = "100%";
+    renderVerifySummary();
+    renderVerifyList();
+    const sum = d.summary || {};
+    const bad = VERIFY_ORDER.filter(k => k !== "校验通过").reduce((a, k) => a + (sum[k] || 0), 0);
+    setVerifyHint(`已查 ${items.length} / ${items.length}` + (bad ? `，${bad} 个需要看一眼` : "，全部通过"),
+      bad ? "err" : "ok");
+    setVerifyState(bad ? `${bad} 个异常` : "全部通过", bad ? "warn" : "ok");
+  } catch (e) {
+    setVerifyHint("检查失败：" + (e.message || e), "err");
+    setVerifyState("检查失败", "err");
+  } finally {
+    verifyState.running = false;
+    $("verify-run").disabled = false;
+    $("verify-cancel").disabled = true;
+  }
+}
+
+function cancelVerify() {
+  if (!verifyState.running) return;
+  verifyState.cancelled = true;
+  setVerifyHint(`已取消：停在已查的 ${verifyState.done} / ${verifyState.total} 条，没查的不显示结论`);
+  setVerifyState("已取消", "warn");
+}
+
+// 重复归档：同番号多条记录 / 同 infohash 多份。只列，不提供任何「去重」按钮。
+async function loadDups() {
+  const box = $("dups-list");
+  box.textContent = "";
+  box.append(el("span", "hint", "查询中…"));
+  try {
+    const d = await metaApi("/api/archive/dups", {});
+    box.textContent = "";
+    if (!d.ok) {
+      box.append(el("span", "hint err", d.error || "查重失败"));
+      return;
+    }
+    const rows = d.duplicates || [];
+    if (!rows.length) {
+      box.append(el("span", "chip plain", "没有发现重复归档"));
+      return;
+    }
+    box.append(el("div", "kv", `发现 ${rows.length} 条 · ${d.hint || "只报告，不删除"}`));
+    for (const row of rows) {
+      const line = el("div", "kvrow bad");
+      line.append(el("span", "badge warn", row.kind || "重复"));
+      line.append(el("span", "nm", row.code || "—"));
+      line.append(el("span", "why", row.detail || ""));
+      box.append(line);
+    }
+    box.append(el("div", "notice quiet",
+      "这些只是线索：改名、复工、换源重下都可能留下记录。删哪边要你自己判断，这里不提供删除。"));
+  } catch (e) {
+    box.textContent = "";
+    box.append(el("span", "hint err", "查重失败：" + (e.message || e)));
+  }
+}
+
+function openHealth() {
+  $("healthpanel").hidden = false;
+  $("health-open").classList.add("on");
+  renderVerifySummary();
+  renderVerifyList();
+}
+function closeHealth() {
+  $("healthpanel").hidden = true;
+  $("health-open").classList.remove("on");
+  setVerifyHint("");
+  cancelVerify();
+}
+
+$("health-open").addEventListener("click",
+  () => $("healthpanel").hidden ? openHealth() : closeHealth());
+$("health-close").addEventListener("click", closeHealth);
+$("verify-run").addEventListener("click", verifyBatch);
+$("verify-cancel").addEventListener("click", cancelVerify);
+$("verify-dups").addEventListener("click", loadDups);
 
 $("norm-btn").addEventListener("click", askNormalize);
 

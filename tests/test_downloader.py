@@ -43,7 +43,19 @@ def no_whatslink(monkeypatch):
 
 
 @pytest.fixture
-def stub(monkeypatch, tmp_path):
+def no_meta(monkeypatch):
+    """单测不联网：bot 记账时的兜底元数据查询直接返回 None。
+
+    bot 现在会调与网页同一套 meta.lookup（不 monkeypatch 就会去 javbus 抓真站），
+    这里只把它固定为「查不到」，记录里 meta 就来自刮削结果或留空。
+    """
+    async def none(*a, **k):
+        return None
+    monkeypatch.setattr(main.meta, "lookup", none)
+
+
+@pytest.fixture
+def stub(monkeypatch, tmp_path, no_meta):
     """把下载与 rclone 都换成假的：写一个 2MB 的假视频。"""
     calls = {"copy": [], "body": b"x" * (2 << 20)}
 
@@ -107,7 +119,9 @@ def test_download_and_archive_by_code(tmp_path, stub):
     assert "✅ SSIS-123" in reply
     assert stub["copy"] == ["gdrive:X-Drive/SSIS-123"], "按番号建一级目录"
     assert state["SSIS-123"]["code"] == "SSIS-123"
-    assert state["SSIS-123"]["files"] == ["SSIS-123.mp4"], "单文件重命名为番号"
+    # bot 现在与网页走同一份附件生成：视频之外还有 NFO/JSON/清单，都一起上传
+    assert "SSIS-123.mp4" in state["SSIS-123"]["files"], "单文件重命名为番号"
+    assert state["SSIS-123"]["files"] == sorted(state["SSIS-123"]["files"])
     assert state["SSIS-123"]["size"] == 2 << 20
 
 

@@ -354,6 +354,10 @@ def scrape_attachments(work: Path, folder: str, files: list[Path],
                        job_id: str = "") -> dict:
     """在写盘前刮好元数据并生成附件。失败只登记，绝不阻断视频上传。
 
+    可复用的核心（刮元数据、取封面、写 sidecar、返回上传清单）在
+    metadata.build_attachments；这里只负责网页侧独有的部分：读开关、读任务的
+    locked/scraped、把结果写回 job extra。
+
     返回 {"record", "files", "written", "failed", "pending"}：
       pending=True 表示元数据不完整（要补刮），任务状态里会带这个标记。
     """
@@ -361,60 +365,31 @@ def scrape_attachments(work: Path, folder: str, files: list[Path],
         return {"record": {}, "files": files, "written": [], "failed": [], "pending": False}
 
     code = workspace.key_of(folder) and (codes.canonical(folder) or folder)
-    record: dict = {}
-    try:
-        record = asyncio.run(metatube.scrape(code)) if metatube.configured() else {}
-    except Exception as exc:                     # 刮削是可选环节
-        log.info("刮 %s 失败（不影响上传）：%s", code, exc)
-    # 番号对不上就不用：宁可留待补刮，也不把别人的元数据塞进归档
-    if record and not metatube.matches(code, record):
-        log.warning("MetaTube 返回 %s 与 %s 不符，丢弃", record.get("code"), code)
-        record = {}
+    extra = ((_store().get(job_id) or {}).get("extra") or {}) if job_id else {}
+    locked = set(extra.get("locked") or [])
 
-    locked = set((( _store().get(job_id) or {}).get("extra") or {}).get("locked") or [])
-    if locked and record:
-        old = ((_store().get(job_id) or {}).get("extra") or {}).get("scraped") or {}
-        record = metadata.merge(old, record, locks=locked)
+    def scrape(code_: str) -> dict:
+        found = asyncio.run(metatube.scrape(code_)) if metatube.configured() else {}
+        # 番号对不上就不用：宁可留待补刮，也不把别人的元数据塞进归档
+        if found and not metatube.matches(code_, found):
+            log.warning("MetaTube 返回 %s 与 %s 不符，丢弃", found.get("code"), code_)
+            return {}
+        return found
 
-    poster = b""
-    if POSTER_ON and record.get("cover_url"):
-        poster = fetch_image(record["cover_url"])
-        if not poster:
-            log.info("封面取不到：%s", record["cover_url"])
-
-    out = {"record": record, "files": files, "written": [], "failed": [], "pending": False}
-    try:
-        out.update(metadata.write_sidecar(
-            work, record, files, code=code, locks=locked, poster=poster or None,
-            want_nfo=NFO_ON))
-    except Exception as exc:
-        log.warning("生成元数据附件失败（不影响上传）：%s", exc)
-        out["failed"] = [{"name": "attachments", "error": str(exc)[:200]}]
-    # 视频 + 附件一起进上传清单：附件也是归档的一部分
-    extras = [work / n for n in (metadata.JSON_NAME, metadata.NFO_NAME,
-                                metadata.POSTER_NAME, metadata.MANIFEST_NAME)
-              if (work / n).is_file()]
-    out["files"] = sorted(set(files) | set(extras))
-    out["pending"] = not (record and record.get("title")) or bool(out["failed"])
+    out = metadata.build_attachments(work, code, files, scrape, locks=locked,
+                                     old=extra.get("scraped") or {}, want_nfo=NFO_ON,
+                                     want_poster=POSTER_ON)
     if job_id:
         job_update(job_id, extra={
             **(_store().get(job_id).get("extra") or {}),
-            "scraped": record, "scrape_pending": out["pending"],
+            "scraped": out["record"], "scrape_pending": out["pending"],
             "scrape_failed": out["failed"]})
     return out
 
 
 def fetch_image(url: str, limit: int = 12 << 20) -> bytes:
-    """取封面。不信任大小，超过 limit 就放弃 —— 不要为一张图把内存吃掉。"""
-    if not url.lower().startswith(("http://", "https://")):
-        return b""
-    try:
-        with urllib.request.urlopen(url, timeout=20) as resp:
-            data = resp.read(limit + 1)
-    except Exception as exc:
-        log.info("取封面失败 %s：%s", url, exc)
-        return b""
-    return b"" if len(data) > limit else data
+    """取封面（实现与 bot 共用 metadata.fetch_image）。"""
+    return metadata.fetch_image(url, limit=limit)
 
 
 def _upload_loop(job_id: str, work: Path, folder: str, size: int,
@@ -467,35 +442,16 @@ def _finish(job_id: str, work: Path, folder: str, files: list[Path], size: int,
     from_extra = extra.get("files") or []
     names = ([f.name for f in files] + [str(n) for n in from_extra if n and str(n) not in
                                         [f.name for f in files]])
-    # 清单按工作区实际文件生成；文件已不在工作区（如被清理）就保留条目、大小记 0
-    entries = []
-    for name in names:
-        path = work / name
-        try:
-            st = path.stat()
-            entries.append({"name": name, "size": st.st_size, "ext": path.suffix.lower()})
-        except OSError:
-            entries.append({"name": name, "size": 0, "ext": Path(name).suffix.lower()})
-    # 清单写自身就是自引用：manifest.json 不进清单，其余附件照常列
-    media_entries = [e for e in entries if e["name"] != metadata.MANIFEST_NAME]
-    record = {
-        "code": folder,
-        "path": f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}",
-        "link": link or "",
-        "files": names,
-        "size": size,
-        "source": source[:300],
-        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "meta": info or extra.get("scraped") or {},
-        "manifest": {**metadata.manifest([], extra.get("scraped") or {}, code=folder),
-                     "files": media_entries,
-                     "total_size": sum(e["size"] for e in media_entries)},
-        "scrape_pending": bool(extra.get("scrape_pending")),
-    }
-    if extra.get("infohash"):                 # 有才写，没有不编
-        record["infohash"] = str(extra["infohash"])
-    if extra.get("locked"):
-        record["locked"] = sorted(set(extra["locked"]))
+    # 记录组装与 bot 共用一份实现（字段契约见 metadata.archive_record）。
+    # 清单按工作区实际文件生成；文件已不在工作区（如被清理）就保留条目、大小记 0。
+    record = metadata.archive_record(
+        folder, f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}", link, names, size, source, work,
+        scraped=info or extra.get("scraped") or {},
+        manifest_files=names,
+        infohash=str(extra.get("infohash") or ""),
+        locks=extra.get("locked") or (),
+        pending=bool(extra.get("scrape_pending")),
+    )
     core.update_state(STATE, {folder: record})
     job_update(job_id, stage="done", link=link or "", code=folder, size=size,
                retries=policy.attempts, error="", resume_from="",

@@ -124,6 +124,60 @@ def manifest(files: list[Path], record: dict, code: str = "",
     }
 
 
+def archive_manifest(work: Path, names: list[str], scraped: dict,
+                     code: str = "") -> dict:
+    """归档记录里的清单：按工作区实际文件取大小，文件已不在就记 0（不编）。
+
+    manifest.json 不列自己（自引用）；条目按名字排序，与远端补刮时的写法一致。
+    """
+    entries = []
+    for name in dict.fromkeys(str(n) for n in names if n):
+        path = work / name
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        entries.append({"name": name, "size": size, "ext": Path(name).suffix.lower()})
+    entries.sort(key=lambda e: e["name"])
+    media_entries = [e for e in entries if e["name"] != MANIFEST_NAME]
+    return {**manifest([], scraped or {}, code=code),
+            "files": media_entries,
+            "total_size": sum(e["size"] for e in media_entries)}
+
+
+def archive_record(code: str, path: str, link: str | None, files, size: int,
+                   source: str, work: Path, scraped: dict | None = None,
+                   manifest_files: list[str] | None = None, infohash: str = "",
+                   locks=None, pending: bool = False, at: str | None = None) -> dict:
+    """一条归档记录的完整字段契约。web 的 _finish 与 bot 的 run_task 都写这一份。
+
+    以前两条路径各写一遍，bot 写出的记录少了 meta/manifest/infohash/locked/
+    scrape_pending，之后的补刮、去重、校验对着它就无据可依。
+
+    缺数据就留空/null，绝不编造：没刮到就是空表，没 infohash 就不写这个键。
+    manifest_files 是清单里的文件名，大小按 work 里的实际文件取；省略就用 files。
+    """
+    names = [str(p.name if isinstance(p, Path) else p) for p in (files or []) if p]
+    record = {
+        "code": code,
+        "path": path,
+        "link": link or "",
+        "files": names,
+        "size": int(size or 0),
+        "source": (source or "")[:300],
+        "at": at or time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "meta": dict(scraped or {}),
+        "manifest": archive_manifest(work, manifest_files if manifest_files is not None
+                                     else names, dict(scraped or {}), code=code),
+        "scrape_pending": bool(pending),
+    }
+    if infohash:                              # 有才写，没有不编
+        record["infohash"] = str(infohash)
+    if locks:
+        record["locked"] = sorted(set(locks))
+    return record
+
+
 def sha256_of(path: Path, chunk: int = 1 << 20) -> str:
     """可选的大文件哈希。按块读，别把几 GB 一次塞进内存。"""
     h = hashlib.sha256()
@@ -196,3 +250,68 @@ def write_sidecar(work: Path, record: dict, files: list[Path], code: str = "",
     except OSError as exc:
         failed.append({"name": MANIFEST_NAME, "error": str(exc)[:200]})
     return {"written": written, "failed": failed}
+
+
+def fetch_image(url: str, limit: int = 12 << 20, timeout: float = 20.0) -> bytes:
+    """取封面。不信任大小，超过 limit 就放弃 —— 不要为一张图把内存吃掉。"""
+    import urllib.request
+
+    if not str(url or "").lower().startswith(("http://", "https://")):
+        return b""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = resp.read(limit + 1)
+    except Exception as exc:
+        log.info("取封面失败 %s：%s", url, exc)
+        return b""
+    return b"" if len(data) > limit else data
+
+
+def build_attachments(work: Path, code: str, files: list[Path], scrape,
+                      locks=None, old: dict | None = None, want_nfo: bool = True,
+                      want_poster: bool = True, fetch=fetch_image) -> dict:
+    """刮元数据 → 取封面 → 写 sidecar → 返回上传清单。web 与 bot 共用这一份。
+
+    scrape 是「按番号取一条归一化元数据」的普通函数，由调用方负责跑协程
+    （web 用 asyncio.run，bot 在自己的事件循环里 await），这样两边都能注入与替换；
+    fetch 是「按 URL 取字节」的函数（同上）。这一层不读任务库、不管 extra：
+    记录 extra 是调用方的事，这里只管工作区里的文件。
+
+    刮削失败绝不阻断上传：record 空着、pending 置真，视频照常进清单。
+
+    返回 {"record", "files", "written", "failed", "pending"}：
+      files 是「视频 + 附件」一起上传的清单；pending=True 表示要补刮。
+    """
+    work = Path(work)
+    record: dict = {}
+    try:
+        record = scrape(code) or {}          # 调用方给的协程，已含番号校验
+    except Exception as exc:                 # 刮削是可选环节
+        log.info("刮 %s 失败（不影响上传）：%s", code, exc)
+    if record and not isinstance(record, dict):   # 形状不对就丢掉，别写坏附件
+        log.warning("刮削返回的不是记录（%s），丢弃", type(record).__name__)
+        record = {}
+    locked = set(locks or ())
+    if locked and record:
+        record = merge(old or {}, record, locks=locked)
+
+    poster = b""
+    if want_poster and record.get("cover_url"):
+        poster = fetch(record["cover_url"])
+        if not poster:
+            log.info("封面取不到：%s", record["cover_url"])
+
+    out = {"record": record, "files": list(files), "written": [], "failed": [],
+           "pending": False}
+    try:
+        out.update(write_sidecar(work, record, list(files), code=code, locks=locked,
+                                 poster=poster or None, want_nfo=want_nfo))
+    except Exception as exc:
+        log.warning("生成元数据附件失败（不影响上传）：%s", exc)
+        out["failed"] = [{"name": "attachments", "error": str(exc)[:200]}]
+    # 视频 + 附件一起进上传清单：附件也是归档的一部分
+    extras = [work / n for n in (JSON_NAME, NFO_NAME, POSTER_NAME, MANIFEST_NAME)
+              if (work / n).is_file()]
+    out["files"] = sorted(set(Path(p) for p in files) | set(extras))
+    out["pending"] = not (record and record.get("title")) or bool(out["failed"])
+    return out
