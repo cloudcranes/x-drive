@@ -18,13 +18,14 @@ import re
 import time
 import asyncio
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -52,6 +53,9 @@ DAILY_UPLOAD_GB = int(os.getenv("DAILY_UPLOAD_GB", "0") or 0)
 # 刮削附件：默认全开；关掉就退回原来的「只有视频」行为
 SCRAPE_ON = os.getenv("SCRAPE", "1") not in ("0", "false", "False")
 NFO_ON = os.getenv("SCRAPE_NFO", "1") not in ("0", "false", "False")
+# 补刮能推到 Drive 的附件就这几个；单文件重试的 only 只认它们，别的名字一律不收
+ATTACHMENT_NAMES = frozenset((metadata.JSON_NAME, metadata.NFO_NAME,
+                              metadata.POSTER_NAME, metadata.MANIFEST_NAME))
 POSTER_ON = os.getenv("SCRAPE_POSTER", "1") not in ("0", "false", "False")
 # 上传并发与分片大小：默认值来自实测（见 upload_folder 注释），可通过 .env 覆盖
 UPLOAD_TRANSFERS = max(1, int(os.getenv("UPLOAD_TRANSFERS", "4") or 4))
@@ -192,6 +196,35 @@ def _store() -> store.Store:
 STORE: store.Store | None = None
 
 
+def job_event(job_id: str, kind: str, detail: str = "") -> None:
+    """记一条任务事件（时间线用）。**绝不抛异常**：观测不能拖累主流程。"""
+    if not job_id or not kind:
+        return
+    try:
+        _store().event(job_id, kind, detail)
+    except Exception as exc:          # 库打不开、磁盘满、表还没迁移……
+        log.warning("记录任务 %s 的事件 %s 失败：%s", job_id, kind, exc)
+
+
+def _stage(job_id: str, stage: str, detail: str = "") -> None:
+    """阶段切换：先落库再记事件，时间线与任务表不会互相打架。"""
+    job_update(job_id, stage=stage)
+    job_event(job_id, "stage", detail or stage)
+
+
+def _first_line(text: str, limit: int = 120) -> str:
+    """错误原文取首行：多行堆栈塞进时间线没人看，库里也不用存整段。"""
+    line = str(text or "").strip().splitlines()
+    return (line[0] if line else "")[:limit]
+
+
+def _event_deferred(job_id: str, until: float, note: str, why: str = "") -> None:
+    """延期事件：把唤醒时刻写成可读时间，时间线上能直接看到「几点会再跑」。"""
+    when = time.strftime("%m-%d %H:%M", time.localtime(until)) if until else "未知"
+    job_event(job_id, "deferred",
+              f"{when} 唤醒 · {note}" + (f" · {_first_line(why)}" if why else ""))
+
+
 def job_update(job_id: str, **fields) -> None:
     with _jobs_lock:
         record = JOBS.setdefault(job_id, {"id": job_id, "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
@@ -208,6 +241,8 @@ def job_update(job_id: str, **fields) -> None:
 JOB_FIELDS = ("id", "code", "source", "stage", "percent", "speed", "total", "downloaded",
               "folder", "link", "error", "retries", "owner", "xunlei_task",
               "xunlei_ours", "keep_dir", "resume_from", "kept", "created_at", "updated_at")
+# 每条任务随 /api/jobs 附带的最近事件条数（时间线够画完全程，也不把响应撑大）
+JOB_EVENT_LIMIT = 50
 
 
 def jobs_snapshot() -> list[dict]:
@@ -223,6 +258,8 @@ def jobs_snapshot() -> list[dict]:
         row["infohash"] = extra.get("infohash") or ""
         row["defer_until"] = float(extra.get("defer_until") or 0)
         row["queued_position"] = int((_jobs_mirror(j.get("id")) or {}).get("queued_position") or 0)
+        # 时间线的数据源：最近若干条事件（升序）。老任务没有事件时是空表，前端回退旧渲染
+        row["events"] = _store().events(j.get("id"), limit=JOB_EVENT_LIMIT)
         out.append(row)
     return out
 
@@ -397,6 +434,7 @@ def _upload_loop(job_id: str, work: Path, folder: str, size: int,
     """把工作区推到 Drive，可重试；返回分享链接。"""
     up_policy = retry.RetryPolicy(retries=RETRIES, base_delay=RETRY_BASE_DELAY)
     require_lease(job_id, folder)                # 上传前
+    job_event(job_id, "stage", f"uploading {folder}")
     while True:
         require_lease(job_id, folder)            # 每次重试前
         job_update(job_id, stage="uploading", folder=folder, size=size, percent=100.0,
@@ -416,6 +454,8 @@ def _upload_loop(job_id: str, work: Path, folder: str, size: int,
             log.warning("上传失败，%s 秒后重试（第 %d 次）：%s", wait, up_policy.attempts, exc)
             job_update(job_id, stage="uploading", error=f"{exc}｜{wait}s 后重试",
                        retries=policy.attempts + up_policy.attempts)
+            job_event(job_id, "retry",
+                      f"上传第 {up_policy.attempts} 次 · {wait}s 后重试 · {_first_line(exc)}")
             if not retry.backoff_sleep(up_policy, cancel_check=lambda: cancel_requested(job_id),
                                        error=str(exc)):
                 raise Cancelled("已停止")
@@ -457,6 +497,8 @@ def _finish(job_id: str, work: Path, folder: str, files: list[Path], size: int,
                retries=policy.attempts, error="", resume_from="",
                timing={k: round(v, 2) for k, v in clock.items()},
                throughput=(round(size / clock["upload"] / 1048576, 2) if clock["upload"] else None))
+    job_event(job_id, "done", " · ".join(x for x in (
+        folder, core.human_size(size), link or "") if x))
     notify.job_done(folder, core.human_size(size), link or "")
 
 
@@ -470,6 +512,8 @@ HEARTBEAT_INTERVAL = store.STALE_BEAT / 3
 LEASES: dict[str, str] = {}
 # 心跳线程还在跑的任务；beat 失败即置 False，各阶段据此停手
 _lease_live: dict[str, bool] = {}
+# 心跳线程的唤醒信号：让它不必等满一个 interval 就能退出（lease_end / 换代 / 测试复位）
+_lease_wake: dict[str, threading.Event] = {}
 _lease_lock = threading.Lock()
 
 
@@ -520,24 +564,46 @@ def lease_begin(job_id: str, token: str | None = None) -> str:
         with _lease_lock:
             _lease_live[job_id] = False
 
+    stop = threading.Event()
+
     def pulse() -> None:
-        while _lease_live.get(job_id, False):
-            time.sleep(HEARTBEAT_INTERVAL)
-            if not _lease_live.get(job_id, False):
-                break
-            try:
-                ok = _store().beat(job_id, owner)
-            except Exception as exc:
-                log.warning("任务 %s 续租出错：%s", job_id, exc)
-                continue
-            if not ok:
+        # 归属校验（generation check）：`_lease_live` 与 `LEASES` 都以 job_id 为键，
+        # 同一 job 重新开始执行时会换一个新 token 覆盖同一格。旧线程若只凭标志位
+        # 判断，就会在换代之后继续跑，失租时把**新的**那个标志位一起置 False ——
+        # 表现为「刚领到租约就被判失租」，任务直接写成 cancelled。
+        # 所以每轮先确认「这格 token 还是我铸的那个」，不是就安静退出。
+        try:
+            while _lease_live.get(job_id, False):
+                if stop.wait(HEARTBEAT_INTERVAL):
+                    break            # 被 lease_end / 换代 / 复位唤醒，立刻收工
+                if not _lease_live.get(job_id, False):
+                    break
                 with _lease_lock:
-                    _lease_live[job_id] = False
-                log.warning("任务 %s 的租约已被他人持有，停止续租", job_id)
-                break
+                    if LEASES.get(job_id) != owner:
+                        break        # 已被新一次执行取代，本线程退场
+                try:
+                    ok = _store().beat(job_id, owner)
+                except Exception as exc:
+                    log.warning("任务 %s 续租出错：%s", job_id, exc)
+                    continue
+                if not ok:
+                    with _lease_lock:
+                        # 只在自己仍持有这一格时才置失租，避免误杀后来者
+                        if LEASES.get(job_id) == owner:
+                            _lease_live[job_id] = False
+                    log.warning("任务 %s 的租约已被他人持有，停止续租", job_id)
+                    break
+        finally:
+            with _lease_lock:
+                if _lease_wake.get(job_id) is stop:
+                    _lease_wake.pop(job_id, None)
 
     with _lease_lock:
+        previous = _lease_wake.get(job_id)
+        _lease_wake[job_id] = stop
         _lease_live[job_id] = True
+    if previous is not None:
+        previous.set()               # 同一 job 上一次的心跳线程立刻退场
     threading.Thread(target=pulse, daemon=True, name=f"lease-{job_id}").start()
     return owner
 
@@ -546,7 +612,10 @@ def lease_end(job_id: str) -> None:
     """结束一次执行：停心跳、让出租约。"""
     with _lease_lock:
         _lease_live.pop(job_id, None)
+        stop = _lease_wake.pop(job_id, None)
         owner = LEASES.pop(job_id, None)
+    if stop is not None:
+        stop.set()                  # 唤醒心跳线程立刻退出，不用等满一个 interval
     if owner:
         try:
             _store().release(job_id, owner)
@@ -572,6 +641,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
     if not _store().beat(job_id, owner):
         log.warning("任务 %s 的租约已被接管，不再启动", job_id)
         return
+    job_event(job_id, "claimed", owner)
     # 真正开始执行：沿用领取时的 token 起心跳（同一字符串，否则首跳就打空）
     lease_begin(job_id, owner)
     key = workspace.key_of(code or job_id)
@@ -582,6 +652,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         xl = xunlei_client()
         async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
             job_update(job_id, stage="downloading", percent=0.0, speed=0)
+            job_event(job_id, "stage", "downloading 投给迅雷")
 
             async def on_progress(percent, speed, status):
                 if cancel_requested(job_id):
@@ -632,6 +703,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             done_code, done_size = folder, size
             require_lease(job_id, code)          # downloading→uploading 前
             job_update(job_id, stage="uploading", folder=folder, size=size, error="")
+            job_event(job_id, "resumed", f"整理已完成，直接从上传续跑：{folder}")
             link = _upload_loop(job_id, work, folder, size, clock, policy)
             _finish(job_id, work, folder, files, size, link, source, clock, policy)
             uploaded = True
@@ -659,6 +731,8 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
                             kind, wait, policy.attempts, exc)
                 job_update(job_id, stage="downloading", retries=policy.attempts,
                            error=f"{exc}｜{wait}s 后重试", percent=0.0, speed=0)
+                job_event(job_id, "retry",
+                          f"下载第 {policy.attempts} 次 · {wait}s 后重试 · {_first_line(exc)}")
                 if not retry.backoff_sleep(policy, cancel_check=lambda: cancel_requested(job_id),
                                            error=str(exc)):
                     raise Cancelled("已停止")
@@ -668,6 +742,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         require_lease(job_id, code)              # downloading→organizing 前
 
         job_update(job_id, stage="organizing")
+        job_event(job_id, "stage", "organizing 整理文件名与目录")
         phase = time.monotonic()
         # 整理在工作区做：下载原件保持不动，失败还能重来
         source_dir: Path = result.get("dir") or download_dir
@@ -700,10 +775,11 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         link = _upload_loop(job_id, work, folder, size, clock, policy)
         _finish(job_id, work, folder, files, size, link, source, clock, policy)
         uploaded = True
-    except Cancelled:
+    except Cancelled as exc:
         log.info("任务已停止：%s", job_id)
         # 主动停止是独立终态：用户自己停的，不该混进失败里（也不该计入失败率）
         job_update(job_id, stage="cancelled", error="已停止")
+        job_event(job_id, "cancelled", _first_line(str(exc)) or "已停止")
     except Exception as exc:
         log.exception("网页任务失败")
         if retry.classify(str(exc)) == retry.QUOTA:
@@ -712,9 +788,11 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             note = f"额度用尽，{time.strftime('%m-%d %H:%M', time.localtime(until))} 自动重试"
             _store().defer(job_id, until, f"{note}：{str(exc)[:150]}")
             job_update(job_id, stage="deferred", error=note)
+            _event_deferred(job_id, until, note, str(exc))
             notify.job_deferred(code or job_id, until, str(exc)[:150])
         else:
             job_update(job_id, stage="failed", error=str(exc)[:300])
+            job_event(job_id, "failed", _first_line(str(exc)))
             notify.job_failed(code or job_id, str(exc)[:300])
     finally:
         outcome = "ok" if uploaded else ("download_fail" if not clock["download"] else "upload_fail")
@@ -839,22 +917,49 @@ def admit(job_id: str) -> bool:
             JOBS.setdefault(job_id, {}).update(
                 {"stage": "downloading", "error": "", "queued_position": 0})
     source, code = item
-    if not _store().claim_owner(job_id, lease_owner(job_id)):
+    token = lease_owner(job_id)
+    if not _store().claim_owner(job_id, token):
         # 别的执行者已经持租（重启恢复与延期到期撞在一起）：交还队列等下一轮
+        job_event(job_id, "busy", "租约已被其他执行者持有，交还队列等下一轮")
         with _jobs_lock:
             JOBS.setdefault(job_id, {}).update({"stage": "queued"})
         with _waiting_lock:
             WAITING[job_id] = item
             _queued_at[job_id] = time.time()
         return False
-    threading.Thread(target=run_web_job, args=(job_id, source, code), daemon=True).start()
+    job_event(job_id, "claimed", token)
+
+    def work() -> None:
+        _remember_thread(job_id)
+        try:
+            run_web_job(job_id, source, code)
+        except Exception:
+            # run_web_job 自己处理业务异常；走到这里的是它没兜住的那类（例如
+            # 线程收尾阶段库已换、状态读不出来）。绝不能让异常逃出线程 ——
+            # 那样只剩一条 PytestUnhandledThreadExceptionWarning，线上则是
+            # 线程无声无息地死掉，任务停在中间状态却没人知道。
+            log.exception("任务 %s 的后台线程异常退出", job_id)
+            try:
+                job_update(job_id, stage="failed", error="后台线程异常退出，详见服务日志")
+                job_event(job_id, "failed", "后台线程异常退出")
+            except Exception:
+                log.exception("任务 %s 的失败状态也没能落库", job_id)
+        finally:
+            with _threads_lock:
+                _threads.pop(job_id, None)
+
+    threading.Thread(target=work, daemon=True, name=f"job-{job_id}").start()
     return True
 
 def pump_queue() -> int:
     """把队列里放得下的任务依次放行，返回放行数量。
 
     按提交顺序处理：先来的先拿空间，避免大任务一直插队把小任务饿死。
+
+    暂停或待对账时一律不放行：恢复后的库是旧快照，直接开工会按旧状态重下。
     """
+    if paused() or reconcile_pending():
+        return 0
     released = 0
     with _waiting_lock:
         order = list(WAITING.keys())
@@ -912,6 +1017,7 @@ def requeue(job_id: str, source: str, code: str, stage: str = "queued") -> bool:
     with _waiting_lock:
         WAITING[job_id] = (source, code)
         _queued_at[job_id] = time.time()
+    job_event(job_id, "queued", f"重新排队（{stage}）" + (f" · {code}" if code else ""))
     if not admit(job_id):
         _refresh_queue_positions()
     return True
@@ -931,6 +1037,7 @@ def stop_job(job_id: str) -> bool:
     _store().update(job_id, stage="cancelled", error="已停止")
     with _jobs_lock:
         JOBS.setdefault(job_id, {"id": job_id}).update({"stage": "cancelled", "error": "已停止"})
+    job_event(job_id, "cancelled", "排队中被用户停止")
     log.info("排队中的任务已停止：%s", job_id)
     return True
 
@@ -939,6 +1046,9 @@ def _defer_loop() -> None:
     """定时把到点的延期任务重新入队。"""
     while True:
         try:
+            if paused() or reconcile_pending():
+                time.sleep(60)
+                continue
             for job in _store().due():
                 # 原子领取：谁先把它从 deferred 转成 queued，谁负责入队
                 try:
@@ -955,6 +1065,10 @@ def _defer_loop() -> None:
 
 def _resume_loop() -> None:
     """重启后把未完成任务重新入队（保留原 job_id 与迅雷任务 id）。"""
+    if reconcile_pending():
+        # 恢复后先对账：库里可能是备份里的旧状态，未完成任务要人工确认后再放行
+        log.warning("当前库处于待对账状态（reconcile_required），跳过重启恢复")
+        return
     try:
         todo = recover_jobs()
     except Exception as exc:
@@ -963,6 +1077,8 @@ def _resume_loop() -> None:
     for job in todo:
         try:
             # 整理/上传中断的也重跑整条流程：下载会因 infohash 复用直接命中
+            job_event(job["id"], "resumed",
+                      f"进程重启，重新入队（原阶段 {job.get('stage') or '未知'}）")
             requeue(job["id"], job["source"], job["code"])
         except Exception as exc:
             log.warning("恢复任务 %s 入队失败：%s", job["id"], exc)
@@ -997,6 +1113,8 @@ def _queue_loop() -> None:
                 for job_id in expired:
                     job_update(job_id, stage="failed",
                                error=f"排队超过 {int(DISK_QUEUE_TIMEOUT)}s 仍未等到磁盘空间")
+                    job_event(job_id, "failed",
+                              f"排队超过 {int(DISK_QUEUE_TIMEOUT)}s 仍未等到磁盘空间")
         except Exception:
             log.exception("磁盘空间调度出错")
         time.sleep(DISK_CHECK_INTERVAL)
@@ -1017,6 +1135,7 @@ def start_job(source: str, code: str, info: dict | None = None) -> str:
     job_id = _new_job_id()
     if not _store().start(job_id, code, source[:300], owner="web"):
         return ""
+    # 入队事件由 store.start 与登记一起落库（时间戳一致），这里不再重复记
     job_update(job_id, stage="queued", percent=0.0, speed=0)
     btih = xunlei.info_hash_of(source)
     if btih:
@@ -1491,6 +1610,10 @@ def diskspace_room_ok() -> bool:
 def _subs_loop() -> None:
     while True:
         try:
+            if paused() or reconcile_pending():
+                # 恢复后待对账：不自动提交新任务，免得旧状态与真实下载对不上
+                time.sleep(SUBS_INTERVAL)
+                continue
             res = run_subscriptions()
             n = sum(len(r.get("started") or []) for r in res.get("results") or [])
             if n:
@@ -2297,6 +2420,21 @@ class Handler(BaseHTTPRequestHandler):
             p = self._payload()
             self._json(restore_apply(p.get("source") or "", bool(p.get("confirm"))))
             return
+        if path == "/api/restore/confirm":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            p = self._payload()
+            self._json(restore_confirm(bool(p.get("confirm")), bool(p.get("force"))))
+            return
+        if path == "/api/restore/status":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            self._json(restore_status())
+            return
         if path == "/api/digest":
             if not self._authorized():
                 self._drain()
@@ -2312,7 +2450,7 @@ class Handler(BaseHTTPRequestHandler):
             p = self._payload()
             code = p.get("code") or ""
             self._json(verify_archive(code, bool(p.get("confirm"))) if code
-                       else verify_all(int(p.get("limit") or 50)))
+                       else verify_all(int(p.get("limit") or 50), int(p.get("offset") or 0)))
             return
         if path == "/api/archive/dups":
             if not self._authorized():
@@ -2343,7 +2481,8 @@ class Handler(BaseHTTPRequestHandler):
             p = self._payload()
             self._json(scrape_sync(p.get("code") or "", p.get("fields") or None,
                                    p.get("lock") or None, bool(p.get("resync")),
-                                   bool(p.get("confirm"))))
+                                   bool(p.get("confirm")), p.get("unlock") or None,
+                                   p.get("only") or None))
             return
         if path == "/api/backlog/retry":
             if not self._authorized():
@@ -2605,24 +2744,35 @@ def scrape_preview(code: str) -> dict:
 
 
 def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = None,
-                resync: bool = False, confirm: bool = False) -> dict:
+                resync: bool = False, confirm: bool = False,
+                unlock: list[str] | None = None, only: list[str] | None = None) -> dict:
     """补刮 / 手工纠正 / 同步附件到 Drive。
 
     · fields   手工改的字段，会被自动锁定（改过就别让自动刮削再覆盖）
-    · lock     要锁定或解锁的字段（lock=["title"]）
+    · lock     要锁定的字段（lock=["title"]）
+    · unlock   要解锁的字段（unlock=["title"]），只认 LOCKABLE 里的名字
     · resync   重新刮一次，只补缺失、尊重锁定
     · confirm  要真去动 Drive 才需要
+    · only     只重推名单里的附件（单文件重试），省略就是全部重推
     """
     code = codes.canonical(code) or (code or "").strip().upper()
     if not code:
         return {"ok": False, "error": "缺少番号"}
+    lock = [k for k in (lock or ()) if k in metadata.LOCKABLE]
+    unlock = [k for k in (unlock or ()) if k in metadata.LOCKABLE]
+    # 同一字段既锁又解说不清要什么结果，与其静默选一个，不如让调用方写清楚
+    both = sorted(set(lock) & set(unlock))
+    if both:
+        return {"ok": False, "code": code, "error": "同一字段不能同时锁定和解锁",
+                "fields": both}
     state = core.load_state(STATE)
     record = dict(state.get(code) or {})
     if not record:
         return {"ok": False, "error": f"{code} 没有归档记录"}
     old = dict(record.get("meta") or {})
     locks = set(record.get("locked") or [])
-    locks |= set(lock or ())
+    locks |= set(lock)
+    locks -= set(unlock)
     merged = dict(old)
     if resync and metatube.configured():
         try:
@@ -2643,19 +2793,27 @@ def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = 
     core.update_state(STATE, {code: record})
     out = {"ok": True, "code": code, "changed": changed, "locked": sorted(locks),
            "pending": record["scrape_pending"]}
+    if unlock:
+        out["unlocked"] = sorted(set(unlock))
     if not confirm:
         out["hint"] = "只更新了站内记录；要同步到 Drive 需 confirm=true"
         return out
-    out.update(sync_attachments(code, record))
+    out.update(sync_attachments(code, record, only=only))
     return out
 
 
-def sync_attachments(code: str, record: dict) -> dict:
+def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> dict:
     """只把附件推到 Drive，不重传视频。
 
     在一个临时目录里重新生成附件，再用 rclone 逐文件 copyto —— 视频已经在云端，
     重新整目录 copy 会把它当成新文件再传一遍。
+
+    only 是「只重推这几个附件」的白名单（失败重试用）：只认固定的附件文件名，
+    别的名字一律忽略，免得把任意名字拼进远端路径。只给了非法名字就一个都不推 ——
+    不能因为筛选后为空就退化成「全部重推」，那等于把用户点名之外的附件也动了。
     """
+    named = only is not None and len(only) > 0
+    wanted = {str(n) for n in (only or ()) if str(n) in ATTACHMENT_NAMES}
     work = Path(tempfile.mkdtemp(prefix="xd-attach-"))
     try:
         rec = (record or {}).get("meta") or {}
@@ -2676,13 +2834,19 @@ def sync_attachments(code: str, record: dict) -> dict:
         out = metadata.write_sidecar(work, rec, [], code=code, locks=locks,
                                      want_nfo=NFO_ON, keep=kept)
         target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
-        pushed, failed = [], []
+        pushed, failed, skipped = [], [], []
         for name in out["written"]:
+            if named and name not in wanted:
+                skipped.append(name)
+                continue
             rc, _, err = rclone("copyto", str(work / name), f"{target}/{name}",
                                 timeout=300.0)
             (pushed if rc == 0 else failed).append(
                 name if rc == 0 else {"name": name, "error": err.strip()[:200]})
-        return {"synced": pushed, "sync_failed": failed}
+        res = {"synced": pushed, "sync_failed": failed}
+        if named:
+            res["skipped"] = skipped
+        return res
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -2753,16 +2917,27 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
     return out
 
 
-def verify_all(limit: int = 50) -> dict:
-    """批量核对：只看状态，不逐条拉远端详情。"""
+def verify_all(limit: int = 50, offset: int = 0) -> dict:
+    """批量核对：只看状态，不逐条拉远端详情。
+
+    分页：一共 total 条，本次只看 [offset, offset+limit)。next_offset 为 None
+    表示已经到末尾 —— 前端据此翻页，不靠自己猜有没有下一批。
+    summary 只统计本次这一页，另外给 scanned 说清查了几条。
+    """
     state = core.load_state(STATE)
-    rows = []
-    for code in list(state)[:max(1, int(limit))]:
-        rows.append(verify_archive(code))
+    keys = list(state)
+    total = len(keys)
+    start = max(0, int(offset))
+    size = max(1, int(limit))
+    page = keys[start:start + size]
+    rows = [verify_archive(code) for code in page]
     summary = {}
     for row in rows:
         summary[row.get("state", "检查失败")] = summary.get(row.get("state", "检查失败"), 0) + 1
-    return {"ok": True, "summary": summary, "items": rows}
+    end = start + len(page)
+    return {"ok": True, "summary": summary, "items": rows, "offset": start,
+            "limit": size, "total": total, "scanned": len(rows),
+            "next_offset": end if end < total else None}
 
 
 # ─────────────────────────────────────────── 重复归档分层检查
@@ -2859,47 +3034,327 @@ def backup_now(target: str = "") -> dict:
             "stats": _store().stats()}
 
 
-def restore_check(source: str) -> dict:
-    """恢复前检查：读一下备份库，报告里面有什么、版本对不对。
+# ─────────────────────────────────────────── 恢复：只读检查 → 拒绝活任务 → 覆盖 → 待对账
+#
+# 纪律（与备份一致）：
+#   · 检查只读：用 mode=ro 打开备份，不迁移、不写一个字节；
+#   · 有活任务拒绝恢复：不暂停后台循环、不清内存就直接覆盖，旧 worker 会往新库写；
+#   · 恢复后**不自动开工**：清空内存状态并写下 reconcile_required，由人确认对账后再放行；
+#   · 不删任何用户数据：当前库先备份到独立路径，路径与信息都回报给用户。
 
-    只读：真正恢复要另一步 confirm，且**先对账再恢复调度** —— 直接拿旧库覆盖
-    会把正在跑的任务状态抹掉，页面上的进度和真实下载就对不上了。
+# 恢复后「待对账」标记放 state 表：进程重启也还在，不会一重启就自己跑起来
+RECONCILE_KEY = "reconcile_required"
+# 内存里「暂停调度」的开关：为 True 时 pump_queue / _resume_loop / _subs_loop 都不干活
+_PAUSED = threading.Event()
+# 在途执行线程（job_id → Thread）：恢复前必须确认它们已经结束
+_threads: dict[str, threading.Thread] = {}
+_threads_lock = threading.Lock()
+# 恢复流程互斥：两个恢复请求不能同时动库
+_restore_lock = threading.Lock()
+
+
+def _remember_thread(job_id: str) -> None:
+    """记下这个任务刚起的执行线程，恢复前据此判断「有没有在途工作」。"""
+    with _threads_lock:
+        _threads[job_id] = threading.current_thread()
+
+
+def running_threads() -> list[str]:
+    """还没结束的执行线程（已退出的顺手清掉，不让表一直涨）。"""
+    with _threads_lock:
+        dead = [k for k, t in _threads.items() if not t.is_alive()]
+        for k in dead:
+            _threads.pop(k, None)
+        return sorted(_threads)
+
+
+def reconcile_pending() -> bool:
+    """当前库是否处于「恢复后待对账」状态。库读不出来就按不拦（别让面板整个停摆）。"""
+    try:
+        return bool(_store().state_get(RECONCILE_KEY).get("required"))
+    except Exception as exc:
+        log.warning("读取对账标记失败：%s", exc)
+        return False
+
+
+def paused() -> bool:
+    return _PAUSED.is_set()
+
+
+def set_paused(value: bool) -> None:
+    if value:
+        _PAUSED.set()
+    else:
+        _PAUSED.clear()
+
+
+def _ro_stats(conn) -> dict:
+    """只读地数一下备份库里有什么。表缺失就记 0，不让检查整个失败。"""
+    out = {"jobs": 0, "active": 0, "has_subs": False, "has_backlog": False, "has_events": False}
+
+    def has(table: str) -> bool:
+        return bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone())
+
+    if has("jobs"):
+        out["jobs"] = int(conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+        marks = ",".join("?" * len(store.ACTIVE))
+        out["active"] = int(conn.execute(
+            f"SELECT COUNT(*) FROM jobs WHERE stage IN ({marks})", store.ACTIVE).fetchone()[0])
+    if has("state"):
+        out["has_subs"] = bool(conn.execute(
+            "SELECT 1 FROM state WHERE key='subs'").fetchone())
+        out["has_backlog"] = bool(conn.execute(
+            "SELECT 1 FROM state WHERE key='backlog'").fetchone())
+    out["has_events"] = has("job_events")
+    return out
+
+
+def _ro_active_jobs(conn) -> list[dict]:
+    """备份里未完成的任务（只读）。stage 全空/未知时只返回表里能确认的字段。"""
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                            " AND name='jobs'").fetchone():
+            return []
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        want = [c for c in ("id", "code", "stage") if c in cols]
+        if not want:
+            return []
+        marks = ",".join("?" * len(store.ACTIVE))
+        rows = conn.execute(
+            f"SELECT {','.join(want)} FROM jobs WHERE stage IN ({marks})"
+            " ORDER BY created_at" if "created_at" in cols else
+            f"SELECT {','.join(want)} FROM jobs WHERE stage IN ({marks})",
+            store.ACTIVE).fetchall()
+        return [{c: row[i] for i, c in enumerate(want)} for row in rows]
+    except Exception as exc:            # 结构诡异的老库：报不出清单也不该让检查失败
+        log.warning("读取备份库未完成任务失败：%s", exc)
+        return []
+
+
+def _open_readonly(path: str) -> sqlite3.Connection:
+    """以**绝对只读**方式打开一个库文件，不写一个字节。
+
+    只写 mode=ro 还不够：sqlite 会为目标文件建空的 -wal/-shm（mtime 也变），
+    所以再加上 immutable=1 —— 它告诉 sqlite「这个文件不会被别人改」，
+    于是连共享内存都不建。我们的备份是 backup API 写出来的、关闭时已 checkpoint，
+    不存在「数据还压在 WAL 里」的情况，immutable 读到的就是完整内容。
+    """
+    return sqlite3.connect(f"file:{quote(path)}?mode=ro&immutable=1", uri=True,
+                           timeout=10.0)
+
+
+def _fmt_at(ts: float) -> str:
+    return time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "未知"
+
+
+def restore_check(source: str) -> dict:
+    """恢复前检查（**严格只读**）：报告备份里有什么、版本对不对、能不能直接恢复。
+
+    以前这里用 store.Store(source) 打开备份 —— 那个构造函数会建表并迁移，
+    一次「检查」就把备份文件的 user_version 从 2 改成 4，哈希与 mtime 全变。
+    现在用 mode=ro 打开：不建表、不迁移、不写任何字节，检查前后文件逐字节一致。
+
+    版本不匹配时只**标注**（needs_migration），不擅自升级备份库 —— 要不要升、
+    升到哪版由恢复动作在真正覆盖后处理。
     """
     if not source or not os.path.isfile(source):
         return {"ok": False, "error": "备份文件不存在"}
     try:
-        other = store.Store(source)
-        stats = other.stats()
-        active = other.unfinished()
-    except Exception as exc:
+        conn = _open_readonly(source)
+    except sqlite3.Error as exc:
         return {"ok": False, "error": f"备份库打不开：{str(exc)[:150]}"}
-    cur = _store().stats()
-    return {"ok": True, "source": source, "backup": stats, "current": cur,
-            "active_in_backup": [{"id": j["id"], "code": j["code"], "stage": j["stage"]}
-                                 for j in active],
-            "hint": "恢复会覆盖当前任务库；恢复后请先跑一次对账（任务列表与迅雷面板对照）再继续调度"}
+    try:
+        try:
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            tables = sorted(r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall())
+            stats = _ro_stats(conn)
+            active = _ro_active_jobs(conn)
+        except sqlite3.DatabaseError as exc:
+            return {"ok": False, "error": f"备份库打不开：{str(exc)[:150]}"}
+    finally:
+        conn.close()
+    stats["schema"] = version
+    current = _store().stats()
+    blocked = _restore_blockers()
+    out = {
+        "ok": True, "source": source, "backup": stats, "current": current,
+        "schema_backup": version, "schema_current": current.get("schema"),
+        "needs_migration": version != current.get("schema"),
+        "tables": tables,
+        "active_in_backup": active,
+        "can_restore": not blocked,
+        "blockers": blocked,
+        "hint": ("恢复会覆盖当前任务库；恢复后进入待对账状态，确认对账前不会自动开始调度"
+                 if not blocked else
+                 "恢复会覆盖当前任务库；恢复后进入待对账状态，确认对账前不会自动开始调度"
+                 "（当前还有活跃任务，需先排空或进入维护模式才能恢复）"),
+    }
+    if version <= 0 or "jobs" not in tables:
+        out.update({"ok": False, "error": "这个文件不像任务库（没有 jobs 表）"})
+    return out
+
+
+def _restore_blockers() -> list[str]:
+    """恢复的前置条件：任何一项不满足都不能动库。"""
+    out = []
+    try:
+        active = _store().unfinished_any()
+    except Exception as exc:
+        out.append(f"读不出任务表（{str(exc)[:80]}），无法确认有没有活跃任务")
+        active = []
+    if active:
+        marks = "、".join(f"{j.get('code') or j.get('id')}（{j.get('stage')}）"
+                         for j in active[:5])
+        out.append(f"任务表里还有 {len(active)} 个未完成任务：{marks}")
+    with _waiting_lock:
+        waiting = list(WAITING.keys())
+    if waiting:
+        out.append(f"内存队列里还有 {len(waiting)} 个排队任务")
+    live = running_threads()
+    if live:
+        out.append(f"还有 {len(live)} 个任务线程在跑：{'、'.join(live[:5])}")
+    return out
+
+
+def _safety_path(source: str = "") -> str:
+    """当前库的备份路径：**独立于 JOBS_DB 与备份源**，绝不写回同一个文件。"""
+    db = os.path.abspath(jobs_db_path())
+    folder = os.path.dirname(db) or "."
+    base = Path(folder) / f"before-restore-{time.strftime('%Y%m%d-%H%M%S')}.db"
+    target = str(base)
+    n = 1
+    taken = {db, os.path.abspath(source)} if source else {db}
+    while os.path.exists(target) or os.path.abspath(target) in taken:
+        n += 1
+        target = f"{base.with_suffix('')}-{n}.db"
+    return target
+
+
+def jobs_db_path() -> str:
+    """当前任务库路径（与 _store() 用同一个默认值）。"""
+    return os.getenv("JOBS_DB", str(Path(STATE).parent / "jobs.db"))
+
+
+def _clear_memory_state() -> None:
+    """覆盖数据库后清空所有内存镜像：旧队列/取消表/租约再往新库写就全是脏数据。"""
+    with _jobs_lock:
+        for event in CANCEL.values():
+            event.set()                  # 让在途下载尽快自停，再丢掉引用
+        CANCEL.clear()
+        JOBS.clear()
+    with _waiting_lock:
+        WAITING.clear()
+        _queued_at.clear()
+    with _lease_lock:
+        LEASES.clear()
+        _lease_live.clear()
+    with _threads_lock:
+        _threads.clear()
 
 
 def restore_apply(source: str, confirm: bool = False) -> dict:
-    """用备份覆盖当前任务库。必须确认，且先留一份当前快照。"""
+    """用备份覆盖当前任务库，然后**停下来等对账**。
+
+    顺序（任一步失败都不动当前库）：
+      1. 必须 confirm；
+      2. 只读检查备份，确认是任务库；
+      3. 拒绝：有活跃任务 / 内存队列非空 / 有在途执行线程 —— 此时什么都不写；
+      4. 暂停调度 → 当前库备份到**独立路径** → 用备份覆盖；
+      5. 清空内存状态，写 reconcile_required，保持暂停，不自动开工。
+    """
     if not confirm:
         return {"ok": False, "error": "需要 confirm=true"}
-    pre = restore_check(source)
-    if not pre.get("ok"):
-        return pre
-    safety = backup_now()
-    if not safety.get("ok"):
-        return {"ok": False, "error": f"恢复前无法备份当前库：{safety.get('error')}"}
-    global STORE
+    with _restore_lock:
+        pre = restore_check(source)
+        if not pre.get("ok"):
+            return pre
+        blocked = _restore_blockers()
+        if blocked:
+            # 拒绝时一个字节都不写：不建半成品备份、不动当前库
+            return {"ok": False, "refused": True, "error": "；".join(blocked),
+                    "blockers": blocked,
+                    "hint": "请先排空（等活跃任务结束）或进入维护模式，再执行恢复",
+                    "current": pre.get("current")}
+
+        was_paused = paused()
+        set_paused(True)                     # 先停调度，避免备份与覆盖之间又有任务进来
+        safety = _safety_path(source)
+        try:
+            _store().backup(safety)
+        except Exception as exc:
+            set_paused(was_paused)
+            return {"ok": False, "error": f"恢复前无法备份当前库：{str(exc)[:200]}"}
+
+        global STORE
+        try:
+            src = _open_readonly(source)
+            try:
+                with sqlite3.connect(jobs_db_path()) as dst:
+                    src.backup(dst)          # 用 sqlite 的 backup API：WAL 下拷文件会缺页
+            finally:
+                src.close()
+        except Exception as exc:
+            STORE = None                    # 覆盖了一半也不能继续用旧连接
+            set_paused(True)                # 停在暂停态，等人确认
+            return {"ok": False, "error": f"恢复失败：{str(exc)[:200]}", "safety": safety}
+
+        _clear_memory_state()
+        STORE = None                        # 丢掉缓存的连接，下次按新库重新打开
+        marked = False
+        try:
+            _store().state_put({RECONCILE_KEY: {
+                "required": True, "source": source, "safety": safety,
+                "schema_backup": pre.get("schema_backup"),
+                "at": time.strftime("%Y-%m-%d %H:%M:%S")}})
+            marked = True
+        except Exception as exc:
+            log.warning("写入对账标记失败：%s", exc)
+        log.warning("已用 %s 覆盖任务库，进入待对账；确认前不自动调度", source)
+        return {"ok": True, "restored_from": source, "safety": safety,
+                "stats": _store().stats(),
+                "reconcile_required": marked, "paused": paused(),
+                "needs_migration": pre.get("needs_migration"),
+                "hint": "已暂停调度。先对账（任务列表与迅雷面板对照），"
+                        "确认后调用 /api/restore/confirm 才会继续调度"}
+
+
+def restore_confirm(confirm: bool = False, force: bool = False) -> dict:
+    """对账完成：清掉 reconcile_required 并放开调度。
+
+    默认要求库里没有未完成任务（恢复出来的「未完成」多半是旧状态，直接放行会重复下载）；
+    确实要带着它们继续，就显式 force=true，逐个由人确认。
+    """
+    pending = _store()
+    marks = pending.state_get(RECONCILE_KEY)
+    left = pending.unfinished_any()
+    if not confirm:
+        return {"ok": False, "reconcile_required": bool(marks.get("required")),
+                "unfinished": [{"id": j.get("id"), "code": j.get("code"),
+                                "stage": j.get("stage")} for j in left],
+                "error": "需要 confirm=true"}
+    if left and not force:
+        return {"ok": False, "reconcile_required": bool(marks.get("required")),
+                "unfinished": [{"id": j.get("id"), "code": j.get("code"),
+                                "stage": j.get("stage")} for j in left],
+                "error": f"库里还有 {len(left)} 个未完成任务，先处理掉或确认无碍后 force=true"}
     try:
-        other = store.Store(source)
-        other.backup(str(os.getenv("JOBS_DB", "/data/jobs.db")))
+        pending.state_put({RECONCILE_KEY: {}})
     except Exception as exc:
-        return {"ok": False, "error": f"恢复失败：{str(exc)[:200]}", "safety": safety["path"]}
-    STORE = None                          # 丢掉缓存的连接，下次按新库重新打开
-    return {"ok": True, "restored_from": source, "safety": safety["path"],
-            "stats": _store().stats(),
-            "hint": "先对账：对照任务列表与迅雷面板，再让调度继续跑"}
+        return {"ok": False, "error": f"清除对账标记失败：{str(exc)[:150]}"}
+    set_paused(False)
+    log.info("对账完成，恢复调度")
+    return {"ok": True, "reconcile_required": False, "paused": paused(),
+            "unfinished": len(left),
+            "hint": "调度已放开；未完成任务会在下一轮调度时重新入队"}
+
+
+def restore_status() -> dict:
+    """恢复面板用：当前是否待对账、是否暂停、库版本。"""
+    return {"ok": True, "reconcile_required": reconcile_pending(), "paused": paused(),
+            "blockers": _restore_blockers(), "stats": _store().stats(),
+            "mark": _store().state_get(RECONCILE_KEY)}
 
 
 def main() -> None:

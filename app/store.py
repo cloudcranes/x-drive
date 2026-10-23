@@ -29,7 +29,7 @@ RUNNING = ("queued", "downloading", "organizing", "uploading")
 # 迁移版本：存在 user_version 里。每次改表结构/索引都必须 +1 并补一段迁移，
 # 因为 CREATE UNIQUE INDEX IF NOT EXISTS 对「已存在的同名旧索引」完全无效 ——
 # 旧库升级后 uniquely 条件不会更新，表现就是「测试全绿、线上照旧重复下载」。
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # 执行者心跳超过这么久没更新，就认为那个进程已经不在了，允许别人接手
 STALE_BEAT = 120.0
@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS state (
     value TEXT NOT NULL DEFAULT '{}',
     updated_at REAL NOT NULL DEFAULT 0
 );
+-- 任务事件：每次入队/领取/重试/延期/阶段切换/终态各记一条，前端时间线按它画。
+-- 只追加不改写（对账与排查都要看原始顺序）；写入失败绝不影响任务本身。
+CREATE TABLE IF NOT EXISTS job_events (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    at     REAL NOT NULL,
+    kind   TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS job_events_job ON job_events(job_id);
 """
 
 FIELDS = ("code", "source", "stage", "percent", "speed", "total", "downloaded",
@@ -79,6 +89,10 @@ class Store:
         self.path = path
         self._lock = threading.Lock()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        # 先建表（老库上是空操作），再按 user_version 迁移。
+        # 判断「要不要补」必须看版本号，不能只看表结构：executescript 会先把新表
+        # CREATE 出来，若拿结构当唯一依据，老库就会被判成「已经是最新的」，
+        # 版本号永远停在旧值（线上表现：升级跑了，版本还是 4）。
         with self._conn() as conn:
             conn.executescript(SCHEMA)
         self.migrate()
@@ -89,17 +103,30 @@ class Store:
 
         整段在一个显式事务里：中途撞唯一索引就整体回滚，库仍是旧版本（下次启动
         还能再试），而不是「列加了一半、版本号已前移、索引没建」的半吊子状态。
+
+        按版本**逐级**推进：v0/v1/v2/v3/v4 都要能一路升到 v5。版本号只是线索、
+        不是事实 —— 线上出现过「user_version 写着 4、实际缺 state 表」的库
+        （迁移半途失败或手工拷贝所致），所以每级迁移都先用 PRAGMA table_info
+        核对实际结构，缺什么补什么，重复执行安全。
         """
-        with self._lock, self._conn() as conn:
+        with self._migrate_conn() as conn:
             version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            if version >= SCHEMA_VERSION:
+            steps = [(2, self._migrate_v2), (3, self._migrate_v3),
+                     (4, self._migrate_v4), (5, self._migrate_v5)]
+            if version >= SCHEMA_VERSION and self._structure_ok(conn):
                 self._ensure_index(conn)
                 return version
+            if version >= SCHEMA_VERSION:
+                # 版本号说「已是最新」但结构缺件（迁移半途失败 / 手工拷贝 / 从备份
+                # 覆盖）：再逐级跑一遍，每步自我校验、幂等。
+                log.warning("任务表版本号已是 v%d 但结构缺件，按实际结构补齐", version)
+            # 版本号只决定「要不要跑」，不决定「跑到哪」：升到当前版本就把
+            # v2→v5 全部走一遍。每步都先查结构再动手，已在的列/表不会重复建。
             log.info("任务表升级：v%d → v%d", version, SCHEMA_VERSION)
             conn.execute("BEGIN IMMEDIATE")
             try:
-                if version < 2:
-                    self._migrate_v2(conn)
+                for _need, fn in steps:
+                    fn(conn)
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 conn.commit()
             except Exception:
@@ -107,6 +134,34 @@ class Store:
                 log.exception("任务表升级失败，已回滚到 v%d", version)
                 raise
         return version
+
+    @contextmanager
+    def _migrate_conn(self):
+        """迁移专用连接：**不在退出时**再 commit 一次。
+
+        普通 _conn() 在退出时无条件 commit —— 迁移回滚后那次 commit 又把
+        「列改了一半」的半截状态提交了，回滚等于白做。这里只在成功路径上
+        commit（由 migrate 自己调），异常路径保持回滚后的样子。
+        """
+        conn = sqlite3.connect(self.path, timeout=15.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA busy_timeout=15000")
+            yield conn
+        finally:
+            conn.close()
+
+    def _structure_ok(self, conn) -> bool:
+        """版本号说「已是最新」时，再按实际结构核对一遍。
+
+        只信 user_version 会漏掉「写着 4 但缺 state 表 / 缺 exec_* 列」的库：
+        迁移半途失败、手工拷贝、从备份覆盖都可能造出这种库。
+        """
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        return ({"resume_from", "exec_owner", "exec_beat"} <= cols
+                and {"state", "job_events"} <= tables)
 
     def _migrate_v2(self, conn) -> None:
         """v2：补 resume_from 列、唯一索引覆盖 deferred、旧延期记录改判为 deferred。"""
@@ -147,6 +202,20 @@ class Store:
             "CREATE TABLE IF NOT EXISTS state ("
             " key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '{}',"
             " updated_at REAL NOT NULL DEFAULT 0)")
+
+    def _migrate_v5(self, conn) -> None:
+        """v5：建 job_events 表与索引（任务时间线的数据源）。
+
+        被误标成 v5 但缺表的库同样走这里：CREATE ... IF NOT EXISTS 幂等。
+        """
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS job_events ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " job_id TEXT NOT NULL,"
+            " at REAL NOT NULL,"
+            " kind TEXT NOT NULL,"
+            " detail TEXT NOT NULL DEFAULT '')")
+        conn.execute("CREATE INDEX IF NOT EXISTS job_events_job ON job_events(job_id)")
 
     def _ensure_index(self, conn, force: bool = False) -> None:
         """建/重建活跃番号唯一索引。
@@ -218,6 +287,22 @@ class Store:
                     "INSERT INTO jobs (id, code, source, stage, owner, created_at, updated_at)"
                     " VALUES (?,?,?,'queued',?,?,?)",
                     (job_id, code, source, owner, now, now))
+                # 入队事件与登记同一次提交：任务存在就一定有第一条时间线节点。
+                # 事件写失败只回滚事件（用 SAVEPOINT），不影响任务登记。
+                try:
+                    conn.execute("SAVEPOINT ev")
+                    conn.execute(
+                        "INSERT INTO job_events (job_id, at, kind, detail) VALUES (?,?,?,?)",
+                        (job_id, now, "queued",
+                         " ".join(x for x in (owner and f"发起方 {owner}", code) if x)))
+                    conn.execute("RELEASE ev")
+                except Exception as exc:
+                    log.warning("记录任务 %s 的入队事件失败：%s", job_id, exc)
+                    try:
+                        conn.execute("ROLLBACK TO ev")
+                        conn.execute("RELEASE ev")
+                    except sqlite3.Error:
+                        pass
                 return True
             except sqlite3.IntegrityError:
                 log.info("番号 %s 已存在未结束任务，跳过重复提交", code)
@@ -237,6 +322,43 @@ class Store:
     def finish(self, job_id: str, stage: str, error: str = "") -> None:
         self.update(job_id, stage=stage, error=error[:300])
 
+    # ------------------------------------------------------------ 事件（时间线）
+    # 事件种类：queued 入队 / claimed 领取 / retry 重试 / deferred 延期 /
+    #           resumed 重启恢复 / stage 阶段切换 / done 完成 / failed 失败 /
+    #           cancelled 取消。新增种类只追加，前端未知种类按原样显示。
+    def event(self, job_id: str, kind: str, detail: str = "") -> bool:
+        """记一条任务事件。**永不抛异常**：时间线是旁路观测，不能影响任务本身。"""
+        if not job_id or not kind:
+            return False
+        try:
+            with self._lock, self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO job_events (job_id, at, kind, detail) VALUES (?,?,?,?)",
+                    (str(job_id), time.time(), str(kind), str(detail or "")[:500]))
+            return True
+        except Exception as exc:      # 库锁、表缺失、磁盘满……都只记日志
+            log.warning("记录任务 %s 的事件 %s 失败：%s", job_id, kind, exc)
+            return False
+
+    def events(self, job_id: str, limit: int = 50) -> list[dict]:
+        """按时间升序取最近的 limit 条事件（取「最近 N 条」再转成正序）。
+
+        读失败按空表返回：老任务没有事件、库暂时不可读时，时间线退回旧渲染即可。
+        """
+        if not job_id:
+            return []
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT at, kind, detail FROM job_events WHERE job_id=?"
+                    " ORDER BY at DESC, id DESC LIMIT ?",
+                    (job_id, max(1, int(limit)))).fetchall()
+            return [{"at": float(r["at"]), "kind": r["kind"], "detail": r["detail"]}
+                    for r in reversed(rows)]
+        except Exception as exc:
+            log.warning("读取任务 %s 的事件失败：%s", job_id, exc)
+            return []
+
     # ------------------------------------------------------------ 读
     def get(self, job_id: str) -> dict:
         with self._conn() as conn:
@@ -255,6 +377,19 @@ class Store:
             rows = conn.execute(
                 f"SELECT * FROM jobs WHERE stage IN ({marks}) ORDER BY created_at",
                 RUNNING).fetchall()
+        return [self._row(r) for r in rows]
+
+    def unfinished_any(self) -> list[dict]:
+        """所有「还要跑」的任务：含 deferred（它没跑完，只是等额度）。
+
+        恢复前判断「有没有活任务」要用这一份：只看 RUNNING 会把延期任务当成
+        已结束，覆盖库之后就再也没人唤醒它们了。
+        """
+        marks = ",".join("?" * len(ACTIVE))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM jobs WHERE stage IN ({marks}) ORDER BY created_at",
+                ACTIVE).fetchall()
         return [self._row(r) for r in rows]
 
     def active_codes(self) -> set[str]:
@@ -290,6 +425,7 @@ class Store:
         extra = {k: v for k, v in (job.get("extra") or {}).items() if k != "defer_until"}
         self.update(job_id, stage="cancelled", extra=extra,
                     error="已取消延期")
+        self.event(job_id, "cancelled", "已取消延期")
         return True
 
     def due(self, now: float | None = None) -> list[dict]:
@@ -406,6 +542,11 @@ class Store:
         """删掉很久以前已结束的记录，别让表无限增长。"""
         cutoff = time.time() - max(1.0, days) * 86400
         with self._lock, self._conn() as conn:
+            # 事件表跟着任务一起清：「本任务的旧记录」已经删掉，事件留着只会越攒越多
+            conn.execute(
+                "DELETE FROM job_events WHERE job_id IN ("
+                " SELECT id FROM jobs WHERE stage IN ('done','failed','cancelled')"
+                " AND updated_at < ?)", (cutoff,))
             cur = conn.execute(
                 "DELETE FROM jobs WHERE stage IN ('done','failed','cancelled') AND updated_at < ?",
                 (cutoff,))

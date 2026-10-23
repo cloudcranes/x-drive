@@ -213,6 +213,22 @@ def task_store(cfg: Config) -> "store.Store":
     return _STORE
 
 
+def task_event(cfg: Config, job_id: str, kind: str, detail: str = "") -> None:
+    """记一条任务事件（与网页端同一张表）。**绝不抛异常**：观测不能拖累任务。"""
+    if not job_id or not kind:
+        return
+    try:
+        task_store(cfg).event(job_id, kind, detail)
+    except Exception as exc:
+        log.warning("记录任务 %s 的事件 %s 失败：%s", job_id, kind, exc)
+
+
+def first_line(text, limit: int = 120) -> str:
+    """错误原文取首行，多行堆栈只留有用那行。"""
+    lines = str(text or "").strip().splitlines()
+    return (lines[0] if lines else "")[:limit]
+
+
 def claim_task(cfg: Config, code: str, source: str, chat_id: int | None) -> str:
     """登记一个任务。同番号已有未结束任务时返回空串（与网页侧 409 同义）。"""
     job_id = "b" + hashlib.sha1(
@@ -221,6 +237,8 @@ def claim_task(cfg: Config, code: str, source: str, chat_id: int | None) -> str:
         log.info("番号 %s 已在任务表里未结束，跳过重复提交", code)
         return ""
     task_store(cfg).update(job_id, stage="downloading")
+    # 入队事件由 store.start 与登记同一次提交；这里补上阶段与真正领取
+    task_event(cfg, job_id, "stage", "downloading 投给迅雷")
     extra: dict = {}
     if chat_id is not None:
         extra["chat_id"] = chat_id
@@ -243,10 +261,18 @@ PROC_ID = f"bot-{os.getpid()}-{int(time.time())}"
 HEARTBEAT_INTERVAL = store.STALE_BEAT / 3
 LEASES: dict[str, str] = {}
 _lease_live: dict[str, bool] = {}
+# 心跳线程的唤醒信号：让它不必等满一个 interval 就能退出（lease_end / 换代 / 测试复位）
+_lease_wake: dict[str, threading.Event] = {}
+_lease_lock = threading.Lock()
 
 
 def lease_owner(job_id: str) -> str:
     """本次执行对这个任务的租约名（不存在就创建）。token 每次执行都不同。"""
+    with _lease_lock:
+        return _lease_owner_locked(job_id)
+
+
+def _lease_owner_locked(job_id: str) -> str:
     token = LEASES.get(job_id)
     if not token:
         token = f"{PROC_ID}:{job_id}:{uuid4().hex[:12]}"
@@ -269,22 +295,43 @@ def lease_begin(cfg: Config, job_id: str) -> bool:
     # 占位：心跳线程每 HEARTBEAT_INTERVAL 才跳一次，起跳前也要算「在场」，
     # 否则紧随其后的 require_lease 会把它当成没起心跳而过不去
     _lease_live[job_id] = True
+    stop = threading.Event()
 
     def pulse() -> None:
-        while _lease_live.get(job_id, False):
-            time.sleep(HEARTBEAT_INTERVAL)
-            if not _lease_live.get(job_id, False):
-                break
-            try:
-                ok = store_.beat(job_id, token)
-            except Exception as exc:
-                log.warning("任务 %s 续租出错：%s", job_id, exc)
-                continue
-            if not ok:
-                _lease_live[job_id] = False
-                log.warning("任务 %s 的租约已被他人持有，停止续租", job_id)
-                break
+        # 代际校验：同一 job 重新开始执行会换新 token 覆盖同一格，旧线程若只凭标志位
+        # 判断，就会在换代后继续跑、失租时把**新的**标志位一起置 False。
+        # 所以每轮先确认「这格 token 还是我铸的那个」，不是就安静退场。
+        try:
+            while _lease_live.get(job_id, False):
+                if stop.wait(HEARTBEAT_INTERVAL):
+                    break            # 被 lease_end / 换代 / 测试复位唤醒，立刻收工
+                if not _lease_live.get(job_id, False):
+                    break
+                with _lease_lock:
+                    if LEASES.get(job_id) != token:
+                        break        # 已被新一次执行取代，本线程退场
+                try:
+                    ok = store_.beat(job_id, token)
+                except Exception as exc:
+                    log.warning("任务 %s 续租出错：%s", job_id, exc)
+                    continue
+                if not ok:
+                    with _lease_lock:
+                        if LEASES.get(job_id) == token:
+                            _lease_live[job_id] = False
+                    log.warning("任务 %s 的租约已被他人持有，停止续租", job_id)
+                    break
+        finally:
+            with _lease_lock:
+                if _lease_wake.get(job_id) is stop:
+                    _lease_wake.pop(job_id, None)
 
+    with _lease_lock:
+        previous = _lease_wake.get(job_id)
+        _lease_wake[job_id] = stop
+        _lease_live[job_id] = True
+    if previous is not None:
+        previous.set()               # 同一 job 上一次的心跳线程立刻退场
     threading.Thread(target=pulse, daemon=True, name=f"bot-lease-{job_id}").start()
     return True
 
@@ -311,8 +358,12 @@ def require_lease(cfg: Config, job_id: str) -> None:
 
 def lease_end(cfg: Config, job_id: str) -> None:
     """结束执行：停心跳并让出租约。"""
-    _lease_live.pop(job_id, None)
-    owner = LEASES.pop(job_id, None)
+    with _lease_lock:
+        _lease_live.pop(job_id, None)
+        stop = _lease_wake.pop(job_id, None)
+        owner = LEASES.pop(job_id, None)
+    if stop is not None:
+        stop.set()                  # 唤醒心跳线程立刻退出，不用等满一个 interval
     if owner:
         try:
             task_store(cfg).release(job_id, owner)
@@ -329,6 +380,9 @@ def defer_task(cfg: Config, job_id: str, reason: str = "") -> float:
     until = core.next_quota_retry()
     if job_id:
         task_store(cfg).defer(job_id, until, reason)
+        when = time.strftime("%m-%d %H:%M", time.localtime(until)) if until else "未知"
+        task_event(cfg, job_id, "deferred",
+                   f"{when} 唤醒 · {reason or '额度用尽，稍后重试'}")
     return until
 
 
@@ -448,6 +502,7 @@ async def run_task(
         if not lease_begin(cfg, job_id):
             failures.append(f"{key} 已由另一个执行者接手，跳过")
             continue
+        task_event(cfg, job_id, "claimed", LEASES.get(job_id) or "")
 
         # 下载目录（迅雷建）与工作区（我们整理）分开，失败不动原件
         key_safe = workspace.key_of(key)
@@ -487,6 +542,8 @@ async def run_task(
                 kind = retry.classify(error)
                 label = {"transient": "网络", "dead": "疑似死种"}.get(kind, kind)
                 await progress(f"↻ 下载失败（{label}），{round(wait)} 秒后重试（第 {attempt} 次）\n{error[:120]}")
+                task_event(cfg, job_id, "retry",
+                           f"下载第 {attempt} 次 · {round(wait)}s 后重试 · {first_line(error)}")
 
             policy = retry.RetryPolicy(retries=cfg.retries, base_delay=cfg.retry_base_delay)
             phase = time.monotonic()
@@ -496,6 +553,7 @@ async def run_task(
 
             phase = time.monotonic()
             require_lease(cfg, job_id)          # downloading→organizing 前
+            task_event(cfg, job_id, "stage", "organizing 整理文件名与目录")
             workspace.drop_workspace(work, key_safe, "整理前清空")
             pipeline.stage_copy(Path(handle.get("dir") or download_dir), work, key_safe)
             found = fetcher.media_files(work) or fetcher.media_files(work, types=fetcher.MEDIA_EXT)
@@ -518,6 +576,7 @@ async def run_task(
                     "files": [f.name for f in scraped["files"]]})
 
             require_lease(cfg, job_id)          # organizing→uploading 前
+            task_event(cfg, job_id, "stage", f"uploading {folder}")
             target = f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
             await progress(f"⏳ 上传 {folder}（{core.human_size(total)}）…（含附件）"
                            if scraped["files"] != files else
@@ -540,6 +599,8 @@ async def run_task(
 
             async def on_up_retry(attempt, error, wait):
                 await progress(f"↻ 上传失败，{round(wait)} 秒后重试（第 {attempt} 次）\n{error[:120]}")
+                task_event(cfg, job_id, "retry",
+                           f"上传第 {attempt} 次 · {round(wait)}s 后重试 · {first_line(error)}")
 
             up_policy = retry.RetryPolicy(retries=cfg.retries, base_delay=cfg.retry_base_delay)
             phase = time.monotonic()
@@ -574,6 +635,8 @@ async def run_task(
             core.update_state(cfg.state_path, {folder: state[folder]})
             uploaded = True
             finish_task(cfg, job_id, "done")
+            task_event(cfg, job_id, "done",
+                       " · ".join(x for x in (folder, core.human_size(total), link or "") if x))
             results.append(
                 f"✅ {folder} · {core.human_size(total)}" + (f"\n📁 {link}" if link else "")
             )
@@ -588,6 +651,7 @@ async def run_task(
             else:
                 failures.append(f"{source[:40]}…: {str(exc)[:160]}")
                 finish_task(cfg, job_id, "failed", str(exc)[:200])
+                task_event(cfg, job_id, "failed", first_line(str(exc)))
             if handle.get("id") and handle.get("ours", True):
                 await xl.remove(client, handle["id"])
         finally:

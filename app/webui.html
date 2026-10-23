@@ -728,7 +728,7 @@
                  style="width:56px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);
                         background:rgba(0,0,0,.6);color:var(--text);font-family:var(--mono);font-size:11.5px">
         </label>
-        <button class="primary" id="verify-run" type="button">检查一批</button>
+        <button class="primary" id="verify-run" type="button">开始检查</button>
         <button class="ghost" id="verify-cancel" type="button" disabled>取消</button>
         <button class="ghost" id="verify-dups" type="button">查重复归档</button>
         <span class="hint" id="verify-prog"></span>
@@ -2046,7 +2046,11 @@ $("dl-find").addEventListener("click", async () => {
 });
 
 // ── 任务时间线（下载队列里的「时间线」展开）
-// 只用 /api/jobs 已经返回的字段拼节点，不猜、不编。每个节点的时间都用**中性措辞**：
+// 数据源：/api/jobs 里每条任务的 events（后端 job_events 表，按时间升序）。
+// 有事件就按事件画完整时间线（入队→领取→重试/延期→阶段切换→终态），
+// 事件为空（老任务、迁移前入库的）就回退到下面这套「只用已有字段」的渲染，不猜、不编。
+//
+// 回退渲染用的字段与中性措辞：
 //   created_at   → 「入队」（store.start 写的就是它，确定）
 //   updated_at   → 「最近更新」（库里只有最后一次动作的时间，没有阶段历史，所以不写「完成于」）
 //   defer_until  → 「计划唤醒」（后端 store.defer 写下的唤醒时刻，是计划值；被唤醒后会被清掉）
@@ -2072,6 +2076,66 @@ const JOB_STAGE_WHY = {
   failed: "失败",
 };
 const JOB_RESUME_TEXT = {upload: "从上传阶段续跑（下载不重来）"};
+// 后端 store.event 的种类 → 时间线标题。新增种类没登记就原样显示，不吞信息。
+const JOB_EVENT_TEXT = {
+  queued: "入队",
+  claimed: "领取执行",
+  retry: "重试",
+  deferred: "延期等待",
+  resumed: "重启恢复",
+  stage: "阶段切换",
+  busy: "租约冲突",
+  done: "完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+// 事件种类的着色：终态用 ok/err，过程用 on（其余不加色）
+function jobEventTone(kind) {
+  if (kind === "done") return "ok";
+  if (kind === "failed" || kind === "cancelled") return "err";
+  if (kind === "retry" || kind === "busy") return "bad";
+  return "on";
+}
+// 阶段名（事件 detail 里可能带番号/目录）→ 中文说明，只翻译能确认的那几个词
+const JOB_STAGE_WORD = {
+  downloading: "下载", organizing: "整理", uploading: "上传",
+  queued: "排队", deferred: "延期", done: "完成", failed: "失败", cancelled: "取消",
+};
+function jobEventWhy(kind, detail) {
+  const text = String(detail || "").trim();
+  if (!text) return "";
+  if (kind === "stage") {
+    const word = text.split(/\s+/)[0];
+    const rest = text.slice(word.length).trim();
+    const cn = JOB_STAGE_WORD[word] || word;
+    return rest ? cn + " · " + rest : cn;
+  }
+  return text;
+}
+// 有事件就画事件，没有返回 null 交给回退渲染
+function jobTimelineFromEvents(j) {
+  const list = Array.isArray(j.events) ? j.events.filter(e => e && e.kind) : [];
+  if (!list.length) return null;
+  const box = el("div", "tly");
+  list.forEach((ev, idx) => {
+    const row = el("div", "tl-row " + jobEventTone(ev.kind));
+    const mid = el("div", "tl-prog");
+    mid.append(el("b", null, JOB_EVENT_TEXT[ev.kind] || ev.kind));
+    const why = jobEventWhy(ev.kind, ev.detail);
+    if (why) mid.append(el("span", "why", why));
+    row.append(mid);
+    row.append(el("span", "tl-time", idx === list.length - 1 && !ev.at
+      ? "时间未知" : (jobTime(ev.at) || "时间未知")));
+    box.append(row);
+  });
+  const note = el("div", "why");
+  note.style.fontSize = "10px";
+  note.style.color = "var(--faint)";
+  note.style.paddingLeft = "14px";
+  note.textContent = `按任务事件记录绘制，共 ${list.length} 条`;
+  box.append(note);
+  return box;
+}
 
 // epoch 秒 → 本地时间字符串；0 / 空返回空串，交给调用方写「时间未知」
 function jobTime(sec) {
@@ -2081,6 +2145,13 @@ function jobTime(sec) {
 }
 
 function jobTimeline(j) {
+  const fromEvents = jobTimelineFromEvents(j);
+  if (fromEvents) return fromEvents;
+  return jobTimelineFromFields(j);
+}
+
+// 回退渲染：老任务没有事件记录，只能画能确认的节点
+function jobTimelineFromFields(j) {
   const box = el("div", "tly");
   const line = (title, why, when, tone) => {
     const row = el("div", "tl-row" + (tone ? " " + tone : ""));
@@ -2144,7 +2215,7 @@ function jobTimeline(j) {
   note.style.fontSize = "10px";
   note.style.color = "var(--faint)";
   note.style.paddingLeft = "14px";
-  note.textContent = "仅显示可确认的节点，细粒度阶段历史待后端补齐";
+  note.textContent = "这个任务没有事件记录（早于事件表入库），仅显示可确认的节点";
   box.append(note);
   return box;
 }
@@ -2316,8 +2387,7 @@ function renderMetaDiff() {
     const act = el("td", "act");
     const un = el("button", null, "解锁");
     un.type = "button";
-    // 后端只认 lock（加锁），没有解锁分支：点了解释清楚，不发请求、不假装成功
-    un.title = `解锁 ${metaFieldName(k)}：后端暂不支持解锁，点了会说明原因`;
+    un.title = `解锁 ${metaFieldName(k)}：以后自动刮削可以重新覆盖它`;
     un.addEventListener("click", () => metaLockField(k, false, un));
     act.append(un);
     row.append(act);
@@ -2425,43 +2495,47 @@ async function metaApplyAll() {
   }
 }
 
-// 锁定 / 解锁：只走 lock 参数，不带 fields，也不带 confirm
+// 锁定 / 解锁：走 lock / unlock 参数，不带 fields，也不带 confirm（不动 Drive）
 async function metaLockField(k, on, btn) {
   const code = metaState.code || ($("meta-code").value || "").trim();
   if (!code) { setMetaHint("先预览一个番号", "err"); return; }
-  if (!on) {
-    // 后端 scrape_sync 只会 locks |= set(lock)，没有解锁分支；
-    // 发什么参数都解不开，所以宁可不发请求、如实说明，也不伪造「已解锁」。
-    const still = (metaState.locked || []).includes(k);
-    setMetaHint(`后端只接受 lock（加锁），暂不支持解锁：${metaFieldName(k)}`
-      + (still ? "仍在锁定列表里" : "本来就没锁"), still ? "err" : "ok");
-    return;
-  }
   if (btn) btn.disabled = true;
+  const body = on ? {code, lock: [k]} : {code, unlock: [k]};
   try {
-    const d = await metaApi("/api/scrape/sync", {code, lock: [k]});
-    if (!d.ok) { setMetaHint((d.error || "锁定失败"), "err"); return; }
-    metaState.locked = d.locked || metaState.locked;
-    if (!metaState.locked.includes(k)) metaState.locked = [...metaState.locked, k];
-    setMetaHint(`${metaFieldName(k)} 已锁定`, "ok");
+    const d = await metaApi("/api/scrape/sync", body);
+    if (!d.ok) { setMetaHint((d.error || (on ? "锁定失败" : "解锁失败")), "err"); return; }
+    // 以服务端返回的 locked 为准，不在前端自己拼接
+    metaState.locked = d.locked || [];
+    setMetaHint(`${metaFieldName(k)} 已${on ? "锁定" : "解锁"}`, "ok");
     renderMetaDiff();
   } catch (e) {
-    setMetaHint("锁定失败：" + (e.message || e), "err");
+    setMetaHint((on ? "锁定失败：" : "解锁失败：") + (e.message || e), "err");
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-// 全部解锁：后端只认 lock（加锁），没有解锁 / 覆盖锁定的参数，
-// 所以这里先如实告诉用户做不到，再给出「重新刮削会怎么做」的替代说明。
-// 不要在前端伪造解锁 —— 那只会让人以为下次刮削会覆盖，实际不会。
+// 全部解锁：一次带上所有锁定字段走 unlock
 async function metaUnlockAll() {
   const code = metaState.code || ($("meta-code").value || "").trim();
   if (!code) { setMetaHint("先预览一个番号", "err"); return; }
-  const locked = metaState.locked || [];
-  setMetaHint(locked.length
-    ? `后端 /api/scrape/sync 只接受 lock 参数，暂不支持解锁；${locked.length} 个字段仍锁定`
-    : "这个番号没有锁定字段", locked.length ? "err" : "ok");
+  const locked = (metaState.locked || []).slice();
+  if (!locked.length) { setMetaHint("这个番号没有锁定字段", "ok"); return; }
+  $("meta-unlock").disabled = true;
+  try {
+    const d = await metaApi("/api/scrape/sync", {code, unlock: locked});
+    if (!d.ok) { setMetaHint((d.error || "解锁失败"), "err"); return; }
+    metaState.locked = d.locked || [];
+    const left = metaState.locked.length;
+    setMetaHint(left
+      ? `已解锁 ${locked.length - left} 个，仍有 ${left} 个锁定`
+      : `${locked.length} 个字段已全部解锁`, left ? "warn" : "ok");
+    renderMetaDiff();
+  } catch (e) {
+    setMetaHint("解锁失败：" + (e.message || e), "err");
+  } finally {
+    $("meta-unlock").disabled = false;
+  }
 }
 
 // 同步附件：会改动云端附件，必须用户显式点 + 再 confirm 一次
@@ -2473,15 +2547,17 @@ async function metaSync() {
   await runMetaSync(code);
 }
 
-// 真正发 sync(confirm=true) 的地方：首次同步与失败重试共用
-async function runMetaSync(code) {
+// 真正发 sync(confirm=true) 的地方：首次同步与失败重试共用。
+// only 非空时只重推这几个附件，别的附件一个不动（视频永远不重传）。
+async function runMetaSync(code, only) {
   metaState.busy = true;
   const btn = $("meta-sync");
   btn.disabled = true;
   $("meta-synchint").textContent = "同步中…";
   $("meta-synchint").className = "hint";
   try {
-    const d = await metaApi("/api/scrape/sync", {code, confirm: true});
+    const body = only && only.length ? {code, confirm: true, only} : {code, confirm: true};
+    const d = await metaApi("/api/scrape/sync", body);
     const out = $("meta-syncout");
     out.textContent = "";
     if (!d.ok) {
@@ -2518,8 +2594,7 @@ async function runMetaSync(code) {
   }
 }
 
-// 失败项一行：「重试」= 再发一次整个附件的 sync(confirm=true)，
-// 后端没有「只补某个附件」的参数，这一点在 title 里写明。
+// 失败项一行：「重试」只重推这一个附件（only=[文件名]），别的附件不动。
 function metaFailedRow(code, name, why) {
   const row = el("div", "kvrow bad");
   row.append(el("span", "nm", name));
@@ -2527,11 +2602,11 @@ function metaFailedRow(code, name, why) {
   const r = el("div", "r");
   const re = el("button", null, "重试");
   re.type = "button";
-  re.title = "重新推一次附件（后端没有单文件接口，会整体重推；视频不重传）";
+  re.title = "只重推这一个附件，别的附件与视频都不动";
   re.addEventListener("click", async () => {
-    if (!confirm(`${code}\n\n重试推送附件？会再动一次云端附件。`)) return;
+    if (!confirm(`${code}\n\n只重试推送 ${name}？会再动一次云端这一个附件。`)) return;
     re.disabled = true;
-    await runMetaSync(code);
+    await runMetaSync(code, [name]);
   });
   r.append(re);
   row.append(r);
@@ -2588,8 +2663,10 @@ const VERIFY_TONE = {"校验通过": "", "缺文件": "bad", "大小异常": "ba
 const verifyState = {
   rows: [],        // 已检查的每一条 {code,state,missing,extra,...}
   filter: "",      // 点汇总格筛选
-  done: 0,         // 已查条数
-  total: 0,        // 计划查的条数（起点 + 每批上限）
+  done: 0,         // 已查条数（后端 scanned 累加）
+  total: 0,        // 后端报告的总条数
+  next: 0,         // 下一批起点，null = 已到末尾
+  error: false,    // 中途出错：进度条不补满，也不当成查完
   running: false,
   cancelled: false,
   batch: 20,
@@ -2694,56 +2771,91 @@ async function verifyOne(code, btn) {
   }
 }
 
-// 分批检查：每批一次 POST，前端串起来；取消只停止后续请求，已查到的结果保留，
-// 不补造没查的那部分的结论。
+// 分批检查：每次 POST 带 offset，后端返回 next_offset 就接着查下一段；
+// 取消只停止后续请求，已查到的结果保留，不补造没查的那部分的结论。
 async function verifyBatch() {
   if (verifyState.running) return;
   const limit = Math.max(1, Math.min(200, parseInt($("verify-limit").value || "20", 10) || 20));
   verifyState.batch = limit;
   verifyState.running = true;
   verifyState.cancelled = false;
+  verifyState.rows = [];
+  verifyState.done = 0;
+  verifyState.total = 0;
+  verifyState.next = 0;
+  verifyState.error = false;
   $("verify-run").disabled = true;
   $("verify-cancel").disabled = false;
   $("verify-bar").hidden = false;
   $("verify-bar").firstElementChild.style.width = "0%";
   setVerifyState("检查中", "warn");
+  renderVerifySummary();
+  renderVerifyList();
 
-  // 一次批量调用就代表「这一批查完了」，进度按「已提交批量 × limit」算，
-  // 后端 verify_all 一次最多先看 limit 条，所以每批都是同一批前缀 —— 这里
-  // 只按用户设定的上限累加，不做超出后端能力的事。查不完就直说。
+  let offset = 0;
+  let bad = 0;
   try {
-    const d = await metaApi("/api/archive/verify", {limit});
-    if (!d.ok) {
-      setVerifyHint(d.error || "检查失败", "err");
-      setVerifyState("检查失败", "err");
-      return;
+    // 一直翻到 next_offset 为 null（到末尾）或被取消
+    while (offset !== null && !verifyState.cancelled) {
+      const d = await metaApi("/api/archive/verify", {limit, offset});
+      if (!d.ok) {
+        // 出错就停：进度条停在已查的比例，不当成「已到末尾」
+        verifyState.error = true;
+        setVerifyHint(d.error || "检查失败", "err");
+        setVerifyState("检查失败", "err");
+        return;
+      }
+      const items = d.items || [];
+      verifyState.total = d.total != null ? d.total : verifyState.total;
+      verifyState.done += d.scanned != null ? d.scanned : items.length;
+      verifyState.rows.push(...items.map(i => ({...i})));
+      const sum = d.summary || {};
+      for (const k of VERIFY_ORDER) {
+        if (k !== "校验通过") bad += (sum[k] || 0);
+      }
+      offset = d.next_offset == null ? null : d.next_offset;
+      verifyState.next = offset;
+      $("verify-bar").firstElementChild.style.width = verifyState.total
+        ? Math.round(verifyState.done / verifyState.total * 100) + "%" : "0%";
+      renderVerifySummary();
+      renderVerifyList();
+      setVerifyHintExtra(bad);
+      if (!items.length) break;     // 防御：空页不再追问，免得死循环
     }
-    const items = d.items || [];
-    verifyState.rows = items.map(i => ({...i}));
-    verifyState.done = items.length;
-    verifyState.total = items.length;
-    $("verify-bar").firstElementChild.style.width = "100%";
-    renderVerifySummary();
-    renderVerifyList();
-    const sum = d.summary || {};
-    const bad = VERIFY_ORDER.filter(k => k !== "校验通过").reduce((a, k) => a + (sum[k] || 0), 0);
-    setVerifyHint(`已查 ${items.length} / ${items.length}` + (bad ? `，${bad} 个需要看一眼` : "，全部通过"),
-      bad ? "err" : "ok");
-    setVerifyState(bad ? `${bad} 个异常` : "全部通过", bad ? "warn" : "ok");
+    if (verifyState.cancelled) {
+      setVerifyHint(`已取消：停在已查的 ${verifyState.done} / ${verifyState.total} 条，没查的不显示结论`, "warn");
+      setVerifyState("已取消", "warn");
+    } else {
+      setVerifyHintExtra(bad);
+      setVerifyState(bad ? `${bad} 个异常` : "全部通过", bad ? "warn" : "ok");
+    }
   } catch (e) {
+    verifyState.error = true;
     setVerifyHint("检查失败：" + (e.message || e), "err");
     setVerifyState("检查失败", "err");
   } finally {
     verifyState.running = false;
     $("verify-run").disabled = false;
     $("verify-cancel").disabled = true;
+    // 只有「真的翻到末尾」才补满进度条；出错早退时保持已查比例
+    if (verifyState.next === null && !verifyState.error) {
+      $("verify-bar").firstElementChild.style.width = "100%";
+    }
   }
+}
+
+// 进度文案：说清查到哪了，异常数只统计已查部分
+function setVerifyHintExtra(bad) {
+  const tail = bad ? `，${bad} 个需要看一眼` : "，已查部分全部通过";
+  setVerifyHint(`已查 ${verifyState.done} / ${verifyState.total}`
+    + (verifyState.next === null ? "（已到末尾）" : "") + tail, bad ? "err" : "ok");
 }
 
 function cancelVerify() {
   if (!verifyState.running) return;
+  // 只置标志：正在跑的循环看到它就停下，不再发下一批请求。不补造没查的结论。
   verifyState.cancelled = true;
-  setVerifyHint(`已取消：停在已查的 ${verifyState.done} / ${verifyState.total} 条，没查的不显示结论`);
+  setVerifyHint(`取消了，等这一批回来就停（已查 ${verifyState.done} / ${verifyState.total}）`, "warn");
   setVerifyState("已取消", "warn");
 }
 

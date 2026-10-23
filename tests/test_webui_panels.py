@@ -89,29 +89,51 @@ def test_meta_status_shows_error_and_pending(js):
     assert "没刮到，保留现有字段" in js, "found=false 时要明确说保留现有字段"
 
 
-def test_meta_lock_only_adds(js):
-    """后端只有 lock（加锁），前端不能假装能解锁。"""
+def test_meta_lock_and_unlock_send_real_requests(js):
+    """加锁发 lock、解锁发 unlock，两个分支都真发请求。"""
     body = js[js.index("async function metaLockField"):js.index("// 全部解锁")]
-    assert 'lock: [k]' in body
-    assert "unlock" not in body, "后端没有 unlock 参数，前端不该发它"
-    assert "暂不支持解锁" in body, "做不到就直说，别伪造"
+    assert "lock: [k]" in body, "加锁要发 lock"
+    assert "unlock: [k]" in body, "解锁要发 unlock"
+    assert "metaApi" in body, "两个分支都要真发请求"
+    assert "暂不支持解锁" not in js, "后端已支持解锁，不许再提示做不到"
 
 
-def test_unlock_path_does_not_send_request(js):
-    """解锁分支必须在发请求之前就停下——发了也无法生效，只会制造假象。"""
+def test_unlock_uses_server_locked_list(js):
+    """解锁后以服务端返回的 locked 为准刷新，不在前端自己删。"""
     body = js[js.index("async function metaLockField"):js.index("// 全部解锁")]
-    head = body[:body.index("if (btn) btn.disabled = true;")]
-    assert "if (!on) {" in head and "return" in head, "解锁要在发请求前返回"
-    assert "metaApi" not in head, "解锁分支不许调后端"
+    assert "metaState.locked = d.locked" in body, "锁定集合应取自服务端返回"
+    assert "metaState.locked.filter" not in body, "别在前端自己算锁定集合"
+    assert "已${on ? \"锁定\" : \"解锁\"}" in body
 
 
-def test_backend_still_has_no_unlock():
-    """契约核对：如果后端后来加了 unlock，这条会失败，届时前端应当改成真解锁。"""
+def test_unlock_all_sends_unlock_list(js):
+    """「全部解锁」一次带上所有锁定字段走 unlock，不再只是提示做不到。"""
+    body = js[js.index("async function metaUnlockAll"):js.index("// 同步附件")]
+    assert "unlock: locked" in body, "全部解锁应发 unlock: 锁定列表"
+    assert "metaApi" in body
+
+
+def test_backend_has_unlock_contract():
+    """契约核对：scrape_sync 真的能解锁，且同字段锁解冲突会报错。"""
     web = WEB_PY.read_text(encoding="utf-8")
     body = web[web.index("def scrape_sync("):web.index("def sync_attachments(")]
-    assert "locks |= set(lock or ())" in body, "后端锁定逻辑变了，前端要重新核对"
-    assert "unlock" not in body, "后端开始支持解锁了——前端应改为真解锁而非提示"
+    assert "locks -= set(unlock)" in body, "后端应能从锁定集合里移除字段"
+    assert "同一字段不能同时锁定和解锁" in body, "冲突要报错，不静默选一个"
+    assert '"locked": sorted(locks)' in body, "返回里要有当前锁定集合"
 
+
+def test_meta_failed_row_retries_single_attachment(js):
+    """失败重试只重推那个文件：带 only=[文件名] 与 confirm: true。"""
+    body = js[js.index("function metaFailedRow"):js.index("function openMeta")]
+    assert "runMetaSync(code, [name])" in body, "重试应只把失败的那一个附件交给 sync"
+    assert "confirm(" in body, "重试仍要用户确认"
+    assert "runMetaSync(code)" not in body, "不许整体重推"
+    sync = js[js.index("async function runMetaSync"):js.index("function metaFailedRow")]
+    assert "confirm: true" in sync and "only" in sync, "runMetaSync 要支持透传 only"
+    assert "only && only.length" in sync, "没有 only 时保持整体重推的老行为"
+
+
+# ─────────────────────────────────────────── C2 归档健康
 
 # ─────────────────────────────────────────── C2 归档健康
 
@@ -148,12 +170,29 @@ def test_health_has_all_six_states(js):
 
 def test_health_batches_and_cancels(js):
     body = js[js.index("async function verifyBatch"):js.index("function cancelVerify")]
-    assert '"limit"' in body or "limit}" in body, "批量检查要带 limit"
+    assert "{limit, offset}" in body, "批量检查要带 limit 与 offset 翻页"
     assert "verifyState.cancelled" in js and "function cancelVerify" in js
     # 取消不发请求、不改写结果
     cancel = js[js.index("function cancelVerify"):js.index("// 重复归档")]
-    assert "fetch(" not in cancel, "取消只停后续请求，不该再发请求"
+    assert "fetch(" not in cancel and "metaApi" not in cancel, "取消只停后续请求，不该再发请求"
     assert "verifyState.rows =" not in cancel, "取消不许伪造结果"
+
+
+def test_health_pages_until_end(js):
+    """翻页要按后端 next_offset 推进，进度显示「已查 X / total」。"""
+    body = js[js.index("async function verifyBatch"):js.index("function setVerifyHintExtra")]
+    assert "d.next_offset" in body, "翻页要用后端给的 next_offset"
+    assert "d.total" in body, "总数取后端 total"
+    assert "已查 ${verifyState.done} / ${verifyState.total}" in js, "进度要显示已查 X / total"
+    assert "while (offset !== null && !verifyState.cancelled)" in body, "循环要能被取消打断"
+
+
+def test_health_error_does_not_fake_completion(js):
+    """中途出错时进度条不许补满，也不许把没查的算成查完。"""
+    body = js[js.index("async function verifyBatch"):js.index("function setVerifyHintExtra")]
+    assert "verifyState.error = true" in body, "出错要留下标记"
+    assert 'if (verifyState.next === null && !verifyState.error)' in body, \
+        "只有真到末尾才补满进度条"
 
 
 def test_health_is_report_only(html):
@@ -191,7 +230,10 @@ def test_timeline_titles_are_neutral(js):
     assert "最近更新" in body, "终态节点应叫「最近更新 · 状态」"
     for fake in ("完成于", "失败于", "停止于", "重试于"):
         assert fake not in body, f"不该出现把 updated_at 当终态时刻的措辞：{fake}"
-    assert "仅显示可确认的节点，细粒度阶段历史待后端补齐" in body, "时间线底部要有缺口说明"
+    # 缺口说明只保留在**回退渲染**里：事件表接通后主路径画完整时间线，
+    # 「细粒度阶段历史待后端补齐」已不成立，不能继续挂在页面上。
+    assert "细粒度阶段历史待后端补齐" not in body, "事件表已接通，这句缺口说明要去掉"
+    assert "仅显示可确认的节点" in body, "没有事件的老任务仍要说明只有能确认的节点"
     assert "计划唤醒" in body, "defer_until 是计划值，措辞要标明"
 
 
