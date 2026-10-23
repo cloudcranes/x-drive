@@ -531,6 +531,10 @@
   <div class="side-block navmain">
     <div class="side-h">操作</div>
     <nav class="nav" id="nav-main">
+      <button class="it" id="archive-open" type="button" title="已归档的番号列表（首页）">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>
+        <span class="t">归档</span></button>
       <button class="it" id="new-task" type="button" title="粘贴磁力或直链，按番号下载">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round">
           <path d="M12 5v14M5 12h14"/></svg>
@@ -774,7 +778,7 @@
     </div>
   </section>
 
-  <div class="resultbar">
+  <div class="resultbar" id="resultbar">
     <h2 id="result-title">全部归档</h2>
     <span class="sub" id="result-sub"></span>
     <span class="right">
@@ -1537,14 +1541,12 @@ async function renderSubs() {
 }
 
 function openSubs() {
-  $("subpanel").hidden = false;
-  $("subs-open").classList.add("on");
+  showView("subs");
   $("sub-actor").focus();
   renderSubs();
 }
 function closeSubs() {
-  $("subpanel").hidden = true;
-  $("subs-open").classList.remove("on");
+  showView("archive");
   setSubHint("");
 }
 
@@ -1698,14 +1700,45 @@ $("sub-run").addEventListener("click", async () => {
   load();
 });
 
+// ───────────────────────────────── 视图切换
+// 主内容区整块切换：点侧栏某项，中间区域整个换成那个界面，归档列表暂时隐藏。
+// 以前各功能是弹层（section.panel 浮在归档列表上），多个可以叠在一起；
+// 现在改成单视图：同一时刻只显示一个（归档 / 新建下载 / 订阅 / 元数据 / 归档校验 / 设置），
+// 下载队列仍是右侧抽屉、智能整理仍是弹确认的动作，不占主内容区视图。
+function showView(name) {
+  const isArchive = name === "archive";
+  const views = [
+    ["resultbar", isArchive], ["feed", isArchive], ["empty-slot", isArchive],
+    ["panel", name === "download"], ["subpanel", name === "subs"],
+    ["metapanel", name === "meta"], ["healthpanel", name === "health"],
+    ["settingspanel", name === "settings"],
+  ];
+  for (const [id, on] of views) {
+    const el = $(id);
+    if (el) el.hidden = !on;
+  }
+  // 侧栏导航高亮：只有当前视图那一项 on（add/remove，不用 toggle，兼容假 DOM）
+  const navOn = [
+    ["archive-open", isArchive], ["new-task", name === "download"],
+    ["subs-open", name === "subs"], ["metatool-open", name === "meta"],
+    ["health-open", name === "health"], ["settings-open", name === "settings"],
+  ];
+  for (const [id, on] of navOn) {
+    const el = $(id);
+    if (!el) continue;
+    if (on) el.classList.add("on"); else el.classList.remove("on");
+  }
+}
+function showArchive() { showView("archive"); }
+
+$("archive-open").addEventListener("click", showArchive);
+
 function openPanel() {
-  $("panel").hidden = false;
-  $("new-task").classList.add("on");
+  showView("download");
   $("dl-text").focus();
 }
 function closePanel() {
-  $("panel").hidden = true;
-  $("new-task").classList.remove("on");
+  showView("archive");
   $("dl-hint").textContent = "";
   $("dl-hint").className = "hint";
 }
@@ -2814,14 +2847,12 @@ function metaFailedRow(code, name, why) {
 }
 
 function openMeta() {
-  $("metapanel").hidden = false;
-  $("metatool-open").classList.add("on");
+  showView("meta");
   loadMetaStatus();
   if ($("meta-code").value.trim() || metaState.code) renderMetaDiff();
 }
 function closeMeta() {
-  $("metapanel").hidden = true;
-  $("metatool-open").classList.remove("on");
+  showView("archive");
   setMetaHint("");
 }
 
@@ -3093,14 +3124,12 @@ async function loadDups() {
 }
 
 function openHealth() {
-  $("healthpanel").hidden = false;
-  $("health-open").classList.add("on");
+  showView("health");
   renderVerifySummary();
   renderVerifyList();
 }
 function closeHealth() {
-  $("healthpanel").hidden = true;
-  $("health-open").classList.remove("on");
+  showView("archive");
   setVerifyHint("");
   cancelVerify();
 }
@@ -3161,6 +3190,8 @@ $("queue-clear").addEventListener("click", async () => {
   if (open && (!wide || window.innerWidth > 960)) openQueue();
 })();
 
+showView("archive");   // 初始首页 = 归档列表
+
 load();
 loadJobs();
 setInterval(load, 30000);
@@ -3180,13 +3211,11 @@ fetch(BASE + "/api/session", {cache: "no-store"})
 const settingsDirty = {};   // key -> 用户改后的值（还没保存）
 
 function openSettings() {
-  $("settingspanel").hidden = false;
-  $("settings-open").classList.add("on");
+  showView("settings");
   loadSettings();
 }
 function closeSettings() {
-  $("settingspanel").hidden = true;
-  $("settings-open").classList.remove("on");
+  showView("archive");
 }
 
 async function loadSettings() {
