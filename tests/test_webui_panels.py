@@ -160,6 +160,25 @@ def test_health_routes_exist_in_backend(js):
         assert f'"{route}"' in web
 
 
+def test_verify_hint_targets_real_element(js):
+    """setVerifyHint 必须写真实存在的 id。曾误写 verify-hint（HTML 只有 verify-prog），
+    每次校验完成抛 TypeError，面板永远卡「检查中」。"""
+    # setVerifyHint 体内必须引用 verify-prog，且不得再出现不存在的 verify-hint 目标
+    m = re.search(r"function setVerifyHint\([^)]*\)\s*\{(.*?)\n\}", js, re.S)
+    assert m, "setVerifyHint 未找到"
+    body = m.group(1)
+    assert '$("verify-prog")' in body, "setVerifyHint 应写 #verify-prog"
+    assert '$("verify-hint")' not in body, "verify-hint 这个 id 不存在，不能再引用"
+
+
+def test_showview_clears_queue_highlight(js):
+    """showView 切换视图时要清掉下载队列抽屉的高亮，否则侧栏双高亮。"""
+    m = re.search(r"function showView\([^)]*\)\s*\{(.*?)\n\}", js, re.S)
+    assert m, "showView 未找到"
+    body = m.group(1)
+    assert '"queuebtn"' in body, "showView 的 navOn 列表要把 queuebtn 纳入清除"
+
+
 def test_health_has_all_six_states(js):
     """六个状态都要在汇总里出现，否则「无清单 / 大小未知」会被悄悄吞掉。"""
     for state in ("校验通过", "缺文件", "大小异常", "大小未知", "无清单", "检查失败"):

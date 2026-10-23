@@ -1718,10 +1718,12 @@ function showView(name) {
     if (el) el.hidden = !on;
   }
   // 侧栏导航高亮：只有当前视图那一项 on（add/remove，不用 toggle，兼容假 DOM）
+  // queuebtn（下载队列抽屉）单独维护 on，切视图时一并清掉，避免双高亮
   const navOn = [
     ["archive-open", isArchive], ["new-task", name === "download"],
     ["subs-open", name === "subs"], ["metatool-open", name === "meta"],
     ["health-open", name === "health"], ["settings-open", name === "settings"],
+    ["queuebtn", false],
   ];
   for (const [id, on] of navOn) {
     const el = $(id);
@@ -2904,7 +2906,8 @@ const verifyState = {
 };
 
 function setVerifyHint(text, kind) {
-  const h = $("verify-hint");
+  const h = $("verify-prog");
+  if (!h) return;
   h.textContent = text || "";
   h.className = "hint" + (kind ? " " + kind : "");
 }
