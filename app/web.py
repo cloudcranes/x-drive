@@ -795,6 +795,46 @@ def _cloud_submit(backend, job_id: str, source: str, my_inbox: str) -> dict:
     return submitted
 
 
+def xlp_auth_status(refresh: bool = False) -> dict:
+    """迅雷云盘登录状态：凭据齐不齐、token 还能用多久，要不要续期。
+
+    refresh=True 时立刻用 refresh_token 续一次（写回设置）。
+    账号密码直登**不支持**（迅雷端点回 currently not supported），
+    所以首次凭据要从浏览器抄一次，之后靠 refresh_token 自己续。
+    """
+    out = {"ok": False, "configured": xunleipan.configured(),
+           "has_refresh": bool(str(get_setting("XLPAN_REFRESH_TOKEN") or "").strip()),
+           "expires_in": 0, "detail": "", "error": ""}
+    if not out["configured"]:
+        out["detail"] = "缺 clientid 或 access_token"
+        return out
+    token = str(get_setting("XLPAN_TOKEN") or "")
+    exp = xunleipan._token_expiry(token)
+    if exp:
+        out["expires_in"] = int(exp - time.time())
+    if refresh:
+        try:
+            res = xunleipan.auto_refresh()
+            out["ok"] = True
+            out["detail"] = ("已续期" if not res.get("skipped") else "未临近过期，无需续期")
+            if res.get("rotated"):
+                out["detail"] += "（refresh_token 也已轮换并写回）"
+            exp = xunleipan._token_expiry(str(get_setting("XLPAN_TOKEN") or ""))
+            out["expires_in"] = int(exp - time.time()) if exp else 0
+        except Exception as exc:                # noqa: BLE001
+            out["error"] = str(exc)[:200]
+            return out
+    else:
+        # 顺带探一次真实接口：只读列表，不带参数
+        try:
+            xunleipan.list_files("", limit=1)
+            out["ok"] = True
+            out["detail"] = "凭据可用"
+        except Exception as exc:                # noqa: BLE001
+            out["error"] = str(exc)[:200]
+    return out
+
+
 def cloud_direct_link(path: str = "", code: str = "") -> dict:
     """取云盘文件的直链：优先迅雷官方 API（外网可播 + 转码档），退回 CD2（内网）。
 
@@ -3596,6 +3636,15 @@ class Handler(BaseHTTPRequestHandler):
             want_path = (qs.get("path", [""]) or [""])[0]
             want_code = (qs.get("code", [""]) or [""])[0]
             self._json(cloud_direct_link(path=want_path, code=want_code))
+            return
+        if path == "/api/xlp/auth":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            qs = parse_qs(parts.query)
+            want_refresh = (qs.get("refresh", ["0"]) or ["0"])[0] in ("1", "true", "yes")
+            self._json(xlp_auth_status(refresh=want_refresh))
             return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑

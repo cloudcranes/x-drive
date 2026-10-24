@@ -21,6 +21,7 @@ host.docker.internal:19798）；要拿到浏览器/播放器/IDM 直接能用、
 from __future__ import annotations
 
 import logging
+import time
 from urllib.parse import quote
 
 import httpx
@@ -33,6 +34,8 @@ API = "https://api-pan.xunlei.com"
 # captcha 签发端点（在 xluser 账号服务上，不在 pan 上；实测 captcha/image 那种
 # 图片验证码不需要——写操作走这个 shield 端点直接签发）
 SHIELD_API = "https://xluser-ssl.xunlei.com"
+# token 续期端点：refresh_token → 新 access_token（实测 200，不需要 client_secret）
+AUTH_API = "https://xluser-ssl.xunlei.com/v1/auth/token"
 _TIMEOUT = 15.0
 
 
@@ -43,6 +46,49 @@ class PanError(RuntimeError):
 def configured() -> bool:
     """clientid 与 access_token 都有才算能用。"""
     return bool(_setting("XLPAN_CLIENT_ID") and _setting("XLPAN_TOKEN"))
+
+
+def refresh_access_token(refresh_token: str = "", *, client=None) -> dict:
+    """用 refresh_token 换新的 access_token。
+
+    端点：POST {AUTH_API}，body {grant_type: "refresh_token", refresh_token,
+    client_id}。**不需要 client_secret**（实测：带与不带都是 200 —— 前端那份
+    secret 是明文硬编码的，服务端对带 secret 的 refresh 并不做额外校验）。
+
+    账号密码直登**不支持**：同一个端点用 grant_type=password 会回
+    `currently not supported`（实测）。所以自动化登录只能靠 refresh_token：
+    首次从浏览器抄一次，之后就能自己续。
+
+    返回 {access_token, refresh_token, expires_in}；refresh_token 变了就一并返回
+    （服务端会轮换，旧的作废）。
+    """
+    rt = (refresh_token or _setting("XLPAN_REFRESH_TOKEN")).strip()
+    if not rt:
+        raise PanError("缺少 refresh_token")
+    body = {"grant_type": "refresh_token", "refresh_token": rt,
+            "client_id": _setting("XLPAN_CLIENT_ID").strip() or "Xqp0kJBXWhwaTpB6"}
+    own = client is None
+    client = client or httpx.Client(follow_redirects=True, timeout=_TIMEOUT)
+    try:
+        res = client.post(AUTH_API, json=body,
+                          headers={"content-type": "application/json",
+                                   "clientid": body["client_id"]})
+    except httpx.HTTPError as exc:
+        raise PanError(f"续期请求失败：{exc}") from exc
+    finally:
+        if own:
+            client.close()
+    if res.status_code != 200:
+        raise PanError(f"续期失败：{res.status_code} {(res.text or '')[:140]}")
+    data = res.json() or {}
+    token = str(data.get("access_token") or "")
+    if not token:
+        raise PanError("续期响应里没有 access_token")
+    out = {"access_token": token, "expires_in": int(data.get("expires_in") or 0)}
+    new_rt = str(data.get("refresh_token") or "")
+    if new_rt and new_rt != rt:
+        out["refresh_token"] = new_rt       # 服务端轮换了：必须一并存
+    return out
 
 
 def _setting(key: str) -> str:
@@ -97,6 +143,12 @@ def _get(path: str, params: dict | None = None, *, client=None) -> dict:
     own = client is None
     client = client or httpx.Client(follow_redirects=True, timeout=_TIMEOUT)
     try:
+        # 快过期就先续期：access_token 只活 12 小时（实测 JWT exp），
+        # 续期靠 refresh_token，不需要人工再从浏览器抄一遍
+        try:
+            auto_refresh(client=client)
+        except PanError as exc:
+            log.info("自动续期未成功（继续用旧 token）：%s", exc)
         res = client.get(url, params=params, headers=_headers())
         if res.status_code != 200:
             text = res.text[:160]
@@ -118,6 +170,51 @@ def _get(path: str, params: dict | None = None, *, client=None) -> dict:
     if err and not data.get("files") and "id" not in data:
         raise PanError(f"迅雷云盘 API 错误：{str(err)[:120]}")
     return data
+
+
+def _token_expiry(token: str) -> int:
+    """从 JWT 里读 exp（秒）。读不出来给 0（当作不知道，保守处理）。"""
+    if not token or "." not in token:
+        return 0
+    import base64
+    import json as _json
+    try:
+        seg = token.split(".")[1]
+        pad = "=" * (-len(seg) % 4)
+        return int((_json.loads(base64.urlsafe_b64decode(seg + pad)) or {}).get("exp") or 0)
+    except Exception:                           # noqa: BLE001 不是 JWT 就不知道
+        return 0
+
+
+def _needs_refresh(margin: int = 300) -> bool:
+    """access_token 是不是快过期了（快到点就换，免得请求中途 401）。"""
+    token = _setting("XLPAN_TOKEN").strip()
+    if not token or not _setting("XLPAN_REFRESH_TOKEN").strip():
+        return False
+    exp = _token_expiry(token)
+    if not exp:
+        return False
+    return exp - int(time.time()) < margin
+
+
+def auto_refresh(*, client=None) -> dict:
+    """过期自动续期，并把新 token 写回设置。返回续期结果（没过期则 skipped=True）。"""
+    if not _needs_refresh():
+        return {"ok": True, "skipped": True, "reason": "access_token 未临近过期"}
+    out = refresh_access_token(client=client)
+    saved = {}
+    if out.get("access_token"):
+        saved["XLPAN_TOKEN"] = out["access_token"]
+    if out.get("refresh_token"):
+        saved["XLPAN_REFRESH_TOKEN"] = out["refresh_token"]
+    if saved:
+        try:
+            from . import web as web_mod
+            web_mod.set_settings(saved)
+        except Exception as exc:                # noqa: BLE001 写回失败也要报告
+            raise PanError(f"续期成功但写回设置失败：{exc}") from exc
+    return {"ok": True, "skipped": False, "expires_in": out.get("expires_in", 0),
+            "rotated": bool(out.get("refresh_token"))}
 
 
 def sign_captcha(action: str, *, previous: str = "", meta: dict | None = None,

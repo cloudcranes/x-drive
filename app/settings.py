@@ -157,6 +157,10 @@ SETTINGS_SPEC: dict[str, dict] = {
                     "label": "迅雷 access_token",
                     "note": "localStorage credentials_{clientid} 里的 access_token；"
                             "也可填 `Bearer xxx` 完整串"},
+    "XLPAN_REFRESH_TOKEN": {"type": "str", "default": "", "group": "存储", "secret": True,
+                            "label": "迅雷 refresh_token",
+                            "note": "同一项里的 refresh_token：access_token 到期自动续，"
+                                    "配了它就不用再手工抄 access_token"},
     "XLPAN_DEVICE_ID": {"type": "str", "default": "", "group": "存储",
                         "label": "迅雷 x-device-id", "note": "可选；localStorage 的 deviceid 项"},
     "XLPAN_CAPTCHA_TOKEN": {"type": "str", "default": "", "group": "存储", "secret": True,
