@@ -330,6 +330,11 @@ def bind(instance: Settings | None) -> None:
     _bound = instance
 
 
+def bound() -> "Settings | None":
+    """当前进程绑定的 Settings（没有就 None）。"""
+    return _bound
+
+
 def bound_get(key: str) -> tuple[bool, object]:
     """(是否显式配置, 值)。没绑定实例时一律当作「没配过」。"""
     inst = _bound

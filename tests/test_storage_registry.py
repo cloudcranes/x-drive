@@ -145,3 +145,27 @@ def test_check_handles_unknown_exception(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "get", lambda which=None: Boom())
     result = storage.check()
     assert result["ok"] is False and "炸了" in result["error"]
+
+
+def test_unbound_process_reads_web_settings(tmp_path, monkeypatch):
+    """没绑定时按同一个 JOBS_DB 自己读设置 —— 不能只看环境变量。
+
+    bot 的 `--check` 与离线脚本都是这种情形：网页里选了 clouddrive2，
+    只看 env 会对着 rclone 自检，结论完全是错的。
+    """
+    import sqlite3, json
+    db = tmp_path / "jobs.db"
+    store.Store(str(db))                      # 建表
+    with sqlite3.connect(db) as conn:
+        conn.execute("insert or replace into state(key, value) values(?, ?)",
+                     ("settings", json.dumps({"STORAGE_BACKEND": "clouddrive2",
+                                              "CD2_URL": "http://cd2:19798",
+                                              "STORAGE_ROOT": "Cloud"})))
+        conn.commit()
+    monkeypatch.setenv("JOBS_DB", str(db))
+    monkeypatch.delenv("STORAGE_BACKEND", raising=False)
+    settings_mod.bind(None)                   # 模拟「没有绑定」的进程
+    monkeypatch.setattr(storage, "_fallback", None)
+
+    assert storage.kind() == "clouddrive2"
+    assert storage.root() == "Cloud"

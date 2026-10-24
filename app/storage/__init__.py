@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 
 from .. import settings as settings_mod
 from .base import AuthError, Backend, FileEntry, StorageError
@@ -51,14 +52,37 @@ def _cast(kind: str, value):
         return None
 
 
-def _val(key: str):
-    """读一项存储设置：网页设置 > 环境变量 > 默认值。
+_fallback = None
 
-    没绑定 Settings 时（bot 的 --check、脚本、单测）也要能读到环境变量 ——
-    否则 `STORAGE_BACKEND=openlist python -m app.main --check` 会静默退回 rclone。
+
+def settings():
+    """取一份能读网页设置的 Settings。
+
+    优先用进程里已绑定的那份；没绑定（bot 的 --check、离线脚本）就按同一个
+    JOBS_DB 自己建一个并绑上。**不能退回去只读环境变量**：网页里选的
+    STORAGE_BACKEND 存在 state 表里，只看 env 会让 `app.main --check`
+    对着 rclone 自检，而实际上传早就换成 CloudDrive2 了（真出过这个误判）。
     """
+    global _fallback
+    inst = settings_mod.bound()
+    if inst is not None:
+        return inst
+    if _fallback is None:
+        from .. import store as store_mod
+        path = (os.getenv("JOBS_DB")
+                or str(Path(os.getenv("STATE_PATH", "/data/state.json")).parent / "jobs.db"))
+        _fallback = settings_mod.Settings(store_mod.Store(path))
+        settings_mod.bind(_fallback)
+    return _fallback
+
+
+def _val(key: str):
+    """读一项存储设置：网页设置 > 环境变量 > 默认值。"""
     spec = settings_mod.SETTINGS_SPEC.get(key) or {}
-    ok, value = settings_mod.bound_get(key)
+    try:
+        ok, value = settings().explicit(key)
+    except Exception:                 # 库打不开就别把整个上传搞挂
+        ok, value = False, None
     if ok:
         return value
     env = os.getenv(key)
