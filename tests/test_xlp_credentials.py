@@ -122,3 +122,39 @@ def test_apply_writes_settings(monkeypatch):
 def test_apply_reports_unrecognizable(monkeypatch):
     out = xunleipan.apply_credentials("没有凭据的一段话")
     assert out["saved"] == [] and "没认出" in out["error"]
+
+
+# ---------------------------------------------------------------- 授权码
+
+def test_parse_picks_up_auth_code():
+    """地址栏里 code=xxx 那一段：用户自己从浏览器授权页复制过来。"""
+    out = xunleipan.parse_credentials(
+        "http://192.168.1.170:18091/xlp/callback?code=AbC-123_xyz&state=s")
+    assert out["XLPAN_AUTH_CODE"] == "AbC-123_xyz"
+
+
+def test_apply_with_auth_code_exchanges_for_pair(monkeypatch):
+    """贴授权码 → 换出 access + refresh 一对（唯一能一次拿到 refresh 的通道）。"""
+    saved = {}
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings",
+                        lambda u: saved.update(u) or {"ok": True, "saved": list(u)})
+    monkeypatch.setattr(web_mod, "get_setting",
+                        lambda k, d=None: saved.get(k, d if d is not None else ""))
+    monkeypatch.setattr(xunleipan, "grant_authorization_code",
+                        lambda code, **kw: {"access_token": "AT", "refresh_token": "RT",
+                                            "expires_in": 43200})
+    out = xunleipan.apply_credentials("code=THE-CODE")
+    assert out["exchanged"], "应说明是授权码换来的"
+    assert saved["XLPAN_TOKEN"] == "AT"
+    assert saved["XLPAN_REFRESH_TOKEN"] == "RT"
+
+
+def test_apply_with_bad_auth_code_reports_error(monkeypatch):
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings", lambda u: {"ok": True, "saved": []})
+    monkeypatch.setattr(xunleipan, "grant_authorization_code",
+                        lambda code, **kw: (_ for _ in ()).throw(
+                            xunleipan.PanError("invalid code")))
+    out = xunleipan.apply_credentials("code=BAD")
+    assert out["error"] and "授权码" in out["error"]

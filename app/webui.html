@@ -4659,9 +4659,6 @@ function xlpAuthRow() {
   const renew = el("button", "ghost", "立即续期");
   renew.type = "button";
   renew.title = "用 refresh_token 换新的 access_token（并把轮换后的 refresh_token 写回）";
-  const login = el("button", "ghost", "一键登录");
-  login.type = "button";
-  login.title = "打开迅雷账号中心登录，授权后自动带凭据回来（会一次给到 access + refresh）";
   const hint = el("span", "hint", "");
   const fmtLeft = sec => {
     if (!sec || sec <= 0) return "已过期";
@@ -4706,43 +4703,19 @@ function xlpAuthRow() {
   };
   btn.addEventListener("click", () => call("/api/xlp/auth", btn));
   renew.addEventListener("click", () => call("/api/xlp/auth?refresh=1", renew));
-  login.addEventListener("click", async () => {
-    login.disabled = true;
-    hint.className = "hint";
-    hint.textContent = "准备授权页…";
-    try {
-      const d = await subsApi("/api/xlp/login");
-      if (!d || !d.ok) throw new Error((d && d.error) || "没拿到授权链接");
-      hint.textContent = "已打开新窗口，登录后会自动回来";
-      hint.className = "hint";
-      const w = window.open(d.url, "_blank", "noopener");
-      if (!w) {
-        hint.textContent = "浏览器拦了弹窗，请允许后重试";
-        hint.className = "hint err";
-      } else {
-        // 授权页回来后自动刷新一次状态
-        setTimeout(() => call("/api/xlp/auth", btn), 12000);
-      }
-    } catch (e) {
-      hint.textContent = e.message || String(e);
-      hint.className = "hint err";
-    } finally {
-      login.disabled = false;
-    }
-  });
   row.append(btn);
   row.append(renew);
-  row.append(login);
   row.append(hint);
 
   // 粘贴框：浏览器 localStorage 的 credentials_{clientid} 就是一段 JSON，
   // 粘进来自动拆成 access_token / refresh_token / clientid（clientid 从
-  // JWT 的 aud 取），不用一个框一个框地抄。
+  // JWT 的 aud 取），不用一个框一个框地抄。也可以粘授权码（地址栏里
+  // code=… 那段），程序会拿它换出 access + refresh 一对。
   const paste = el("input", "xlp-paste");
   paste.type = "text";
   paste.autocomplete = "off";
   paste.spellcheck = false;
-  paste.placeholder = "粘贴 credentials 那一整段 JSON，或 access_token / refresh_token";
+  paste.placeholder = "粘贴 credentials 整段 JSON（含 access + refresh）、或 deviceid、或授权码";
   const applyBtn = el("button", "ghost", "填入");
   applyBtn.type = "button";
   applyBtn.title = "认出里面的凭据并写进设置（写完立刻验一次）";
@@ -4758,6 +4731,7 @@ function xlpAuthRow() {
         paste.value = "";
         let msg = "已填入：" + (d.saved || []).join("、")
           + (d.expires_in ? " · 凭据剩余约 " + Math.round(d.expires_in / 3600) + " 小时" : "");
+        if (d.exchanged) msg = d.exchanged + " · " + msg;
         if (d.missing && d.missing.length) {
           msg += " · ⚠ 还缺：" + d.missing.join("、") + "（填了才能用）";
         }
@@ -4783,10 +4757,12 @@ function xlpAuthRow() {
   row.append(pasteRow);
 
   const note = el("div", "why",
-    "推荐「一键登录」：程序打开迅雷账号中心，登录授权后自动带一对 token 回来"
-    + "（access + refresh），之后 access_token 过期会自己续。"
-    + "也可以手动粘：localStorage 的 credentials_{clientid}（access + refresh）"
-    + "与 deviceid（形如 wdi10.…，读接口必需）。");
+    "迅雷的账号密码直登不支持（实测 currently not supported），"
+    + "一键授权也不行：它的授权页只认**已注册**的回调地址，"
+    + "自定义地址会被判「无效请求」——白名单在迅雷服务端，改不了。"
+    + "所以只能从浏览器 localStorage 抄一次：credentials_{clientid}（access + refresh）"
+    + "与 deviceid（形如 wdi10.…，读接口必需）。"
+    + "配了 refresh_token 之后，access_token 过期会自己续。");
   row.append(note);
   return row;
 }

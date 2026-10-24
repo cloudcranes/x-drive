@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from urllib.parse import quote
 
@@ -204,6 +205,11 @@ def parse_credentials(text: str) -> dict:
             if token.startswith("wdi10."):
                 out["XLPAN_DEVICE_ID"] = token.strip('"')
                 break
+    # 4) 授权码：地址栏里 code=xxx 那一段（用户自己从浏览器授权页复制）
+    if "XLPAN_AUTH_CODE" not in out:
+        m = re.search(r"(?:^|[?&])code=([A-Za-z0-9._~-]+)", raw)
+        if m:
+            out["XLPAN_AUTH_CODE"] = m.group(1)
     return out
 
 
@@ -224,15 +230,34 @@ def _client_id_from_jwt(token: str) -> str:
 def apply_credentials(text: str) -> dict:
     """解析并写入凭据，返回 {saved: [...], error: str, missing: [...]}。
 
+    两种输入：
+      1. 凭据（整段 JSON / 逐行 / 裸 token）—— 拆成设置项直接写；
+      2. **授权码**（地址栏里 code=xxx）—— 先用 code 换出 access+refresh 一对，
+         再写。授权码是一次性的，用掉即废（换出来的那对里 refresh 可续期）。
+
     missing 列出**还缺什么**：device_id 是必需的（实测读接口不带
     x-device-id 回 400 invalid_argument），而它不在 credentials 那一项里，
     只粘那一项的话程序会用不了 —— 必须明说，不能让人以为填好了。
     """
     parsed = parse_credentials(text)
     if not parsed:
-        return {"saved": [], "missing": [], "error": "没认出任何凭据（要 access_token / refresh_token / 整段 JSON）"}
+        return {"saved": [], "missing": [], "error": "没认出任何凭据（要 access_token / refresh_token / 整段 JSON / 授权码）"}
     from . import web as web_mod
-    res = web_mod.set_settings(parsed)
+    code = parsed.pop("XLPAN_AUTH_CODE", "")
+    saved = dict(parsed)
+    exchanged = ""
+    if code:
+        # 授权码 → 一对 token（这是唯一能一次拿到 refresh_token 的通道）
+        try:
+            got = grant_authorization_code(code)
+        except Exception as exc:                # noqa: BLE001
+            return {"saved": [], "missing": [], "error": f"授权码换 token 失败：{str(exc)[:200]}"}
+        if got.get("access_token"):
+            saved["XLPAN_TOKEN"] = got["access_token"]
+        if got.get("refresh_token"):
+            saved["XLPAN_REFRESH_TOKEN"] = got["refresh_token"]
+        exchanged = "已用授权码换出 access_token 与 refresh_token"
+    res = web_mod.set_settings(saved)
     if not res.get("ok"):
         return {"saved": [], "missing": [], "error": str(res.get("failed") or "写入失败")[:200]}
     missing = []
@@ -242,6 +267,7 @@ def apply_credentials(text: str) -> dict:
         if not str(web_mod.get_setting(key) or "").strip():
             missing.append(label)
     return {"saved": list(res.get("saved") or []), "error": "", "missing": missing,
+            "exchanged": exchanged,
             "client_id": parsed.get("XLPAN_CLIENT_ID", "")}
 
 
@@ -373,7 +399,7 @@ def auto_refresh(*, client=None) -> dict:
             "rotated": bool(out.get("refresh_token"))}
 
 
-def grant_authorization_code(code: str, redirect_uri: str, code_verifier: str = "",
+def grant_authorization_code(code: str, redirect_uri: str = "", code_verifier: str = "",
                              *, client=None) -> dict:
     """用授权码换 token（access_token + refresh_token 一对）。
 
@@ -385,6 +411,11 @@ def grant_authorization_code(code: str, redirect_uri: str, code_verifier: str = 
     access_token 与 refresh_token，而 refresh_token 是**一次性**的
     （续期即轮换），所以只在续期时用它必然断链。
 
+    现状说明（实测）：迅雷的授权页只认**已注册**的 redirect_uri
+    （`oia-pan-ssl.xunlei.com` 那个），自定义地址会被判「无效请求」——
+    白名单在迅雷服务端，程序改不了。所以全自动登录走不通，只能由用户
+    自己从浏览器拿 code 贴进来（见 /api/xlp/code）。
+
     授权码本身是短时效的一次性凭证：拿到就要用，过期作废。
     """
     if not (code or "").strip():
@@ -392,8 +423,9 @@ def grant_authorization_code(code: str, redirect_uri: str, code_verifier: str = 
     body = {"grant_type": "authorization_code",
             "code": code.strip(),
             "client_id": OAUTH_CLIENT_ID,
-            "client_secret": OAUTH_CLIENT_SECRET,
-            "redirect_uri": redirect_uri}
+            "client_secret": OAUTH_CLIENT_SECRET}
+    if redirect_uri:
+        body["redirect_uri"] = redirect_uri
     if code_verifier:
         body["code_verifier"] = code_verifier
     own = client is None
