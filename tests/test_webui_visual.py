@@ -493,6 +493,6 @@ def test_cloud_ingest_has_status_row_and_stage():
     assert 'subsApi("/api/cloud/capability", {})' not in js
     # 队列里要有「云端落地中」这个阶段
     assert 'cloud: "云端落地中"' in js
-    assert '"uploading", "cloud"]' in js, "云端任务也要能停止（只是不再等）"
+    assert '"cloud", "deferred"]' in js, "云端任务也要能停止（只是不再等）"
     # 如实说明没有进度接口
     assert "不提供离线任务状态" in js

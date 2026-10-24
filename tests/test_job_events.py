@@ -107,7 +107,7 @@ def test_every_old_version_upgrades_to_v5(tmp_path, label, schema, version):
     path = make_db(tmp_path / "jobs.db", schema, version,
                    rows=[{"id": "old1", "code": "SSIS-1"}])
     s = store.Store(path)
-    assert user_version(path) == store.SCHEMA_VERSION == 5, label
+    assert user_version(path) == store.SCHEMA_VERSION == 6, label
     assert {"job_events", "jobs", "state"} <= tables(path), label
     assert {"job_id", "at", "kind", "detail"} <= columns(path, "job_events"), label
     # 老数据还在（v0 是空库，本来就没有行），且升级后能正常记事件
@@ -123,7 +123,7 @@ def test_v2_upgrade_adds_resume_from_and_v3_columns(tmp_path):
     assert "exec_owner" not in columns(path, "jobs")
     store.Store(path)
     assert {"resume_from", "exec_owner", "exec_beat"} <= columns(path, "jobs")
-    assert user_version(path) == 5
+    assert user_version(path) == 6
 
 
 def test_mislabelled_v4_without_state_table_is_repaired(tmp_path):
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS state (
     assert "exec_owner" not in columns(path, "jobs")
     store.Store(path)
     assert {"resume_from", "exec_owner", "exec_beat"} <= columns(path, "jobs")
-    assert user_version(path) == 5
+    assert user_version(path) == 6
 
 
 def test_migration_is_idempotent(tmp_path):

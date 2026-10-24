@@ -608,6 +608,16 @@ class Cancelled(RuntimeError):
     """用户主动停止任务。"""
 
 
+class LossOfLease(RuntimeError):
+    """租约被别的执行者接走：本线程必须安静退出。
+
+    与用户取消（Cancelled）**必须分开**：取消要落 cancelled 终态，失租却绝对
+    不能写共享状态 —— 接管者正持租在跑，旧线程把它覆盖成 cancelled/failed
+    等于替别人取消任务（真实发生过：旧线程退出时任务写成 cancelled，
+    「清空已完成」把还在跑的记录删掉）。require_lease / 心跳统一抛这个。
+    """
+
+
 def rclone(*args: str, timeout: float = 7200.0) -> tuple[int, str, str]:
     cmd = ["rclone", "--config", RCLONE_CONFIG, *args]
     try:
@@ -750,12 +760,16 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
     backend = storage.get()
     inbox = str(get_setting("CLOUD_INBOX")).strip().strip("/")
     dest = str(get_setting("CLOUD_DEST") or "").strip().strip("/") or storage.root()
+    # 任务专属收件目录：共享 inbox 曾让并发任务互相认领对方的落地目录
+    # （各自把「新增目录」当自己的，然后搬走、清掉）。观察范围圈死在自己的
+    # 子目录里，别人的落地、用户手动加的目录都进不来。
+    my_inbox = cloudingest.task_inbox(inbox, key or job_id)
 
     job_update(job_id, stage="cloud", percent=0.0, speed=0)
-    job_event(job_id, "stage", f"cloud 提交到 {inbox}")
-    submitted = cloudingest.submit(backend, source, inbox)
+    job_event(job_id, "stage", f"cloud 提交到 {my_inbox}")
+    submitted = cloudingest.submit(backend, source, my_inbox)
     job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
-                              "cloud_inbox": inbox, "cloud_url": source})
+                              "cloud_inbox": my_inbox, "cloud_url": source})
 
     def on_progress(snapshot: dict, rounds: int) -> None:
         if cancel_requested(job_id):
@@ -768,7 +782,7 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
 
     async def wait() -> list:
         return await cloudingest.wait_landing(
-            backend, inbox, submitted["before"],
+            backend, my_inbox, submitted["before"],
             poll=float(get_setting("CLOUD_POLL") or 10),
             timeout=float(get_setting("CLOUD_LAND_TIMEOUT") or 7200),
             stable=int(get_setting("CLOUD_LAND_STABLE") or 3),
@@ -783,9 +797,10 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
 
     results = []
     for item in landed:
+        require_lease(job_id, code)              # 整理前确认租约还在自己手里
         job_event(job_id, "stage", f"landed {item.folder}（{item.total} 字节）")
         plan = cloudorganize.plan(item.folder, item.files)
-        moved = cloudorganize.apply(backend, inbox, plan, code or plan.target,
+        moved = cloudorganize.apply(backend, my_inbox, plan, code or plan.target,
                                     dst_root=dest)
         record = {
             "folder": moved["target"],
@@ -795,13 +810,13 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
                 (int(f.get("size") or 0) for f in item.files if f.get("name") == old), 0)}
                 for old, n in zip(plan.move, moved["files"])],
             "size": moved["size"],
-            "inbox": f"{inbox}/{item.folder}",
+            "inbox": f"{my_inbox}/{item.folder}",
         }
         job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
                                   "cloud": record})
         results.append(record)
     return {"landed": [x.folder for x in landed], "records": results,
-            "inbox": inbox, "dest": dest}
+            "inbox": my_inbox, "dest": dest}
 
 
 def scrape_attachments(work: Path, folder: str, files: list[Path],
@@ -1119,9 +1134,12 @@ def lease_end(job_id: str) -> None:
 
 
 def require_lease(job_id: str, code: str = "") -> None:
-    """执行前确认租约仍属于自己；被接管就停手，绝不和另一个执行者抢同一目录。"""
+    """执行前确认租约仍属于自己；被接管就停手，绝不和另一个执行者抢同一目录。
+
+    失租抛 LossOfLease（不是 Cancelled）：旧线程只退出，不写共享终态。
+    """
     if not lease_alive(job_id):
-        raise Cancelled(f"任务 {code or job_id} 已由另一个执行者接手，本线程停止")
+        raise LossOfLease(f"任务 {code or job_id} 已由另一个执行者接手，本线程停止")
     if cancel_requested(job_id):
         raise Cancelled("已停止")
 
@@ -1151,8 +1169,13 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             out = _cloud_run(job_id, source, code, key)
             _finish_cloud(job_id, source, out)
         except Cancelled as exc:
+            # 用户主动停止才落终态；失租（LossOfLease）绝不能写共享状态 ——
+            # 接管者正在跑，旧线程把它写成 cancelled 等于替别人取消任务
             job_update(job_id, stage="cancelled", error="已停止")
             job_event(job_id, "cancelled", _first_line(str(exc)) or "已停止")
+        except LossOfLease as exc:
+            log.info("云添加任务 %s 失租，旧线程安静退出：%s", job_id, exc)
+            job_event(job_id, "lease_lost", _first_line(str(exc)))
         except Exception as exc:                # noqa: BLE001 失败要落到任务状态上
             log.exception("云添加任务失败")
             job_update(job_id, stage="failed", error=str(exc)[:300])
@@ -1296,6 +1319,11 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         # 主动停止是独立终态：用户自己停的，不该混进失败里（也不该计入失败率）
         job_update(job_id, stage="cancelled", error="已停止")
         job_event(job_id, "cancelled", _first_line(str(exc)) or "已停止")
+    except LossOfLease as exc:
+        # 失租只退出：接管者持租在跑，这里写 cancelled/failed 会覆盖它的状态，
+        # 「清空已完成」还会把仍在跑的记录删掉。留一条事件供排查。
+        log.info("任务 %s 失租，旧线程安静退出：%s", job_id, exc)
+        job_event(job_id, "lease_lost", _first_line(str(exc)))
     except Exception as exc:
         log.exception("网页任务失败")
         if retry.classify(str(exc)) == retry.QUOTA:
@@ -1395,12 +1423,12 @@ def _pending_jobs() -> list[dict]:
         log.warning("读取任务表失败，退回内存快照：%s", exc)
         with _jobs_lock:
             return [dict(j) for j in JOBS.values()
-                    if j.get("stage") in ("queued", "downloading", "organizing", "uploading")]
+                    if j.get("stage") in store.RUNNING]
     if jobs:
         return jobs
     with _jobs_lock:
         return [dict(j) for j in JOBS.values()
-                if j.get("stage") in ("queued", "downloading", "organizing", "uploading")]
+                if j.get("stage") in store.RUNNING]
 
 def admit(job_id: str) -> bool:
     """现在放得下吗？放得下就从队列里拿掉、记上额度、启动线程。
@@ -2236,7 +2264,7 @@ def reconcile_backlog(todo: dict) -> list[dict]:
     # 走「任务记录已不存在」分支被放回 pending → 重复下载。
     archived = archived_codes()
     changed = []
-    store = _store()
+    jobs_db = _store()                          # 局部名换成 jobs_db：store 是模块
     for sub_key, bucket in (todo or {}).items():
         for code, item in bucket.items():
             if item.get("state") != backlog.QUEUED:
@@ -2247,9 +2275,9 @@ def reconcile_backlog(todo: dict) -> list[dict]:
                 item["note"] = "已归档"
                 changed.append({"code": code, "result": "archived"})
                 continue
-            job = store.get(job_id) if job_id else {}
-            if job and job.get("stage") in ("queued", "downloading", "organizing", "uploading"):
-                continue                     # 还在跑，别动
+            job = jobs_db.get(job_id) if job_id else {}
+            if job and job.get("stage") in store.RUNNING:
+                continue                     # 还在跑，别动（cloud 也在跑，曾经漏过它）
             if job and job.get("stage") == "deferred":
                 continue                     # 等额度，不算失败
             why = (job or {}).get("error") or ("任务记录已不存在" if not job else "未完成")

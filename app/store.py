@@ -22,9 +22,12 @@ from contextlib import contextmanager
 log = logging.getLogger("x-drive.store")
 
 # 占着番号的状态：延期也算（它还要跑，不能放过第二个同番号任务进来）
-ACTIVE = ("queued", "downloading", "organizing", "uploading", "deferred")
-# 正在占着下载槽的状态：延期在等额度，不能算进去
-RUNNING = ("queued", "downloading", "organizing", "uploading")
+ACTIVE = ("queued", "downloading", "organizing", "uploading", "cloud", "deferred")
+# 正在占着下载槽的状态：延期在等额度，不能算进去；cloud 全程在云盘，
+# 不占本地下载并发，但**占番号去重**（曾经漏掉它：云任务挂在这时同番号能重复提交）。
+RUNNING = ("queued", "downloading", "organizing", "uploading", "cloud")
+# 已结束：清空/删除只认这几个。
+FINISHED = ("done", "failed", "cancelled")
 
 # 恢复后「待对账」标记：主标记在 state 表里（跟着库走，备份/覆盖都能带上）；
 # 但库本身可能就是刚被覆盖、写不进去的那个，所以另存一份旁路文件。
@@ -98,7 +101,8 @@ def read_reconcile_mark(db_path: str) -> dict:
 # 迁移版本：存在 user_version 里。每次改表结构/索引都必须 +1 并补一段迁移，
 # 因为 CREATE UNIQUE INDEX IF NOT EXISTS 对「已存在的同名旧索引」完全无效 ——
 # 旧库升级后 uniquely 条件不会更新，表现就是「测试全绿、线上照旧重复下载」。
-SCHEMA_VERSION = 5
+# v6：cloud 纳入活跃状态（唯一索引与查询口径都要重建）。
+SCHEMA_VERSION = 6
 
 # 执行者心跳超过这么久没更新，就认为那个进程已经不在了，允许别人接手
 STALE_BEAT = 120.0
@@ -181,7 +185,8 @@ class Store:
         with self._migrate_conn() as conn:
             version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             steps = [(2, self._migrate_v2), (3, self._migrate_v3),
-                     (4, self._migrate_v4), (5, self._migrate_v5)]
+                     (4, self._migrate_v4), (5, self._migrate_v5),
+                     (6, self._migrate_v6)]
             if version >= SCHEMA_VERSION and self._structure_ok(conn):
                 self._ensure_index(conn)
                 return version
@@ -286,6 +291,14 @@ class Store:
             " detail TEXT NOT NULL DEFAULT '')")
         conn.execute("CREATE INDEX IF NOT EXISTS job_events_job ON job_events(job_id)")
 
+    def _migrate_v6(self, conn) -> None:
+        """v6：cloud 纳入活跃状态 —— 重建唯一索引。
+
+        索引条件里的状态列表是内联常量，旧索引不会自己更新，必须 DROP 再建
+        （这就是 v2 踩过的同一个坑：IF NOT EXISTS 对旧同名索引无效）。
+        """
+        self._ensure_index(conn, force=True)
+
     def _ensure_index(self, conn, force: bool = False) -> None:
         """建/重建活跃番号唯一索引。
 
@@ -388,8 +401,36 @@ class Store:
             conn.execute(f"UPDATE jobs SET {sets}, updated_at=? WHERE id=?",
                          (*clean.values(), time.time(), job_id))
 
+    def update_cas(self, job_id: str, owner: str, **fields) -> bool:
+        """按执行 token 的条件更新：**只有仍持租的执行者写得进去**。
+
+        失租旧线程与用户取消共用一个异常的年代，旧线程退出前会把共享任务写成
+        cancelled/failed —— 那时新执行者已接管并正在跑，任务却成了终态，
+        「清空已完成」还会顺手把它删掉。现在终态与执行期写入都走这里：
+        WHERE exec_owner=本次token，写不进去说明租约已不属于自己，返回 False，
+        调用方安静退出即可（不改共享状态、不删外部任务）。
+        """
+        clean = {k: v for k, v in fields.items() if k in FIELDS}
+        if not job_id:
+            return False
+        if clean:
+            if "extra" in clean and not isinstance(clean["extra"], str):
+                clean["extra"] = json.dumps(clean["extra"], ensure_ascii=False)
+            sets = ", ".join(f"{k}=?" for k in clean)
+        else:
+            sets = "exec_beat=exec_beat"        # 只想验证归属时的空更新
+        with self._lock, self._conn() as conn:
+            cur = conn.execute(
+                f"UPDATE jobs SET {sets}, updated_at=? WHERE id=? AND exec_owner=?",
+                (*clean.values(), time.time(), job_id, owner))
+            return bool(cur.rowcount)
+
     def finish(self, job_id: str, stage: str, error: str = "") -> None:
         self.update(job_id, stage=stage, error=error[:300])
+
+    def finish_cas(self, job_id: str, owner: str, stage: str, error: str = "") -> bool:
+        """终态也要按 token 条件写：同 update_cas，见那里的注释。"""
+        return self.update_cas(job_id, owner, stage=stage, error=error[:300])
 
     # ------------------------------------------------------------ 事件（时间线）
     # 事件种类：queued 入队 / claimed 领取 / retry 重试 / deferred 延期 /
@@ -607,7 +648,8 @@ class Store:
                 conn.rollback()
                 raise
 
-    # 已结束的状态：可以被「清空」删掉记录的那几种
+    # 已结束的状态：可以被「清空」删掉记录的那几种（统一引用模块级定义，
+    # 阶段口径只此一份：cloud 一进 ACTIVE，终态与清空就都自动一致）
     FINISHED = ("done", "failed", "cancelled")
 
     def delete(self, job_id: str) -> bool:

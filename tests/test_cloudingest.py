@@ -189,6 +189,110 @@ def test_folder_key_is_stable():
     assert a == b and "MIMK-290" in a
 
 
+# ─────────────────────────────────────────── 归属隔离与重验（v6 补丁）
+
+def test_task_inbox_isolates_per_job():
+    """每个任务一个专属子目录：共享 inbox 曾让两个任务互相认领对方的落地。"""
+    assert cloudingest.task_inbox("迅雷云盘/我的资源", "MIMK290") == \
+        "迅雷云盘/我的资源/MIMK290"
+    assert cloudingest.task_inbox("inbox", "") == "inbox/task", "空键退到占位，不拼出裸 inbox"
+    assert "/" not in cloudingest.task_inbox("i", "a/b").rsplit("/", 1)[1]
+
+
+def test_two_tasks_same_inbox_do_not_steal_each_other():
+    """两个任务各看各的子目录：A 的落地不能被 B 的观察收走（曾经全收）。"""
+    b = FakeBackend()
+    b.script = [{"AUDIT-A": {"a.mp4": 10}}] * 6
+    landed_a = run(b, {}, stable=2)          # 任务 A 的观察点 = inbox
+    # 任务 B 的观察点在另一个子目录：A 的目录对 B 不可见，B 什么也收不到，
+    # 等不到自己的落地就超时 —— 而不是把 A 的目录当成自己的
+    with pytest.raises(LandingTimeout):
+        asyncio.run(cloudingest.wait_landing(
+            b, "inbox/task-B", {}, poll=0.01, timeout=0.3, stable=2))
+    assert [x.folder for x in landed_a] == ["AUDIT-A"]
+
+
+def test_strict_snapshot_refuses_to_degrade_to_empty():
+    """提交前拍不到底片必须抛错：空快照会把既存目录全当成新落地。"""
+    class Boom(FakeBackend):
+        def list_dirs(self, path):
+            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError):
+        cloudingest.snapshot_strict(Boom(), "inbox")
+    # 对照：旧 snapshot 仍允许降级（等待期间的观察用它，读不到当空）
+    assert cloudingest.snapshot(Boom(), "inbox") == {}
+
+
+def test_settled_dir_is_revoked_when_it_grows_again():
+    """「稳定」不是一锤定音：已判稳定的目录体量又变，必须撤销重新等。
+
+    迅雷中途卡一下再继续，旧版锁定第一次平稳的体量就去整理，少收文件，
+    随后整目录清理把后到的内容删掉。
+    """
+    b = FakeBackend()
+    b.script = [
+        {"MIMK-290": {"a.mp4": 10}},
+        {"MIMK-290": {"a.mp4": 10}},         # 稳 1
+        {"MIMK-290": {"a.mp4": 100}},        # 放行条件未齐时又变了：必须撤销
+        {"MIMK-290": {"a.mp4": 100}},         # 重新稳 1
+        {"MIMK-290": {"a.mp4": 100}},         # 重新稳 2
+        {"MIMK-290": {"a.mp4": 100}},
+    ]
+    landed = run(b, {}, stable=2)
+    assert len(landed) == 1
+    assert landed[0].total == 100, "拿旧体量（10）去整理就是漏收文件"
+
+
+def test_returns_only_after_every_known_dir_is_settled():
+    """A 已稳、B 还在涨：不许只返回 A（B 会被漏掉并随后被整目录清理波及）。"""
+    class Scripted(FakeBackend):
+        """A 一直稳定，B 每轮增长。"""
+        def measure_hook(self, inbox):
+            return None
+    b = FakeBackend()
+    # FakeBackend 的剧本机制是「每次 list_dirs 推进一格」；这里手写轮次：
+    # 直接构造 measure 的返回序列最直观 —— 用 monkeypatch 式子类。
+    seq = [
+        {"A-1": {"a.mp4": 10}, "B-1": {"b.mp4": 1}},
+        {"A-1": {"a.mp4": 10}, "B-1": {"b.mp4": 2}},
+        {"A-1": {"a.mp4": 10}, "B-1": {"b.mp4": 3}},
+        {"A-1": {"a.mp4": 10}, "B-1": {"b.mp4": 9}},   # B 最终稳定
+        {"A-1": {"a.mp4": 10}, "B-1": {"b.mp4": 9}},
+        {"A-1": {"a.mp4": 10}, "B-1": {"b.mp4": 9}},
+    ]
+    it = iter(seq)
+
+    class SeqFake(FakeBackend):
+        def list_dirs(self, path):
+            return sorted(next(it, seq[-1]).keys())
+
+        def list_files(self, path):
+            step = seq[-1] if it.count is None else None
+            return []
+
+    # 更简单：直接给 FakeBackend 换 measure 序列
+    steps = list(seq)
+    calls = {"n": 0}
+
+    def fake_measure(backend, inbox):
+        idx = min(calls["n"], len(steps) - 1)
+        calls["n"] += 1
+        return {k: {"files": [{"name": n, "size": s} for n, s in v.items()],
+                    "count": len(v), "bytes": sum(v.values())}
+                for k, v in steps[idx].items()}
+
+    import app.cloudingest as ci
+    orig = ci.measure
+    ci.measure = fake_measure
+    try:
+        landed = asyncio.run(ci.wait_landing(
+            b, "inbox", {}, poll=0.01, timeout=3, stable=2))
+    finally:
+        ci.measure = orig
+    got = {x.folder: x.total for x in landed}
+    assert got == {"A-1": 10, "B-1": 9}, f"B 在涨时被丢弃了：{got}"
+
+
 # ─────────────────────────────────────────── 与 web 的接缝
 
 def test_cloud_ready_explains_why_not(monkeypatch):

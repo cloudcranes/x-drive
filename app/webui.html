@@ -2526,7 +2526,7 @@ async function submitDownload(text, btn) {
 const STAGE_TEXT = {queued: "等空间", downloading: "下载中", organizing: "整理中",
   uploading: "上传中", cloud: "云端落地中", deferred: "额度等待", done: "完成",
   cancelled: "已停止", failed: "失败"};
-const ACTIVE = new Set(["queued", "downloading", "organizing", "uploading", "cloud"]);
+const ACTIVE = new Set(["queued", "downloading", "organizing", "uploading", "cloud", "deferred"]);
 // 已结束：这些可以删记录（后端也按同一份集合校验）
 const DONE_STAGES = new Set(["done", "failed", "cancelled"]);
 let lastJobs = [];

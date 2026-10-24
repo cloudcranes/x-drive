@@ -148,6 +148,15 @@ class Config:
 # ---------------------------------------------------------------- 外部命令
 
 
+class LeaseLost(RuntimeError):
+    """租约被别的执行者接走：本线程必须安静退出。
+
+    与普通失败分开：接管者正持租在跑，旧线程若走失败收口会把共享任务写成
+    failed、还会把自己「曾经创建」的迅雷任务删掉 —— 那个任务现在可能正被
+    新执行者续接着。失租只退出，不写共享终态、不动外部任务。
+    """
+
+
 def _flag(name: str, default: str = "1") -> bool:
     """环境变量开关：0/false/False 视为关。与网页侧同一套写法。
 
@@ -424,9 +433,13 @@ def lease_alive(cfg: Config, job_id: str) -> bool:
 
 
 def require_lease(cfg: Config, job_id: str) -> None:
-    """关键节点自查：失租就停手，绝不和另一个执行者抢同一目录。"""
+    """关键节点自查：失租就停手，绝不和另一个执行者抢同一目录。
+
+    抛 LeaseLost（不是普通 RuntimeError）：外层据此区分「自己的任务失败了」
+    和「这个任务已经归别人管了」—— 后者不能写终态、不能删外部下载任务。
+    """
     if job_id and not lease_alive(cfg, job_id):
-        raise RuntimeError(f"任务 {job_id} 已由另一个执行者接手，本端停止")
+        raise LeaseLost(f"任务 {job_id} 已由另一个执行者接手，本端停止")
 
 
 def lease_end(cfg: Config, job_id: str) -> None:
@@ -810,6 +823,11 @@ async def run_task(
             # outcome_ok 决定「这条链路是否完整走完」。任务表没落库时统计记 fail，
             # 与给用户的 ⚠️ 保持一致 —— 同一任务不能一边说失败一边记 ok。
             outcome_ok = task_done
+        except LeaseLost as exc:
+            # 失租只退出：任务已归新执行者。不能写 failed（会覆盖接管者的状态），
+            # 也不能删迅雷任务 —— handle 里那个 id 现在可能正被接管者续接。
+            log.info("任务 %s 失租，旧线程安静退出：%s", job_id, exc)
+            task_event(cfg, job_id, "lease_lost", first_line(str(exc)))
         except Exception as exc:
             log.exception("下载失败 %s", source[:80])
             if retry.classify(str(exc)) == retry.QUOTA:

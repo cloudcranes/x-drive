@@ -72,6 +72,29 @@ def snapshot(backend, inbox: str) -> dict[str, int]:
     return out
 
 
+def snapshot_strict(backend, inbox: str) -> dict[str, int]:
+    """提交前快照：**读不到就抛**，不许降级成空目录。
+
+    曾经的降级在这里出过事：列目录失败 → before={} → 之后 inbox 里既有的目录
+    全被当成「新落地」，被搬走、被清掉。提交前拍不到底片就不提交 ——
+    宁可这次任务失败，也不能拿着别人的目录开工。
+    """
+    out: dict[str, int] = {}
+    for name in backend.list_dirs(inbox):       # 列目录失败：原样抛给调用方
+        out[str(name)] = -1
+    for entry in backend.list_files(inbox):
+        out[str(entry.name)] = int(entry.size or 0)
+    return out
+
+
+def task_inbox(inbox: str, job_key: str) -> str:
+    """任务专属收件目录：`<inbox>/<键>`。共享 inbox 曾经让两个任务互相认领
+    对方的落地目录（各自把「新增目录」当自己的），这个键把观察范围圈死在一个
+    任务自己的地盘里；键不含路径分隔符（workspace.key_of 已归一）。"""
+    leaf = str(job_key or "").strip("/").replace("/", "-") or "task"
+    return f"{inbox.rstrip('/')}/{leaf}"
+
+
 def measure(backend, inbox: str) -> dict[str, dict]:
     """inbox 里**目录**的体量（往里数一层）。
 
@@ -126,12 +149,18 @@ async def wait_landing(backend, inbox: str, before: dict, *,
 
     批量提交多个种子时会一次来好几个目录，全部收下；只要「连续 stable 轮没有
     新名字出现」且已有稳定的条目，就返回。一个都没来且超时 → LandingTimeout。
+
+    「稳定」必须每轮重新验证：目录一旦进 settled 就不再看它，曾是老版本的
+    缺陷 —— 迅雷中途卡一下再继续，第一次平稳读到的体量就被永久锁定，
+    拿着旧清单去整理（少收文件），随后整目录清理还把后到的文件删掉。
+    现在每轮对**所有**已知条目重新算指纹，变化即撤销稳定；全部已绑定条目
+    都重新稳定 + 连续 stable 轮没有新名字，才放行。
     """
     need = max(MIN_STABLE, int(stable or DEFAULT_STABLE))
     loop = asyncio.get_event_loop()
     deadline = loop.time() + float(timeout or DEFAULT_TIMEOUT)
     settled: dict[str, Landing] = {}
-    streak: dict[str, tuple[tuple, int]] = {}
+    streak: dict[str, tuple[tuple, int]] = {}   # 条目 → (上一轮指纹, 连稳次数)
     known: set[str] = set()
     quiet = 0                                    # 连续几轮没出现新名字
     rounds = 0
@@ -146,28 +175,33 @@ async def wait_landing(backend, inbox: str, before: dict, *,
             quiet = 0
         else:
             quiet += 1
-        for name in fresh:
-            if name in settled:
-                continue
+        # 每轮对全部已知条目重算指纹；被观测到变化就把稳定撤销（重新计 0）
+        for name in known:
             item = items.get(name) or {"files": [], "count": 0, "bytes": 0}
             fp = _fingerprint(item)
             last, hits = streak.get(name, (None, 0))
             hits = hits + 1 if fp == last else 1
             streak[name] = (fp, hits)
             if hits >= need:
+                if name in settled and settled[name].total == int(item.get("bytes") or 0) \
+                        and len(settled[name].files) == int(item.get("count") or 0):
+                    continue                     # 没变，维持原判定
                 files = [dict(f) for f in item.get("files") or []]
                 settled[name] = Landing(folder=name, files=files,
                                         total=int(item.get("bytes") or 0), rounds=rounds)
                 log.info("云添加已落地：%s（%d 个文件，%d 字节，第 %d 轮稳定）",
                          name, len(files), item.get("bytes"), rounds)
+            elif name in settled:
+                log.info("云添加 %s 体量又变了（第 %d 轮），撤销稳定重新等", name, rounds)
+                settled.pop(name, None)
         if progress:
             try:
                 progress({name: {"count": items[name]["count"], "bytes": items[name]["bytes"]}
-                          for name in fresh if name in items}, rounds)
+                          for name in known if name in items}, rounds)
             except Exception:                   # noqa: BLE001 进度只是展示
                 pass
-        # 已有稳定条目，且连续 need 轮没有新名字 → 这一批就这些了
-        if settled and quiet >= need:
+        # 放行条件：所有已知条目都已（重新）稳定，且连续 need 轮没有新名字
+        if settled and len(settled) == len(known) and quiet >= need:
             return sorted(settled.values(), key=lambda x: x.folder)
         if loop.time() > deadline:
             if settled:
@@ -181,8 +215,12 @@ async def wait_landing(backend, inbox: str, before: dict, *,
 
 
 def submit(backend, url: str, inbox: str) -> dict:
-    """提交前的准备 + 提交。返回 {before, inbox}，供 wait_landing 用。"""
-    before = snapshot(backend, inbox)
+    """提交前的准备 + 提交。返回 {before, inbox}，供 wait_landing 用。
+
+    快照**严格模式**：拍不到底片就抛 —— 拿空快照开工会把 inbox 里既有的
+    目录全当成新落地（真实发生过）。
+    """
+    before = snapshot_strict(backend, inbox)
     try:
         backend.ensure_dir(inbox)
     except Exception as exc:                    # noqa: BLE001 目录已存在时后端自己会忽略

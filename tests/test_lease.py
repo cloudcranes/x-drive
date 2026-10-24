@@ -179,7 +179,7 @@ def test_require_lease_raises_when_lost(tmp_path, monkeypatch):
     assert web_lease == token
     web.require_lease("j1")                    # 持租时放行
     st.claim_owner("j1", "other", now=time.time() + store.STALE_BEAT + 1)
-    with pytest.raises(web.Cancelled) as err:
+    with pytest.raises(web.LossOfLease) as err:
         web.require_lease("j1", "SSIS-1")
     assert "已由另一个执行者接手" in str(err.value)
     web.lease_end("j1")
@@ -199,7 +199,7 @@ def test_finish_refuses_to_archive_without_lease(tmp_path, monkeypatch):
     st.claim_owner("j1", "other", now=time.time() + store.STALE_BEAT + 1)
     work = tmp_path / "w"
     work.mkdir()
-    with pytest.raises(web.Cancelled):
+    with pytest.raises(web.LossOfLease):
         web._finish("j1", work, "SSIS-1", [], 0, "http://x", "magnet:a",
                     {"download": 0, "organize": 0, "upload": 0}, _Policy())
     assert core.load_state(web.STATE) == {}, "失租时不许写归档"
@@ -214,7 +214,7 @@ def test_upload_loop_checks_lease_before_upload(tmp_path, monkeypatch):
     st.claim_owner("j1", "other", now=time.time() + store.STALE_BEAT + 1)
     pushed = []
     monkeypatch.setattr(web, "upload_folder", lambda p, f: pushed.append(f) or ("x", 0))
-    with pytest.raises(web.Cancelled):
+    with pytest.raises(web.LossOfLease):
         web._upload_loop("j1", tmp_path, "SSIS-1", 1, {"upload": 0.0, "download": 0.0,
                                                        "organize": 0.0}, _Policy())
     assert pushed == [], "失租后不能继续上传"
@@ -244,7 +244,8 @@ def test_cleanup_is_skipped_when_lease_lost(tmp_path, monkeypatch):
     assert real.exists() and (real / "v.mp4").exists(), "失租后不许清理下载原件"
     assert (tmp_path / "work" / "state" / "SSIS123").exists(), "失租后不许清理工作区"
     job = st.get("j1")
-    assert job["stage"] == "cancelled", "失租按停止处理，不写 done"
+    assert job["stage"] not in ("done", "failed", "cancelled"), \
+        "失租只退出，不许写共享终态（接管者还在跑，写 cancelled 等于替别人取消）"
     assert core.load_state(web.STATE) == {}, "失租时不写归档"
     assert job["exec_owner"] == "other", "失租时不能把别人的租约释放掉"
 
