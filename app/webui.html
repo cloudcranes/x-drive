@@ -3955,10 +3955,12 @@ const STORAGE_SCOPE_HINT = {
 
 // 容器里填宿主机 LAN 地址会连不上：后端会自动改写成 host.docker.internal。
 // 面板上提一句，免得用户以为「我明明填的是 192.168.1.170，怎么报错的又是别名」。
-function storageNetNote() {
+function storageNetNote(chosen) {
+  // rclone 走挂载配置，跟地址改写无关，别提
   if (!storageInfo || !storageInfo.net || !storageInfo.net.container) return "";
-  return `（当前在容器内：填 ${storageInfo.net.gateway || "宿主机"} 这类地址会自动按 `
-    + `${storageInfo.net.alias} 连，连不上时才会改写）`;
+  if (chosen === "rclone") return "";
+  return `（在容器内跑：宿主地址连不上时会自动改按 ${storageInfo.net.alias} 连，`
+    + `结果里会注明改过）`;
 }
 
 function storageChoice() {
@@ -3982,7 +3984,7 @@ function applyStorageScope() {
         && k.startsWith(r.dataset.scope === "openlist" ? "OPENLIST_" : "CD2_")))
       .map(r => r.dataset.scope);
     const others = [...new Set(hiddenDirty)].filter(x => x !== chosen);
-    let text = (STORAGE_SCOPE_HINT[chosen] || "") + storageNetNote();
+    let text = (STORAGE_SCOPE_HINT[chosen] || "") + storageNetNote(chosen);
     if (others.length) {
       text += `（另：${others.map(o => o === "openlist" ? "OpenList" : "CloudDrive2")
         .join(" / ")} 的改动还没保存，切过去看一眼再保存更稳妥）`;
