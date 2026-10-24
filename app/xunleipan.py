@@ -29,6 +29,7 @@ from urllib.parse import quote
 import httpx
 
 from . import settings as settings_mod
+from . import xunleipan_sign
 
 log = logging.getLogger("x-drive.xunleipan")
 
@@ -310,19 +311,19 @@ def apply_credentials(text: str, kind: str = "") -> dict:
             "client_id": parsed.get("XLPAN_CLIENT_ID", "")}
 
 
-def _headers() -> dict:
+def _headers(device_id: str = "", captcha: str = "") -> dict:
     token = _setting("XLPAN_TOKEN").strip()
     if " " not in token:                         # 只给了 access_token 就补 Bearer
         token = f"Bearer {token}"
     out = {"Authorization": token,
            "clientid": _setting("XLPAN_CLIENT_ID").strip(),
            "content-type": "application/json"}
-    device = _device_id()
+    device = device_id or _device_id()
     if device:
         out["x-device-id"] = device
-    captcha = _setting("XLPAN_CAPTCHA_TOKEN").strip()
-    if captcha:
-        out["x-captcha-token"] = captcha
+    cap = captcha or _setting("XLPAN_CAPTCHA_TOKEN").strip()
+    if cap:
+        out["x-captcha-token"] = cap
     return out
 
 
@@ -339,26 +340,43 @@ def _get(path: str, params: dict | None = None, *, client=None) -> dict:
             log.info("自动续期未成功（继续用旧 token）：%s", exc)
         res = client.get(url, params=params, headers=_headers())
         if res.status_code != 200 and "captcha" in (res.text or ""):
-            # 被判 captcha_invalid：走一遍轮换链再打一次。
-            # 链的规则（实测）：签发时回传**上一次用过的** captcha，签出来的新
-            # captcha 带着它用才有效。所以这里要带上当前 token 去签发。
-            token, _exp = sign_captcha(f"GET:{path}", client=client)
+            # 被判 captcha_invalid：走一遍「设备证明 + 签名 + 轮换链」再打一次。
+            #
+            # 关键（2026-10-24 实测）：官方现在**读接口也要 captcha**，而且
+            # 必须是「带设备签名」的那枚 —— 浏览器签的是三段
+            # ck0.<470>.<290>，而只回传 client_id/device_id 签发出来的是
+            # 单段 ck0.<260>，服务端不认（no client info found）。
+            # 所以这里先换一枚 deviceid（官方那条纯 HTTP 设备证明路径），
+            # 再用它算 captcha_sign 去签 captcha。
+            device = ""
+            try:
+                device = xunleipan_sign.device_proof(client=client)
+            except Exception as exc:              # noqa: BLE001 换不到就退回旧 deviceid
+                log.info("换 deviceid 失败（用设置里的）：%s", exc)
+                device = _setting("XLPAN_DEVICE_ID").strip()
+            dev32 = xunleipan_sign.device_id32(device) or _device_id()
+            meta, _raw, _ts = xunleipan_sign.build_captcha_meta(dev32)
+            token, _exp = sign_captcha(f"GET:{path}", previous="", meta=meta,
+                                       device_id=dev32, client=client)
             res = client.get(url, params=params,
-                             headers={**_headers(), "x-captcha-token": token})
+                             headers={**_headers(dev32, token), "x-device-id": dev32})
         if res.status_code != 200:
             text = res.text[:160]
             if "captcha" in text:
-                # 两种失败，处置完全不同，不能混成一句话：
-                #   · no client info found —— 签发成功但缺设备签名，重签无用，
-                #     必须从浏览器重新取一次 captcha（服务端只认带签名的那个）。
+                # 两种失败，处置不同：
+                #   · no client info found —— captcha 不带设备签名，服务端不认。
+                #     程序已经会自动换 deviceid 并签名；到这里还是失败，说明
+                #     官方换了策略或设备证明这条路不通 —— 可以从浏览器
+                #     localStorage 的 captcha_{clientid} 里手工取一枚填进设置。
                 #   · 其它 —— 轮换链对不上，重新签一次通常就好了。
                 detail = _captcha_detail(res.text)
                 if "client info" in detail:
                     raise PanError(
                         "迅雷 API 拒绝了这次 captcha（no client info found）："
-                        "签发接口给的 captcha 不带设备签名，服务端不认。"
-                        "需要从浏览器 localStorage 的 captcha_{clientid} 里"
-                        "重新取一次 captcha 填进设置"
+                        "这枚 captcha 不带设备签名，服务端不认。"
+                        "程序已自动重签过；仍失败说明官方改了什么，"
+                        "可以从浏览器 localStorage 的 captcha_{clientid} 里"
+                        "手工取一枚填进设置"
                         f"（原始原因：{detail}）")
                 raise PanError(
                     f"迅雷 API 仍要求验证码 token（captcha_invalid）："
@@ -529,29 +547,38 @@ def grant_authorization_code(code: str, redirect_uri: str = "", code_verifier: s
 
 
 def sign_captcha(action: str, *, previous: str = "", meta: dict | None = None,
-                 client=None) -> tuple[str, int]:
+                 device_id: str = "", client=None) -> tuple[str, int]:
     """签发一个 captcha token（写操作的风控凭据）。返回 (token, expires_in)。
 
     契约来自公开前端 chunk `service-captcha`：
         POST {shield}/v1/shield/captcha/init
         body: {client_id, action, device_id, captcha_token, meta}
 
-    **关键**：`captcha_token` 要回传**上一次用过的** token（首次传空串）——
-    服务端按轮换链校验。实测（2026-10-24）：回传旧 token 签发出来的能通过
-    （列目录 200），传空串签发的会被判 captcha_invalid（400）。
+    **关键**：meta 里必须有 `captcha_sign` —— 服务端要校验这个风控签名，
+    少了它直接 400 `invalid captcha_sign`；签出来的 captcha 也不带设备
+    签名，服务端会回 `no client info found`（那枚 captcha 根本不能用）。
 
-    所以签发成功要把新 token **记下来**（存进设置）：它就是链上的当前节点，
-    下一次签发要回传它。以前签完就丢，链断在第一步 —— 下次回传的仍是
-    最初手工粘的那个（服务端早轮换掉了），于是列目录一直 captcha_invalid。
+    签名的算法与设备证明在 `xunleipan_sign` 里（从官方 chunk 反推的纯
+    Python 版，与官方 JS 输出逐字节一致）。
+
+    `device_id` 必须是**签名时用的那一枚**（服务端会核对 meta 里的签名
+    与 body 里的 device_id 对不对得上）—— 传空则用设置里的。
+
+    `captcha_token` 要回传**上一次用过的** token（首次传空串）——
+    服务端按轮换链校验。
     """
     own = client is None
     client = client or httpx.Client(follow_redirects=True, timeout=_TIMEOUT)
     if not previous:
         # 链的当前节点：上一次签发/用过的那个（存在设置里）
         previous = _setting("XLPAN_CAPTCHA_TOKEN").strip()
+    device = device_id or _device_id()
+    if not meta or "captcha_sign" not in meta:
+        # 没给签名就自己算一份（设备 id 用设置里的）
+        meta, _raw, _ts = xunleipan_sign.build_captcha_meta(device)
     body = {"client_id": _setting("XLPAN_CLIENT_ID").strip() or OAUTH_CLIENT_ID,
             "action": action,
-            "device_id": _device_id(),
+            "device_id": device,
             "captcha_token": previous or "",
             "meta": meta or {}}
     try:
@@ -559,7 +586,7 @@ def sign_captcha(action: str, *, previous: str = "", meta: dict | None = None,
                           headers={**_headers(), "content-type": "application/json"},
                           json=body)
         if res.status_code != 200:
-            raise PanError(f"签发 captcha 失败：{res.status_code} {res.text[:120]}")
+            raise PanError(f"签发 captcha 失败：{res.status_code} {res.text[:160]}")
         data = res.json() or {}
     except (httpx.HTTPError, ValueError) as exc:
         raise PanError(f"签发 captcha 请求失败：{exc}") from exc
