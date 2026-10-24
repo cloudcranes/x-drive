@@ -36,6 +36,11 @@ def _dedupe_key(kind: str, subject: str) -> str:
     return f"{kind}:{subject}"
 
 
+def _dedupe_clear(kind: str, subject: str) -> None:
+    """忘掉一条去重记录：修好之后，下一次真出问题还能再提醒一次。"""
+    _SENT.pop(_dedupe_key(kind, subject), None)
+
+
 def _post(text: str, timeout: float = 10.0) -> bool:
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     data = urllib.parse.urlencode({
@@ -110,6 +115,26 @@ def long_pending(code: str, days: float, note: str = "") -> bool:
 def daily_summary(text: str, day: str) -> bool:
     """每日汇总：同一天只发一次。"""
     return notify("daily", day, f"📊 <b>每日汇总</b>\n{text}")
+
+
+def xlp_auth_broken(reason: str) -> bool:
+    """迅雷云盘登录失效：续期失败或 token 过期。
+
+    不发就等于哑了 —— 12 小时后所有直链/回收站/云端操作会集体失败，
+    而用户可能几天后才察觉。按「凭据」维度去重：同一场失效只提醒一次，
+    修好（续期成功）后 allow 重新放行。
+    """
+    return notify("xlp_auth", "xunlei-pan",
+                  f"🔑 <b>迅雷云盘登录已失效</b>\n{_esc(str(reason)[:300])}\n"
+                  f"请到网页「设置 → 存储」重新填 refresh_token。")
+
+
+def xlp_auth_ok() -> None:
+    """续期成功：清掉失效提醒的去重记录（下次真失效时还能再提醒）。"""
+    try:
+        _dedupe_clear("xlp_auth", "xunlei-pan")
+    except Exception:                          # noqa: BLE001 提醒状态不该拖累主流程
+        pass
 
 
 def reset_dedupe() -> None:

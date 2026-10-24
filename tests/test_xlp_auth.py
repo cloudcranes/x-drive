@@ -117,3 +117,59 @@ def test_auto_refresh_skips_when_not_expiring(monkeypatch):
     _env(monkeypatch, token=_jwt(int(time.time()) + 7200), refresh="r")
     out = xunleipan.auto_refresh()
     assert out["ok"] and out["skipped"] is True
+
+
+# ---------------------------------------------------------------- 轮换链加固
+
+def test_auto_refresh_writes_back_and_verifies(monkeypatch):
+    """续期后的新 refresh_token 必须真的写回设置（旧值已被消费，写不回就断了链）。"""
+    _env(monkeypatch, token=_jwt(int(time.time()) + 10), refresh="old-rt")
+    store = {}
+
+    def fake_refresh(client=None):
+        return {"access_token": "new-at", "refresh_token": "new-rt", "expires_in": 100}
+
+    monkeypatch.setattr(xunleipan, "refresh_access_token", fake_refresh)
+
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings",
+                        lambda u: store.update(u) or {"ok": True, "saved": list(u)})
+    monkeypatch.setattr(web_mod, "get_setting",
+                        lambda k, d=None: store.get(k, d if d is not None else ""))
+
+    out = xunleipan.auto_refresh()
+    assert out["ok"] and out["rotated"] is True
+    assert store["XLPAN_TOKEN"] == "new-at"
+    assert store["XLPAN_REFRESH_TOKEN"] == "new-rt"
+
+
+def test_auto_refresh_reports_when_writeback_failed(monkeypatch):
+    """写回没生效必须报错：旧 refresh_token 已被消费，静默失败等于断链。"""
+    _env(monkeypatch, token=_jwt(int(time.time()) + 10), refresh="old-rt")
+    monkeypatch.setattr(xunleipan, "refresh_access_token",
+                        lambda client=None: {"access_token": "new-at",
+                                             "refresh_token": "new-rt", "expires_in": 1})
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings", lambda u: {"ok": True, "saved": []})
+    monkeypatch.setattr(web_mod, "get_setting", lambda k, d=None: "old-rt")
+
+    with pytest.raises(xunleipan.PanError) as err:
+        xunleipan.auto_refresh()
+    assert "refresh_token" in str(err.value)
+
+
+def test_auto_refresh_alerts_on_failure(monkeypatch):
+    """续期失败要发通知：静默降级等于哑了。"""
+    _env(monkeypatch, token=_jwt(int(time.time()) + 10), refresh="bad-rt")
+    calls = []
+
+    def boom(client=None):
+        raise xunleipan.PanError("invalid_grant")
+
+    monkeypatch.setattr(xunleipan, "refresh_access_token", boom)
+    import app.notify as notify_mod
+    monkeypatch.setattr(notify_mod, "xlp_auth_broken",
+                        lambda reason: calls.append(reason) or True)
+    with pytest.raises(xunleipan.PanError):
+        xunleipan.auto_refresh()
+    assert calls and "invalid_grant" in calls[0]

@@ -4492,6 +4492,8 @@ async function loadSettings() {
       if (group === "数据源") pane.append(imageCacheRow());
       // 存储分区第三行：云添加这条链路当前能不能用（要求很硬）
       if (group === "存储") pane.append(cloudStatusRow());
+      // 存储分区第四行：迅雷云盘登录凭据（直链/回收站/云端操作用）
+      if (group === "存储") pane.append(xlpAuthRow());
       for (const [key, it] of groups[group]) pane.append(settingsRow(key, it));
       list.append(pane);
     });
@@ -4634,6 +4636,77 @@ function refreshImageCache(val) {
 
 // 云添加链路的状态：能不能用、云盘有哪些、落地目录在哪。
 // 这条链路依赖 CD2 的离线下载能力，缺一项就跑不动 —— 所以先摆结论再让人填参数。
+// 迅雷云盘登录状态：access_token 还能用多久、refresh_token 在不在、
+// 能不能续期。账号密码直登迅雷不支持（实测 currently not supported），
+// 所以「续期」是唯一的自动化路径 —— refresh_token 一次性的，续期后服务端
+// 会发新的，必须写回，否则下一次就 invalid_grant。
+function xlpAuthRow() {
+  const row = el("div", "kvrow setting");
+  const nm = el("span", "nm", "迅雷登录");
+  nm.title = "迅雷云盘直链/回收站操作用的凭据：access_token 快到期时自动用 refresh_token 续";
+  row.append(nm);
+  const val = el("span", "sval wide svalread", "检测中…");
+  row.append(val);
+  const btn = el("button", "ghost", "检测");
+  btn.type = "button";
+  btn.title = "问一次真实接口：凭据还能不能用";
+  const renew = el("button", "ghost", "立即续期");
+  renew.type = "button";
+  renew.title = "用 refresh_token 换新的 access_token（并把轮换后的 refresh_token 写回）";
+  const hint = el("span", "hint", "");
+  const fmtLeft = sec => {
+    if (!sec || sec <= 0) return "已过期";
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    return h ? `${h} 小时 ${m} 分` : `${m} 分`;
+  };
+  const show = d => {
+    if (!d) return;
+    if (!d.configured) {
+      val.textContent = "未配置 · 缺 clientid 或 access_token";
+      val.classList.add("dirty");
+      hint.textContent = "";
+      hint.className = "hint";
+      return;
+    }
+    const left = d.expires_in || 0;
+    val.textContent = d.ok
+      ? `可用 · 凭据剩余 ${fmtLeft(left)}`
+      : `不可用 · ${d.error || "未知原因"}`;
+    val.classList.toggle("dirty", !d.ok);
+    let h = "";
+    if (d.has_refresh) h = "refresh_token 在，可自动续期";
+    else h = "⚠ 没有 refresh_token：access_token 过期后要手工重填";
+    hint.textContent = h + (d.detail ? " · " + d.detail : "");
+    hint.className = "hint" + (d.ok ? (d.has_refresh ? " ok" : " err") : " err");
+  };
+  const call = async (url, btnEl) => {
+    btnEl.disabled = true;
+    hint.className = "hint";
+    hint.textContent = "检测中…";
+    try {
+      const d = await subsApi(url);
+      if (!d) throw new Error("无响应");
+      show(d);
+    } catch (e) {
+      val.textContent = "检测失败";
+      hint.textContent = e.message || String(e);
+      hint.className = "hint err";
+    } finally {
+      btnEl.disabled = false;
+    }
+  };
+  btn.addEventListener("click", () => call("/api/xlp/auth", btn));
+  renew.addEventListener("click", () => call("/api/xlp/auth?refresh=1", renew));
+  row.append(btn);
+  row.append(renew);
+  row.append(hint);
+  const note = el("div", "why",
+    "账号密码直登迅雷不支持（实测 currently not supported），只能靠 refresh_token："
+    + "首次从浏览器 localStorage 的 credentials_{clientid} 抄一次，之后程序自己续。");
+  row.append(note);
+  return row;
+}
+
 function cloudStatusRow() {
   const row = el("div", "kvrow setting");
   const nm = el("span", "nm", "云添加状态");

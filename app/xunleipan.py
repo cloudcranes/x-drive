@@ -198,10 +198,23 @@ def _needs_refresh(margin: int = 300) -> bool:
 
 
 def auto_refresh(*, client=None) -> dict:
-    """过期自动续期，并把新 token 写回设置。返回续期结果（没过期则 skipped=True）。"""
+    """过期自动续期，并把新 token 写回设置。返回续期结果（没过期则 skipped=True）。
+
+    续期失败会**发通知**：静默降级等于哑了——12 小时后所有直链/回收站/云端
+    操作集体失败，用户可能几天后才发现。修好（续期成功）后清掉提醒去重，
+    下次真失效时还能再提醒。
+    """
     if not _needs_refresh():
         return {"ok": True, "skipped": True, "reason": "access_token 未临近过期"}
-    out = refresh_access_token(client=client)
+    try:
+        out = refresh_access_token(client=client)
+    except Exception as exc:                    # noqa: BLE001
+        try:
+            from . import notify
+            notify.xlp_auth_broken(str(exc))
+        except Exception:                       # noqa: BLE001 通知失败不影响主流程
+            pass
+        raise
     saved = {}
     if out.get("access_token"):
         saved["XLPAN_TOKEN"] = out["access_token"]
@@ -213,6 +226,26 @@ def auto_refresh(*, client=None) -> dict:
             web_mod.set_settings(saved)
         except Exception as exc:                # noqa: BLE001 写回失败也要报告
             raise PanError(f"续期成功但写回设置失败：{exc}") from exc
+        # 回读校验：refresh_token 是一次性的，写回没生效的话下一次续期必然
+        # invalid_grant —— 而那时候旧值已经被消费掉了，只能重新从浏览器抄。
+        # 所以这里必须确认新值真的在库里。
+        try:
+            from . import web as web_mod
+            now_rt = str(web_mod.get_setting("XLPAN_REFRESH_TOKEN") or "")
+            now_tok = str(web_mod.get_setting("XLPAN_TOKEN") or "")
+        except Exception as exc:                # noqa: BLE001
+            raise PanError(f"续期后回读设置失败：{exc}") from exc
+        if out.get("refresh_token") and now_rt != out["refresh_token"]:
+            raise PanError(
+                "续期拿到了新的 refresh_token，但没写回设置（写回后回读不一致）"
+                "—— 旧值已被消费，请从浏览器重新抄一次 refresh_token")
+        if out.get("access_token") and now_tok != out["access_token"]:
+            raise PanError("续期拿到了新的 access_token，但没写回设置（回读不一致）")
+    try:
+        from . import notify
+        notify.xlp_auth_ok()
+    except Exception:                           # noqa: BLE001
+        pass
     return {"ok": True, "skipped": False, "expires_in": out.get("expires_in", 0),
             "rotated": bool(out.get("refresh_token"))}
 
