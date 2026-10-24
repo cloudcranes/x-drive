@@ -258,6 +258,6 @@ def test_verify_passes_after_sync_using_real_cloud(tmp_path, monkeypatch):
     cloud[VIDEO] = 4096            # 视频是更早上传的，本次不重推
     cloud["poster.jpg"] = 98765    # 海报同理，本次没重生成
     monkeypatch.setattr(web, "remote_ls",
-                        lambda code: [{"name": n, "size": s} for n, s in cloud.items()])
+                        lambda code, **_: [{"name": n, "size": s} for n, s in cloud.items()])
     verdict = web.verify_archive("SSIS-123")
     assert verdict["state"] == "校验通过", verdict

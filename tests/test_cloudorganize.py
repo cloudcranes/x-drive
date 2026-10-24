@@ -110,6 +110,13 @@ class FakeCloud:
         self.dirs.add(path)
         return path.rsplit("/", 1)[-1]
 
+    def list_files(self, path):
+        """核验用：返回 path 下的文件（名字 + 大小）。目录不存在按空处理。"""
+        from pathlib import PurePosixPath
+        prefix = path.rstrip("/") + "/"
+        return [type("E", (), {"name": PurePosixPath(p).name, "size": n})()
+                for p, n in self.files.items() if p.startswith(prefix)]
+
     def move_file(self, src, dst):
         if self.fail_on and self.fail_on in src:
             raise RuntimeError("云端拒绝")
@@ -121,10 +128,11 @@ class FakeCloud:
         self.purged.append(path)
         for name in [f for f in self.files if f.startswith(path.rstrip("/") + "/")]:
             self.files.pop(name)
+        return "已删除"
 
 
-def test_apply_moves_and_purges():
-    """目标目录与落地目录不同名：搬到新目录，原目录（含广告）整个清掉。"""
+def test_apply_moves_and_verifies_without_purge():
+    """目标目录与落地目录不同名：搬到新目录。apply 只搬+核验，**不再删源**。"""
     cloud = FakeCloud({"inbox/seed_xxx/489155.com@MIMK-290.mp4": 100,
                        "inbox/seed_xxx/广告.txt": 1})
     plan = cloudorganize.plan("seed_xxx", cloudorganize_measure(cloud, "seed_xxx"))
@@ -132,7 +140,45 @@ def test_apply_moves_and_purges():
     out = cloudorganize.apply(cloud, "inbox", plan, "MIMK-290", dst_root="archive")
     assert out["files"] == ["MIMK-290.mp4"]
     assert "archive/MIMK-290/MIMK-290.mp4" in cloud.files, "要真的搬到归档根"
-    assert cloud.purged == ["inbox/seed_xxx"], "原目录连带广告一起清掉"
+    assert cloud.purged == [], "清理挪到 cleanup_source：归档落盘之后才允许删"
+
+
+def test_cleanup_source_removes_source_after_archive():
+    """归档落盘后单独清理：源目录（含广告）删掉，目标目录完好。"""
+    cloud = FakeCloud({"inbox/seed_xxx/489155.com@MIMK-290.mp4": 100,
+                       "inbox/seed_xxx/广告.txt": 1})
+    plan = cloudorganize.plan("seed_xxx", cloudorganize_measure(cloud, "seed_xxx"))
+    plan.target = "MIMK-290"
+    cloudorganize.apply(cloud, "inbox", plan, "MIMK-290", dst_root="archive")
+    receipt = cloudorganize.cleanup_source(cloud, "inbox", plan, "archive")
+    assert receipt and cloud.purged == ["inbox/seed_xxx"]
+    assert "archive/MIMK-290/MIMK-290.mp4" in cloud.files, "目标目录不能被误删"
+    assert not [f for f in cloud.files if f.startswith("inbox/seed_xxx")], \
+        "广告文件跟着源目录一起消失"
+
+
+def test_cleanup_source_refuses_same_name():
+    """源与目标同名（原地整理）绝不能清：会把刚搬好的文件删掉。"""
+    cloud = FakeCloud({"inbox/MIMK-290/MIMK-290.mp4": 100})
+    plan = cloudorganize.plan("MIMK-290", cloudorganize_measure(cloud))
+    with pytest.raises(OrganizeError):
+        cloudorganize.cleanup_source(cloud, "inbox", plan)      # dst 缺省 = src
+
+
+def test_apply_verifies_target_or_raises():
+    """搬完必须回读核验：目标目录里没有那个文件就不许返回成功。"""
+    cloud = FakeCloud({"inbox/A-1/a.mp4": 10})
+    plan = cloudorganize.plan("A-1", cloudorganize_measure(cloud, "A-1"))
+    # 搬完偷偷把文件从目标目录里抹掉（模拟远端异常），核验必须抓住
+    orig = cloud.move_file
+
+    def move_then_vanish(src, dst):
+        orig(src, dst)
+        cloud.files.pop(dst, None)
+    cloud.move_file = move_then_vanish
+    with pytest.raises(OrganizeError) as err:
+        cloudorganize.apply(cloud, "inbox", plan, "A-1", dst_root="archive")
+    assert "核验失败" in str(err.value)
 
 
 def test_apply_renames_in_place_without_purge():
@@ -207,8 +253,21 @@ def test_apply_moves_to_separate_dst_root():
     out = cloudorganize.apply(cloud, "inbox", plan, "BIG-999", dst_root="archive")
     assert out["folder"] == "archive/BIG-999"
     assert "archive/BIG-999/BIG-999.mp4" in cloud.files
-    assert "inbox/seed_1/BIG-999.mp4" not in cloud.files, "原位置要清干净"
-    assert cloud.purged == ["inbox/seed_1"]
+    assert cloud.purged == [], "apply 不再删源；清理归 cleanup_source"
+
+
+def test_cleanup_source_removes_source_after_archive():
+    """归档落盘后单独清理：源目录（含广告）删掉，目标目录完好。"""
+    cloud = FakeCloud({"inbox/seed_xxx/489155.com@MIMK-290.mp4": 100,
+                       "inbox/seed_xxx/广告.txt": 1})
+    plan = cloudorganize.plan("seed_xxx", cloudorganize_measure(cloud, "seed_xxx"))
+    plan.target = "MIMK-290"
+    cloudorganize.apply(cloud, "inbox", plan, "MIMK-290", dst_root="archive")
+    receipt = cloudorganize.cleanup_source(cloud, "inbox", plan, "archive")
+    assert receipt and cloud.purged == ["inbox/seed_xxx"]
+    assert "archive/MIMK-290/MIMK-290.mp4" in cloud.files, "目标目录不能被误删"
+    assert not [f for f in cloud.files if f.startswith("inbox/seed_xxx")], \
+        "广告文件跟着源目录一起消失"
 
 
 def test_apply_rejects_empty_roots():

@@ -1006,7 +1006,10 @@ async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await message.reply_text("⛔ 路径校验未通过，已拒绝删除")
             return
         try:
-            receipt = await asyncio.to_thread(backend.purge, storage.rel(code))
+            # 按记录定位（与网页同口径）：云添加的归档在 CLOUD_DEST，
+            # 不跟全局 STORAGE_ROOT 走
+            rel = record.get("rel") or storage.rel(code)
+            receipt = await asyncio.to_thread(backend.purge, rel)
         except storage.StorageError as exc:
             await message.reply_text(f"❌ 删除失败：{str(exc)[:300]}")
             return

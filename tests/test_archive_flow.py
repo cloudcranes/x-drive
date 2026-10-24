@@ -175,7 +175,7 @@ def test_web_flow_attachments_upload_record_rescrape_verify(tmp_path, monkeypatc
     remote_ok = [{"name": VIDEO_NAME, "size": 4096}]
     remote_ok += [{"name": n, "size": len(blob.encode("utf-8"))}
                   for n, blob in posted.items()]
-    monkeypatch.setattr(web, "remote_ls", lambda code: remote_ok)
+    monkeypatch.setattr(web, "remote_ls", lambda code, **_: remote_ok)
     verdict = web.verify_archive(CODEC)
     assert verdict["state"] == "校验通过", verdict
     assert verdict["missing"] == [] and verdict["size_mismatch"] == []
@@ -183,7 +183,7 @@ def test_web_flow_attachments_upload_record_rescrape_verify(tmp_path, monkeypatc
     # ⑤' 远端某个文件 0 字节 → 大小异常
     remote_zero = [{"name": e["name"], "size": (0 if e["name"] == VIDEO_NAME else e["size"])}
                    for e in remote_ok]
-    monkeypatch.setattr(web, "remote_ls", lambda code: remote_zero)
+    monkeypatch.setattr(web, "remote_ls", lambda code, **_: remote_zero)
     bad = web.verify_archive(CODEC)
     assert bad["state"] == "大小异常", bad
     assert bad["size_mismatch"] == [{"name": VIDEO_NAME, "local": 4096, "remote": 0}]

@@ -796,15 +796,21 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
         raise RuntimeError("云添加没有落地任何内容")
 
     results = []
+    pending_cleanup: list[dict] = []             # 归档落盘后再清的源目录
     for item in landed:
         require_lease(job_id, code)              # 整理前确认租约还在自己手里
         job_event(job_id, "stage", f"landed {item.folder}（{item.total} 字节）")
         plan = cloudorganize.plan(item.folder, item.files)
         moved = cloudorganize.apply(backend, my_inbox, plan, code or plan.target,
                                     dst_root=dest)
+        # 1.5：归档记录自带定位（backend + root + rel），之后的核验/补刮/改名/删除
+        # 都按这份记录找目录，不再跟着「当时的全局 STORAGE_ROOT」漂移。
         record = {
             "folder": moved["target"],
             "path": f"{backend.kind}:{dest}/{moved['target']}",
+            "backend": backend.kind,
+            "root": dest,
+            "rel": f"{dest}/{moved['target']}",
             "files": moved["files"],
             "files_detail": [{"name": n, "size": next(
                 (int(f.get("size") or 0) for f in item.files if f.get("name") == old), 0)}
@@ -815,8 +821,11 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
         job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
                                   "cloud": record})
         results.append(record)
+        pending_cleanup.append({"plan": plan, "src_root": my_inbox, "dst_root": dest})
     return {"landed": [x.folder for x in landed], "records": results,
-            "inbox": my_inbox, "dest": dest}
+            "inbox": my_inbox, "dest": dest,
+            # 1.4：清理挪到记账之后，由调用方在归档落盘成功后执行
+            "cleanup": [(c["plan"], c["src_root"], c["dst_root"]) for c in pending_cleanup]}
 
 
 def scrape_attachments(work: Path, folder: str, files: list[Path],
@@ -1168,6 +1177,24 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             job_event(job_id, "stage", "cloud 云盘离线下载")
             out = _cloud_run(job_id, source, code, key)
             _finish_cloud(job_id, source, out)
+            # 1.4：归档记录已落盘，才允许删源目录（ads 一起消失）。清理失败
+            # 不影响任务成功 —— 目录留给重试，job extra 里挂着待清理标记。
+            backend_ = storage.get()
+            leftover = []
+            for plan, src_root, dst_root in out.get("cleanup") or []:
+                try:
+                    require_lease(job_id, code)
+                    receipt = cloudorganize.cleanup_source(backend_, src_root, plan, dst_root)
+                    job_event(job_id, "stage", f"cleaned {src_root}/{plan.source}（{receipt}）")
+                except Exception as exc:        # noqa: BLE001 清理失败只挂账
+                    log.warning("任务 %s 清理源目录 %s/%s 失败：%s",
+                                job_id, src_root, plan.source, exc)
+                    leftover.append({"source": plan.source, "src_root": src_root,
+                                     "dst_root": dst_root,
+                                     "target": plan.target, "error": str(exc)[:200]})
+            if leftover:
+                job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
+                                          "cleanup_pending": leftover})
         except Cancelled as exc:
             # 用户主动停止才落终态；失租（LossOfLease）绝不能写共享状态 ——
             # 接管者正在跑，旧线程把它写成 cancelled 等于替别人取消任务
@@ -2361,7 +2388,8 @@ def purge_archives(codes_to_drop: list[str]) -> list[dict]:
         record = state.get(code) or {}
         if backend.kind != "rclone":
             try:
-                receipt = backend.purge(storage.rel(code))
+                # 按记录定位（1.5）：云添加的归档在 CLOUD_DEST，不能拿全局根拼路径
+                receipt = backend.purge(archive_locator(record))
             except storage.StorageError as exc:
                 log.warning("删除 %s 失败：%s", code, exc)
                 continue
@@ -2440,23 +2468,29 @@ def _rename_archive_backend(backend, old: str, wanted: str, state: dict) -> dict
     """OpenList / CloudDrive2 的改名：列一遍根目录查重，再让后端自己改名。
 
     顺序仍是「先动远端、再动记录」：远端失败就原样留着，重试安全。
+    改的是**记录定位的那个目录**（1.5）：云添加的归档在 CLOUD_DEST，
+    不能拿全局 STORAGE_ROOT 拼。
     """
+    record_old = state[old]
+    base = str((record_old.get("rel") or "").strip("/") or storage.rel(old))
+    parent, _leaf = base.rsplit("/", 1) if "/" in base else ("", base)
     try:
-        existing = set(backend.list_dirs(storage.rel("")))
+        existing = set(backend.list_dirs(parent or storage.rel("")))
     except storage.StorageError as exc:
         return {"ok": False, "error": f"列出远端目录失败：{exc}"}
     if wanted in existing:
         return {"ok": False, "error": f"远端已有 {wanted}，先处理掉同名目录"}
     try:
-        backend.rename_dir(storage.rel(old), wanted)
+        backend.rename_dir(base, wanted)
     except storage.StorageError as exc:
         return {"ok": False, "error": f"移动目录失败：{exc}"}
 
-    record = dict(state[old])
+    record = dict(record_old)
     record["code"] = wanted
-    record["path"] = f"{backend.kind}:{storage.rel(wanted)}"
+    record["path"] = f"{backend.kind}:{parent}/{wanted}"
+    record["rel"] = f"{parent}/{wanted}"         # 1.5：定位跟着改名走
     try:
-        link = backend.link(storage.rel(wanted))
+        link = backend.link(f"{parent}/{wanted}")
     except storage.StorageError:
         link = None
     if link:
@@ -3741,7 +3775,7 @@ def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> 
             backend = storage_backend()
         except Exception as exc:
             raise RuntimeError(f"存储后端不可用：{exc}") from exc
-        rel = storage.rel(code)
+        rel = archive_locator(record)            # 1.5：按记录定位，云归档在 CLOUD_ROOT
 
         def push(name: str) -> tuple[bool, str]:
             """推一个附件；返回 (是否成功, 失败原因)。"""
@@ -3828,15 +3862,37 @@ def _record_after_sync(record: dict, work: Path, pushed: list, failed: list) -> 
 
 # ─────────────────────────────────────────── 归档完整性校验（第四批）
 
-def remote_ls(folder: str, timeout: float = 180.0) -> list[dict]:
-    """列远端目录里的文件（名字 + 大小）。校核与补刮都靠它，两条链路口径要一致。"""
+def archive_locator(record: dict) -> str:
+    """按归档记录定位远端目录，返回后端内相对路径。
+
+    记录里有 1.5 写入的定位三元组（backend/root/rel）就直接用 —— 云添加的
+    归档在 CLOUD_DEST，而全局 STORAGE_ROOT 可能是另一个根（或者后来被改过），
+    曾经就是「记录写着 cloud:X-Drive/DEMO，核验却去 legacy-root/DEMO 找」。
+    旧记录没有三元组，退回 storage.rel(code) 的老算法（行为与升级前一致）。
+    """
+    rel = str((record or {}).get("rel") or "").strip("/")
+    if rel:
+        return rel
+    code = str((record or {}).get("code") or "").strip("/")
+    if ".." in code or "/" in code:
+        raise storage.StorageError(f"归档番号不合法：{code!r}")
+    return storage.rel(code)
+
+
+def remote_ls(folder: str, timeout: float = 180.0, rel_path: str = "") -> list[dict]:
+    """列远端目录里的文件（名字 + 大小）。校核与补刮都靠它，两条链路口径要一致。
+
+    rel_path 给出时直接按它列（1.5：归档记录自带定位）；不给就按全局根拼
+    （老调用点、以及还没有定位信息的旧记录）。
+    """
     try:
         backend = storage_backend()
     except Exception as exc:
         raise RuntimeError(f"列目录失败：{exc}") from exc
+    rel = (rel_path or "").strip("/") or storage.rel(folder)
     if backend.kind != "rclone":
         try:
-            entries = backend.list_files(storage.rel(folder))
+            entries = backend.list_files(rel)
         except storage.StorageError as exc:
             raise RuntimeError(f"列目录失败：{exc}") from exc
         return [{"name": e.name, "size": e.size} for e in entries]
@@ -3869,7 +3925,8 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
     if manifest_files:
         local = {str(f.get("name")): int(f.get("size") or 0) for f in manifest_files if f.get("name")}
     try:
-        remote = {i["name"]: i["size"] for i in remote_ls(code)}
+        # 按记录定位：云添加的归档在 CLOUD_DEST，不跟全局 STORAGE_ROOT 走
+        remote = {i["name"]: i["size"] for i in remote_ls(code, rel_path=archive_locator(record))}
     except Exception as exc:
         return {"ok": False, "code": code, "error": str(exc)[:200], "state": "检查失败"}
 

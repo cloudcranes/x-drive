@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 log = logging.getLogger("x-drive.cloudorganize")
@@ -44,6 +44,7 @@ class Plan:
     move: list[str]                  # 要搬过去的文件名
     drop: list[str]                  # 留在原目录、随 purge 一起消失的
     size: int = 0
+    sizes: dict = field(default_factory=dict)   # 文件名 → 落地时观测的字节数
 
     @property
     def kept(self) -> list[str]:
@@ -118,7 +119,8 @@ def plan(source: str, files: list[dict], *, rename: bool = True) -> Plan:
                 target=target_name(source, keep) if rename else source,
                 move=kept_names,
                 drop=drop,
-                size=sum(int(f.get("size") or 0) for f in keep))
+                size=sum(int(f.get("size") or 0) for f in keep),
+                sizes={str(f.get("name")): int(f.get("size") or 0) for f in keep})
 
 
 def renamed_files(plan_obj: Plan, folder_code: str) -> list[tuple[str, str]]:
@@ -140,12 +142,17 @@ def renamed_files(plan_obj: Plan, folder_code: str) -> list[tuple[str, str]]:
 
 def apply(backend, src_root: str, plan_obj: Plan, folder_code: str = "",
           dst_root: str = "") -> dict:
-    """执行整理：建目标目录 → 逐个 move → purge 原目录。
+    """执行整理：建目标目录 → 逐个 move → **回读核验**。
 
     `src_root` 是落地目录所在的父目录（inbox），`dst_root` 是归档根目录。
     **两者必须分开传**：第一版把 dst 也算在 inbox 下面，结果文件只是原地改了名、
     广告也留着，而记账里写的却是归档路径 —— 账实不符。dst_root 省略时退回
     src_root（原地整理，仅用于「归档根就是落地目录」的部署）。
+
+    本函数**不再删源目录**：曾经「move 完就 purge」，而观测只看了一层、
+    记账又发生在清理之后 —— 源目录里有未观测的子文件/子目录会被一并删掉，
+    归档写入失败时原始现场也已经没了。清理交给 `cleanup_source`，在
+    **归档记录落盘之后**作为独立可重试步骤执行。
 
     返回 {target, folder, files, size}。任何一步失败都抛 OrganizeError，
     并**不动原目录**（除了已经搬走的那些文件 —— 这是远端的固有限制，
@@ -178,18 +185,43 @@ def apply(backend, src_root: str, plan_obj: Plan, folder_code: str = "",
             raise OrganizeError(f"移动 {old} 失败：{exc}") from exc
         moved.append((new, old))                # 记下反方向，便于回滚
 
-    # 原目录整个删掉（广告文件跟着消失）。**只删我们自己刚确认过的那个目录**。
-    # 目标目录与源目录同名时绝不能 purge —— 那会把刚搬好的文件一起删掉。
-    if src != dst:
-        try:
-            backend.purge(src)
-        except Exception as exc:                # noqa: BLE001
-            log.warning("整理完成但清理原目录 %s 失败：%s", src, exc)
+    # 回读核验：目标目录里的每个文件，名字与大小都要对得上。
+    # 不核验就记账，曾经出现过「云端没有/不完整，站内却显示已归档」的假账。
+    files_out: list[str] = []
+    try:
+        actual = {str(e.name): int(e.size or 0) for e in backend.list_files(dst)}
+    except Exception as exc:
+        raise OrganizeError(f"核验目标目录失败（列 {dst} 出错）：{exc}") from exc
+    for old, new in mapping:
+        if new not in actual:
+            raise OrganizeError(f"核验失败：{dst}/{new} 不在目标目录里")
+        want_size = int(plan_obj.sizes.get(old) or 0)
+        if want_size and actual[new] != want_size:
+            raise OrganizeError(
+                f"核验失败：{new} 大小不符（远端 {actual[new]}，落地时 {want_size}）")
+        files_out.append(new)
 
     return {"target": plan_obj.target, "folder": dst,
-            "files": [new for old, new in mapping],
+            "files": files_out,
             "size": plan_obj.size,
             "dropped": plan_obj.drop}
+
+
+def cleanup_source(backend, src_root: str, plan_obj: Plan, dst_root: str = "") -> str:
+    """删掉整理后的源目录。**独立步骤、可重试**：归档记录落盘之后才允许调用。
+
+    返回回执字符串。目标目录与源目录同名时拒绝 —— 那会把刚搬好的文件一起删掉。
+    """
+    if _BAD_NAME.search(plan_obj.source or "") or _BAD_NAME.search(plan_obj.target or ""):
+        raise OrganizeError("目录名不安全，拒绝清理")
+    src = f"{src_root.strip('/')}/{plan_obj.source}"
+    dst = f"{(dst_root or src_root).strip('/')}/{plan_obj.target}"
+    if src == dst:
+        raise OrganizeError(f"源目录与目标目录同名（{src}），拒绝清理")
+    try:
+        return backend.purge(src)
+    except Exception as exc:
+        raise OrganizeError(f"清理源目录 {src} 失败：{exc}") from exc
 
 
 def _rollback(backend, moved: list[tuple[str, str]], dst: str, src: str) -> None:

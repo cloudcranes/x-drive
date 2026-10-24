@@ -220,7 +220,7 @@ def test_verify_archive_reports_missing_and_mismatch(tmp_path, monkeypatch):
         "code": "SSIS-7", "files": ["a.mp4", "b.nfo"],
         "manifest": {"files": [{"name": "a.mp4", "size": 10},
                                {"name": "b.nfo", "size": 5}]}}})
-    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0: [
+    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
         {"name": "a.mp4", "size": 10}, {"name": "c.json", "size": 3}])
     out = web.verify_archive("SSIS-7")
     assert out["state"] == "缺文件" and out["missing"] == ["b.nfo"]
@@ -232,7 +232,7 @@ def test_verify_archive_size_mismatch(tmp_path, monkeypatch):
     core, web = _scrape_env(tmp_path, monkeypatch)
     core.save_state(web.STATE, {"SSIS-8": {
         "code": "SSIS-8", "manifest": {"files": [{"name": "a.mp4", "size": 10}]}}})
-    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0: [
+    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
         {"name": "a.mp4", "size": 9}])
     out = web.verify_archive("SSIS-8")
     assert out["state"] == "大小异常"
@@ -244,7 +244,7 @@ def test_verify_archive_remote_zero_byte_is_mismatch(tmp_path, monkeypatch):
     core, web = _scrape_env(tmp_path, monkeypatch)
     core.save_state(web.STATE, {"SSIS-11": {
         "code": "SSIS-11", "manifest": {"files": [{"name": "a.mp4", "size": 100}]}}})
-    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0: [
+    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
         {"name": "a.mp4", "size": 0}])
     out = web.verify_archive("SSIS-11")
     assert out["state"] == "大小异常"
@@ -258,7 +258,7 @@ def test_verify_archive_unknown_local_size_is_not_pass(tmp_path, monkeypatch):
     core.save_state(web.STATE, {"SSIS-12": {
         "code": "SSIS-12", "manifest": {"files": [{"name": "a.mp4", "size": 0},
                                                   {"name": "b.nfo"}]}}})
-    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0: [
+    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
         {"name": "a.mp4", "size": 100}, {"name": "b.nfo", "size": 5}])
     out = web.verify_archive("SSIS-12")
     assert out["state"] == "大小未知"
@@ -271,7 +271,7 @@ def test_verify_archive_records_without_sizes_still_ok(tmp_path, monkeypatch):
     """记录里只有文件名（无清单）、远端非空：大小未知但不许谎报通过。"""
     core, web = _scrape_env(tmp_path, monkeypatch)
     core.save_state(web.STATE, {"SSIS-13": {"code": "SSIS-13", "files": ["a.mp4"]}})
-    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0: [
+    monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
         {"name": "a.mp4", "size": 100}])
     out = web.verify_archive("SSIS-13")
     assert out["state"] == "大小未知" and out["size_unknown"] == ["a.mp4"]
