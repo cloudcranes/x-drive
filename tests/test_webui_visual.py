@@ -488,7 +488,9 @@ def test_cloud_ingest_has_status_row_and_stage():
     js = script(page)
     assert 'if (group === "云盘归档") pane.append(cloudStatusRow());' in js
     assert "function cloudStatusRow()" in js
-    assert 'subsApi("/api/cloud/capability", {})' in js
+    # 必须是 GET（subsApi 传 body 会变成 POST，而 capability 只挂在 GET 上）
+    assert 'subsApi("/api/cloud/capability")' in js
+    assert 'subsApi("/api/cloud/capability", {})' not in js
     # 队列里要有「云端落地中」这个阶段
     assert 'cloud: "云端落地中"' in js
     assert '"uploading", "cloud"]' in js, "云端任务也要能停止（只是不再等）"

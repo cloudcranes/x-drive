@@ -4585,7 +4585,7 @@ function cloudStatusRow() {
     hint.className = "hint";
     hint.textContent = "检测中…";
     try {
-      const d = await subsApi("/api/cloud/capability", {});
+      const d = await subsApi("/api/cloud/capability");
       if (!d) throw new Error("无响应");
       val.textContent = d.ok
         ? `可用 · 落地 ${d.inbox} → 归档 ${d.dest}`
