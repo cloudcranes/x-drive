@@ -67,8 +67,7 @@ class FakeResp:
         self.status_code = status
 
 
-def test_latest_reports_more_from_rel_next():
-    """翻页看 `rel="next"`，不靠「满 40 条」去猜 —— 缺封面的条目会让条数变少。"""
+def test_search_parses_results():
     seen = {}
 
     def handler(request):
@@ -79,41 +78,18 @@ def test_latest_reports_more_from_rel_next():
     # 注入的 client 由调用方建：Cookie 得跟着它一起设（生产路径也是这样传的）
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler),
                                cookies=javdbwall.COOKIES)
-    items, more = __import__("asyncio").run(javdbwall.latest(1, client=client))
-    assert len(items) == 2 and more is True
-    assert "page=1" in seen["url"]
+    items = __import__("asyncio").run(javdbwall.search("MIMK", client=client))
+    assert [i["code"] for i in items] == ["SIMM-912", "CAWD-706"]
+    assert "q=MIMK" in seen["url"]
     assert "over18" in seen["cookies"], "没有 18 岁确认 Cookie 会拿到确认页"
 
 
-def test_latest_without_next_marker_means_last_page():
-    page = html().replace('rel="next"', 'rel="prev"')
-
-    def handler(_request):
-        return httpx.Response(200, text=page)
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    _items, more = __import__("asyncio").run(javdbwall.latest(9, client=client))
-    assert more is False
-
-
-def test_latest_handles_http_error():
+def test_search_handles_http_error():
     def handler(_request):
         return httpx.Response(503, text="")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    items, more = __import__("asyncio").run(javdbwall.latest(1, client=client))
-    assert items == [] and more is False
-
-
-def test_search_parses_results():
-    def handler(request):
-        assert "/search" in str(request.url)
-        assert "q=MIMK" in str(request.url)
-        return httpx.Response(200, text=html())
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    items = __import__("asyncio").run(javdbwall.search("MIMK", client=client))
-    assert [i["code"] for i in items] == ["SIMM-912", "CAWD-706"]
+    assert __import__("asyncio").run(javdbwall.search("MIMK", client=client)) == []
 
 
 def test_search_empty_keyword():

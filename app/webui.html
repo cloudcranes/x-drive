@@ -214,14 +214,7 @@
   .sortsel:focus{border-color:rgba(62,186,244,.5)}
 
   /* 卡片网格 */
-  /* ───────── 首页媒体墙 */
-  .wall{margin:0 0 18px}
-  .wall-head{display:flex; align-items:center; gap:8px; margin-bottom:8px}
-  .wall-head h3{font-size:13px; font-weight:700; color:var(--text); margin:0; flex:none}
-  .wall-head .hint{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-  .wall-head .r{display:flex; gap:6px; flex:none}
-  .wall-grid{display:grid; gap:10px;
-    grid-template-columns:repeat(auto-fill,minmax(132px,1fr))}
+  /* ───────── 封面卡片（关键词搜索结果复用这套样式） */
   .wall-card{position:relative; display:block; text-align:left; padding:0; cursor:pointer;
     border:1px solid var(--line); border-radius:10px; overflow:hidden;
     background:var(--panel-2); transition:transform .16s, border-color .16s}
@@ -242,18 +235,11 @@
   .wall-tag{position:absolute; top:6px; right:6px; padding:1px 6px; border-radius:999px;
     font-family:var(--mono); font-size:10px; color:var(--cyan); background:rgba(4,20,13,.72);
     border:1px solid rgba(62,186,244,.45)}
-  .wall-empty{font-family:var(--mono); font-size:11.5px; color:var(--dim); padding:10px 2px}
-  /* 关键词搜索结果：与媒体墙同一套卡片观感，省一套样式 */
+  /* 关键词搜索结果 */
   #find-slot .find-grid{display:grid; gap:10px; margin-top:10px;
     grid-template-columns:repeat(auto-fill,minmax(132px,1fr))}
   @media (max-width:700px){
     #find-slot .find-grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:8px}
-  }
-  @media (max-width:700px){
-    /* 手机上 3 列：132px 的下限会把一行挤成 2 张，露出半屏空白 */
-    .wall-grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:8px}
-    .wall-head{flex-wrap:wrap}
-    .wall-head .hint{order:3; flex:1 1 100%; white-space:normal}
     .wall-code{font-size:10px; padding:12px 6px 4px}
     .wall-meta{font-size:10px; padding:4px 6px 6px}
   }
@@ -1046,18 +1032,8 @@
   <!-- 搜索框输入关键词（MIMK / SSIS 这类前缀、标题里的词）回车的结果 -->
   <section class="panel res" id="find-slot" hidden aria-label="关键词搜索"></section>
 
-  <!-- 首页媒体墙：最近上架的封面流。点一张 = 把这个番号填进搜索框去搜资源 -->
-  <section class="wall" id="wall" hidden aria-label="媒体墙">
-    <div class="wall-head">
-      <h3>最近上架</h3>
-      <span class="hint" id="wall-hint"></span>
-      <div class="r">
-        <button class="ghostbtn" id="wall-refresh" type="button" title="重新取一页（会越过缓存）">换一批</button>
-        <button class="ghostbtn" id="wall-more" type="button" title="继续加载下一页">更多</button>
-      </div>
-    </div>
-    <div class="wall-grid" id="wall-grid"></div>
-  </section>
+  <!-- 首页媒体墙已移除（2026-10-25）：只展示已归档资源。
+       关键词搜索（搜索框回车 → /api/find）仍保留，那是另一条路。 -->
 
   <div class="grid" id="feed"></div>
   <div id="empty-slot"></div>
@@ -2423,8 +2399,6 @@ function showView(name) {
     ["resultbar", isArchive], ["feed", isArchive], ["empty-slot", isArchive],
     // 关键词搜索结果：归档视图、且真的搜过（有内容）才显示
     ["find-slot", isArchive && !!$("find-slot") && $("find-slot").childElementCount > 0],
-    // 媒体墙只在归档视图、且确实取到东西时才显示（取不到就别占版面）
-    ["wall", isArchive && wallState.items.length > 0 && !wallState.off],
     // 资源结果面板只在归档视图、且真的搜过（有内容）时才显示
     ["resource-slot", isArchive && !!resBox && resBox.childElementCount > 0],
     // 提交区同理：只有输入里真的粘着磁力/直链时才显示
@@ -3206,13 +3180,9 @@ async function loadJobs() {
   } catch (e) { /* 静默 */ }
 }
 
-// ─────────────── 首页媒体墙
-// 取 /api/wall 的一页，渲染封面流。点一张卡 = 把番号填进搜索框并搜资源；
-// 这里不发下载请求 —— 与「输入番号回车」是同一条路，用户仍然自己确认。
-// queue = 已经取回来、还没摆上去的条目（首屏只摆几行，剩下的点「更多」继续）
-const wallState = { page: 0, items: [], queue: [], codes: new Set(),
-                    loading: false, done: false, rows: 2 };
-
+// ─────────────── 封面卡片（关键词搜索结果用）
+// 首页媒体墙已于 2026-10-25 移除（只展示已归档资源）。
+// 关键词搜索（搜索框回车 → /api/find）仍在，卡片样式沿用这一套。
 function wallOwned(code) {
   // 已经归档过的给个绿标：免得点进去又搜一遍同一条
   for (const task of allTasks.values()) {
@@ -3271,27 +3241,6 @@ function wallCard(item, onClick) {
     searchResources(item.code);
   }));
   return node;
-}
-
-// 一批摆几张：一行按 6 张估（132px 起、随宽度增加），至少 6 张
-function wallBatch() {
-  return Math.max(6, (wallState.rows || 2) * 6);
-}
-
-function renderWall(items) {
-  const grid = $("wall-grid");
-  for (const item of items) {
-    if (wallState.codes.has(item.code)) continue;
-    wallState.codes.add(item.code);
-    grid.append(wallCard(item));
-  }
-}
-
-// 把已取回的条目按批摆上去；返回还有没有没摆的
-function drainWall() {
-  const batch = wallState.queue.splice(0, wallBatch());
-  renderWall(batch);
-  return wallState.queue.length > 0;
 }
 
 // ── 搜索框关键词搜索（MIMK / SSIS 这类前缀、标题里的词）
@@ -3370,63 +3319,6 @@ function setFindHint(text, kind) {
   if (!h) return;
   h.textContent = text || "";
   h.className = "hint" + (kind ? " " + kind : "");
-}
-
-async function loadWall(append) {
-  if (wallState.loading) return;
-  wallState.loading = true;
-  const slot = $("wall");
-  const hint = $("wall-hint");
-  const next = append ? wallState.page + 1 : 1;
-  if (!append && !wallState.items.length) {
-    slot.hidden = false;
-    $("wall-grid").textContent = "";
-    hint.textContent = "加载中…";
-  }
-  try {
-    const r = await fetch(BASE + "/api/wall?page=" + next, authInit({cache: "no-store"}));
-    const d = await r.json().catch(() => ({}));
-    if (d && d.off) { wallState.off = true; slot.hidden = true; return; }
-    if (!d || !d.ok) {
-      slot.hidden = false;
-      hint.textContent = (d && d.error) || "取不到媒体墙";
-      hint.className = "hint err";
-      if (!append && !$(("wall-grid")).children.length) {
-        $("wall-grid").textContent = "";
-        $("wall-grid").append(el("div", "wall-empty",
-          "媒体墙暂时取不到（上游挂了不影响下面的归档列表）"));
-      }
-      wallState.done = true;
-      return;
-    }
-    const items = d.items || [];
-    wallState.page = next;
-    wallState.rows = d.rows || wallState.rows || 2;
-    wallState.items = append ? wallState.items.concat(items) : items;
-    wallState.queue = append ? wallState.queue.concat(items) : items.slice();
-    slot.hidden = false;
-    hint.className = "hint";
-    if (!append && d.off) { slot.hidden = true; return; }
-    // 首屏只摆 wallBatch() 张：30 张 3:4 封面一次加载太费，剩下的按「更多」放
-    let pending = drainWall();
-    const shown = $("wall-grid").querySelectorAll(".wall-card").length;
-    const total = wallState.items.length;
-    hint.textContent = `${shown}/${total} 条 · 来源 ${d.source}${d.cached ? "（缓存）" : ""}`
-      + (d.error ? ` · ${d.error}` : "");
-    // 「更多」先放本地队列，放完了才去取下一页
-    $("wall-more").disabled = !(pending || d.more);
-    wallState.done = !(pending || d.more);
-    if (!items.length && !append) {
-      $("wall-grid").append(el("div", "wall-empty", "这一页没有条目"));
-    }
-  } catch (e) {
-    slot.hidden = false;
-    hint.textContent = "取不到媒体墙：" + (e.message || e);
-    hint.className = "hint err";
-    wallState.done = true;
-  } finally {
-    wallState.loading = false;
-  }
 }
 
 // ── 任务时间线（下载队列里的「时间线」展开）
@@ -4434,32 +4326,7 @@ async function clearJobs(stage, label) {
 $("queue-clear").addEventListener("click", () => clearJobs("", "已结束的"));
 $("queue-clear-failed").addEventListener("click", () => clearJobs("failed", "失败"));
 
-$("wall-refresh").addEventListener("click", () => {
-  wallState.page = 0;
-  wallState.items = [];
-  wallState.queue = [];
-  wallState.codes.clear();
-  wallState.done = false;
-  // 加一个时间戳参数，绕开后端 120 秒缓存，才是真的「换一批」
-  loadWall(false);
-});
-$("wall-more").addEventListener("click", () => {
-  // 本地还有没摆的就先摆，摆完了再去取下一页 —— 一次请求喂几屏，别每点一下都打上游
-  if (wallState.queue.length) {
-    const more = drainWall();
-    const shown = $("wall-grid").querySelectorAll(".wall-card").length;
-    $("wall-hint").textContent = `${shown}/${wallState.items.length} 条 · 本地已取`
-      + (more ? "" : "（再点去取下一页）");
-    $("wall-more").disabled = !(more || !wallState.done);
-    wallState.done = !(more || !wallState.done);
-    return;
-  }
-  if (!wallState.done) loadWall(true);
-});
-$("wall-more").disabled = true;
-
 showView("archive");   // 初始首页 = 归档列表
-loadWall(false);       // 首页媒体墙（失败也不影响归档列表）
 
 load();
 loadJobs();

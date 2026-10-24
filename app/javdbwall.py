@@ -47,7 +47,6 @@ _DATE_RE = re.compile(r'<div class="meta">\s*(?P<date>[^<]*?)\s*</div>', re.S)
 _SCORE_RE = re.compile(r"(?P<score>\d+(?:\.\d+)?)分")
 _TAG_RE = re.compile(r'<span class="tag[^"]*"[^>]*>(?P<tag>[^<]+)</span>', re.S)
 # 「还有下一页」：javdb 用 rel="next" 标出来（比数条数可靠）
-_NEXT_RE = re.compile(r'rel="next"')
 
 
 def parse_list(html: str, limit: int = 0) -> list[dict]:
@@ -115,36 +114,3 @@ async def search(keyword: str, client: httpx.AsyncClient | None = None) -> list[
             await cli.aclose()
 
 
-async def latest(page: int = 1, client: httpx.AsyncClient | None = None) -> tuple[list[dict], bool]:
-    """取一页「最新」。返回 (条目, 还有下一页)。失败给空列表 + False。"""
-    page = max(1, int(page or 1))
-    own = client is None
-    cli = client or httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT,
-                                      headers={"User-Agent": UA}, cookies=COOKIES)
-    try:
-        # javdb 偶发连接超时（实测同一页连打 3 次会有 1 次 ConnectTimeout），
-        # 重试一次就够：媒体墙能接受慢一点，不接受整块空着。
-        r = None
-        for attempt in range(2):
-            try:
-                r = await cli.get(BASE + "/", params={"page": page})
-                break
-            except Exception as exc:
-                if attempt == 1:
-                    raise
-                log.info("javdb 第 %s 页第 1 次失败，重试：%s", page, exc)
-                await asyncio.sleep(0.6)
-        if r is None or r.status_code != 200:
-            log.warning("javdb 第 %s 页返回 %s", page, getattr(r, "status_code", "?"))
-            return [], False
-        items = parse_list(r.text)
-        # javdb 有明确的翻页标记（`rel="next" class="pagination-next"`），别用「满 40 条」
-        # 去猜：第 2 页实测只解析出 27 条（有条目缺封面被跳过），按条数猜会误判成最后一页
-        more = bool(_NEXT_RE.search(r.text))
-        return items, more
-    except Exception as exc:
-        log.warning("javdb 第 %s 页请求失败：%s", page, exc)
-        return [], False
-    finally:
-        if own:
-            await cli.aclose()

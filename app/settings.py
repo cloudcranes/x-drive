@@ -99,24 +99,6 @@ SETTINGS_SPEC: dict[str, dict] = {
     "META_USE_JAVBUS": {"type": "bool", "default": True, "group": "内容",
                         "label": "优先用 JavBus",
                         "note": "关掉就只走 javdb 页面解析"},
-    # ── 首页媒体墙：把「最近上架」的封面流摆出来，看着顺眼、点了能搜
-    "WALL_ON": {"type": "bool", "default": True, "group": "内容",
-                "label": "显示媒体墙", "note": "关掉就只留归档列表（首页更快）"},
-    "WALL_SOURCE": {"type": "str", "default": "javbus", "group": "内容",
-                    "label": "媒体墙来源",
-                    "choices": ["javbus", "javdb", "custom"],
-                    "note": "javbus = 数据源里那个 JavBus 实例（JSON，快）；"
-                            "javdb = javdb.com 首页最新（HTML 解析，字段更全带评分）；"
-                            "custom = 下面那个地址"},
-    "WALL_URL": {"type": "str", "default": "", "group": "内容",
-                 "label": "自定义接口地址",
-                 "note": "返回 JSON 即可，`{page}` 会被替换成页码；字段名自动按常见别名认"
-                         "（movies/items/data、id/code、img/cover、title/name …）"},
-    "WALL_TTL": {"type": "float", "default": 120.0, "group": "内容",
-                 "label": "媒体墙缓存 (秒)",
-                 "note": "同一页这么久内只打一次上游，翻页不会把对方打疼"},
-    "WALL_ROWS": {"type": "int", "default": 2, "group": "内容",
-                  "label": "首屏显示几行", "note": "一行约 6 张，按窗口宽度自动增减"},
     # ── 图片本地缓存：封面 / 截图取到过就落盘，之后不再请求外网
     #    图床握手不稳（同一张图连打 5 次会有 2 次超时），不缓存就是一半「无封面」。
     "IMG_CACHE_MB": {"type": "float", "default": 200.0, "group": "内容",

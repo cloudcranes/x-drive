@@ -32,8 +32,8 @@ from uuid import uuid4
 import httpx
 
 from . import (backlog, cleanup, cloudingest, cloudorganize, codes, core, diskspace, fetcher,
-               imgcache, meta, metadata, metatube, notify, pipeline, preview, retry,
-               settings as settings_mod, sources, storage, store, subscribe, wall, workspace,
+               find, imgcache, meta, metadata, metatube, notify, pipeline, preview, retry,
+               settings as settings_mod, sources, storage, store, subscribe, workspace,
                xunlei, xunleipan)
 
 log = logging.getLogger("x-drive.web")
@@ -294,35 +294,22 @@ def image_cache_clear(confirm: bool = False) -> dict:
     return {"ok": True, **result, "after": imgcache.stats()}
 
 
-def wall_find(keyword: str) -> dict:
+def find_cards(keyword: str) -> dict:
     """按关键词找片子（MIMK、SSIS 这类前缀或标题里的词）。
 
     与 /api/magnets 的区别：那个是「给我这个番号的磁力」（下载用），
     这个是「有哪些片」（发现用）。上游挂了也只回 ok:false。
+
+    首页媒体墙已于 2026-10-25 移除（只展示已归档资源）；这个搜索框入口保留。
     """
     keyword = (keyword or "").strip()[:64]
     if not keyword:
         return {"ok": False, "query": "", "items": [], "error": "关键词为空"}
     try:
-        return wall.find(keyword)
+        return find.find(keyword)
     except Exception as exc:
         log.warning("关键词搜索失败：%s", exc)
         return {"ok": False, "query": keyword, "items": [], "error": str(exc)[:200]}
-
-
-def wall_feed(page: int = 1, which: str = "") -> dict:
-    """首页媒体墙的一页。上游挂了也只回 ok:false，不影响首页其它部分。"""
-    if not get_setting("WALL_ON"):
-        return {"ok": False, "off": True, "source": "", "page": page,
-                "items": [], "more": False, "error": "媒体墙已在设置里关闭"}
-    try:
-        result = wall.feed(page, which)
-    except Exception as exc:                    # 兜底：媒体墙不该让首页 500
-        log.warning("媒体墙失败：%s", exc)
-        return {"ok": False, "source": which, "page": page, "items": [],
-                "more": False, "error": str(exc)[:200]}
-    result["rows"] = int(get_setting("WALL_ROWS") or 2)
-    return result
 
 
 def storage_test() -> dict:
@@ -3708,7 +3695,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             query = parse_qs(urlsplit(self.path).query)
             keyword = (query.get("q") or [""])[0]
-            self._json(wall_find(keyword))
+            self._json(find_cards(keyword))
             return
         if path == "/api/images":
             if not self._authorized():
@@ -3717,12 +3704,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._drain()
             self._json(image_cache_view())
-            return
-        if path == "/api/wall":
-            query = parse_qs(urlsplit(self.path).query)
-            page = int((query.get("page") or ["1"])[0] or 1)
-            which = (query.get("source") or [""])[0]
-            self._json(wall_feed(page, which))
             return
         if path == "/api/jobs":
             self._json({"jobs": jobs_snapshot()})

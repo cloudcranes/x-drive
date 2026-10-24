@@ -509,31 +509,31 @@ def test_failed_jobs_can_be_removed_from_ui():
     assert 'id="queue-flash"' in page and "function queueFlash(" in js
 
 
-# ---------------------------------------------------------------- 10. 首页媒体墙
+# ---------------------------------------------------------------- 10. 媒体墙已移除
 
-def test_home_has_media_wall():
+def test_home_has_no_media_wall():
+    """首页媒体墙于 2026-10-25 移除：只展示已归档资源。"""
     page = html()
     js = script(page)
-    assert 'id="wall"' in page and 'id="wall-grid"' in page
-    assert "async function loadWall(" in js
-    # 点一张卡 = 填进搜索框并搜资源，不在墙上直接发下载
-    assert "searchResources(item.code)" in js
-    assert 'view.q = item.code' in js
-    # 封面走同源代理（javbus 图床直连会被拦）
+    assert 'id="wall"' not in page
+    assert 'id="wall-grid"' not in page
+    assert "async function loadWall(" not in js
+    assert "wallState" not in js
+    assert "function wallBatch()" not in js and "function drainWall()" not in js
+    # 归档列表还在
+    assert 'id="feed"' in page
+
+
+def test_wall_cards_still_used_by_keyword_search():
+    """封面卡片样式还在：关键词搜索（/api/find）复用同一套。"""
+    page = html()
+    js = script(page)
+    assert "function wallCard(" in js
     assert '"/proxy?u=" + encodeURIComponent(item.cover)' in js
     # 图床偶发 502：先重试一次再认成无封面
     assert "img.dataset.retried" in js
-    # 首屏分几批摆，别一次加载三十张 3:4 封面
-    assert "function wallBatch()" in js and "function drainWall()" in js
     # 已归档的给绿标
     assert 'el("span", "wall-owned", "已归档")' in js
-
-
-def test_wall_hidden_when_off_or_empty():
-    """关掉或取不到就别占版面（空墙比没有更难看）。"""
-    js = script(html())
-    assert "wallState.items.length > 0 && !wallState.off" in js
-    assert "if (d && d.off) { wallState.off = true; slot.hidden = true; return; }" in js
 
 
 def test_home_settings_show_image_cache_row():
