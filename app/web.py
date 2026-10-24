@@ -945,7 +945,8 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
             poll=float(get_setting("CLOUD_POLL") or 10),
             timeout=float(get_setting("CLOUD_LAND_TIMEOUT") or 7200),
             stable=int(get_setting("CLOUD_LAND_STABLE") or 3),
-            progress=on_progress, cancel_check=lambda: cancel_requested(job_id))
+            progress=on_progress, cancel_check=lambda: cancel_requested(job_id),
+            source=source)          # 迅雷解析失败时早点报，别干等两小时
 
     try:
         landed = asyncio.run(wait())

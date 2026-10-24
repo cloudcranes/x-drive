@@ -685,6 +685,56 @@ def untrash(file_id: str, *, client=None) -> str:
             client.close()
 
 
+def offline_tasks(*, client=None) -> list[dict]:
+    """列迅雷云盘的**离线下载任务**（/drive/v1/tasks）。
+
+    云添加投给迅雷之后，迅雷那边的任务状态只有这里查得到 —— CD2 的
+    ListAllOfflineFiles 对迅雷云盘不支持（实测 "cloud account not found"）。
+
+    返回 [{id, name, phase, progress, message, error_detail, url}]。
+    phase 是 PHASE_TYPE_*：RUNNING / SUCCESS / ERROR 等；message 是迅雷
+    给的人话（比如「解析失败，请重试或更换链接」）。
+    """
+    data = _get("/drive/v1/tasks", client=client)
+    out = []
+    for t in data.get("tasks") or []:
+        if t.get("type") != "offline":
+            continue
+        params = t.get("params") or {}
+        out.append({
+            "id": str(t.get("id") or ""),
+            "name": str(t.get("name") or ""),
+            "phase": str(t.get("phase") or ""),
+            "progress": t.get("progress"),
+            "message": str(t.get("message") or ""),
+            "error_detail": str(params.get("error_detail") or ""),
+            "url": str(params.get("url") or ""),
+        })
+    return out
+
+
+def offline_task_by_hash(info_hash: str, *, client=None) -> dict | None:
+    """按 infohash 找对应的离线任务（找不到返回 None）。"""
+    want = (info_hash or "").strip().lower()
+    if not want:
+        return None
+    for t in offline_tasks(client=client):
+        url = t.get("url") or ""
+        if want in url.lower():
+            return t
+    return None
+
+
+def info_hash_of(url: str) -> str:
+    """从 magnet 里取 infohash（小写 hex）。
+
+    app/xunlei.py 里也有一份（那是本机迅雷面板的），这里给云盘那条链用 ——
+    两边都是「从 magnet 里抠 btih」，但云盘模块不该依赖本机面板模块。
+    """
+    m = re.search(r"xt=urn:btih:([0-9a-fA-F]{40})", url or "")
+    return m.group(1).lower() if m else ""
+
+
 def list_files(parent_id: str = "", limit: int = 100, *, client=None,
                trashed: bool = False) -> list[dict]:
     """列一个目录（不给 parent_id 就是网盘根）。返回 [{id,name,kind,phase,trashed}]。

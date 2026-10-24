@@ -158,7 +158,8 @@ def newcomers(before: dict, now: dict) -> list[str]:
 async def wait_landing(backend, inbox: str, before: dict, *,
                        poll: float = DEFAULT_POLL, timeout: float = DEFAULT_TIMEOUT,
                        stable: int = DEFAULT_STABLE,
-                       progress=None, cancel_check=None) -> list[Landing]:
+                       progress=None, cancel_check=None,
+                       source: str = "") -> list[Landing]:
     """等 inbox 里出现新条目并稳定下来，返回所有已稳定的新条目。
 
     批量提交多个种子时会一次来好几个目录，全部收下；只要「连续 stable 轮没有
@@ -169,6 +170,10 @@ async def wait_landing(backend, inbox: str, before: dict, *,
     拿着旧清单去整理（少收文件），随后整目录清理还把后到的文件删掉。
     现在每轮对**所有**已知条目重新算指纹，变化即撤销稳定；全部已绑定条目
     都重新稳定 + 连续 stable 轮没有新名字，才放行。
+
+    source 给了就顺便查迅雷那边的离线任务状态：迅雷解析失败时会回
+    PHASE_TYPE_ERROR（"解析失败，请重试或更换链接"），但目录这边什么都不会
+    有 —— 不查的话任务会干等两小时，用户只看到「卡在 cloud」。
     """
     need = max(MIN_STABLE, int(stable or DEFAULT_STABLE))
     loop = asyncio.get_event_loop()
@@ -182,6 +187,11 @@ async def wait_landing(backend, inbox: str, before: dict, *,
         rounds += 1
         if cancel_check and cancel_check():
             raise LandingTimeout("已停止")
+        if source and rounds % 3 == 1:
+            # 每三轮查一次：别把官方 API 打成筛子
+            why = check_offline_task(source)
+            if why:
+                raise LandingTimeout(f"迅雷侧拒绝了这次下载：{why}")
         items = measure(backend, inbox)
         fresh = newcomers(before, items)
         if set(fresh) - known:
@@ -226,6 +236,35 @@ async def wait_landing(backend, inbox: str, before: dict, *,
         # 下限给得很小：真正的节奏由设置项 CLOUD_POLL（默认 10s）决定，
         # 这里只是防止 poll=0 把 CPU 打满。写死 1 秒会让测试跑不动。
         await asyncio.sleep(max(0.01, float(poll)))
+
+
+def check_offline_task(url: str, *, client=None) -> str:
+    """查迅雷那边这个磁力的离线任务状态；**失败时**返回原因，空串=还在跑。
+
+    为什么需要（2026-10-24 实测）：迅雷云盘解析失败时会回
+        phase = PHASE_TYPE_ERROR, message = "解析失败，请重试或更换链接"
+    但目录那边什么都不会出现 —— 没有它，任务会**一直等下去**（默认 2 小时），
+    用户只看到「卡在 cloud」，完全不知道迅雷早说不行了。
+    （MIMK-267 就是这样：选的磁力 0 个做种，迅雷解析失败，任务干等。）
+
+    查不到就当「还在跑」—— 不能因为查不到就把正常的任务判死。
+    """
+    if not url:
+        return ""
+    try:
+        from . import xunleipan as xp
+        info_hash = xp.info_hash_of(url)
+        task = xp.offline_task_by_hash(info_hash, client=client)
+    except Exception as exc:                    # noqa: BLE001 查不到不算失败
+        log.info("查迅雷离线任务状态失败（忽略）：%s", exc)
+        return ""
+    if not task:
+        return ""
+    phase = str(task.get("phase") or "")
+    if "ERROR" not in phase.upper():
+        return ""
+    reason = (task.get("message") or task.get("error_detail") or "").strip()
+    return reason or "迅雷侧报任务失败"
 
 
 def submit(backend, url: str, inbox: str) -> dict:
