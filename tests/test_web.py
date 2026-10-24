@@ -386,3 +386,49 @@ def test_api_wall_never_breaks_the_page(server, monkeypatch):
     assert data["ok"] is False and "上游 500" in data["error"]
     # 首页本身照样能开
     assert "<title>x-drive" in get(server + "/").read().decode()
+
+
+# ---------------------------------------------------------------- 封面缓存
+
+def test_cover_cache_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "COVERS", str(tmp_path / "covers"))
+    assert web._cover_get("http://x/1.jpg") is None
+    web._cover_put("http://x/1.jpg", b"abc", "image/jpeg")
+    assert web._cover_get("http://x/1.jpg") == (b"abc", "image/jpeg")
+
+
+def test_cover_cache_survives_broken_files(tmp_path, monkeypatch):
+    """缓存坏了当没命中（重新去取），不能让封面直接 500。"""
+    monkeypatch.setattr(web, "COVERS", str(tmp_path / "covers"))
+    data_path, type_path = web._cover_paths("http://x/2.jpg")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"")            # 空文件 = 上次没写完
+    assert web._cover_get("http://x/2.jpg") is None
+
+
+def test_proxy_rejects_unknown_host(server):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        get(server + "/proxy?u=https%3A%2F%2Fevil.example.com%2Fa.jpg")
+    assert exc.value.code == 400, "代理只放行已知图床，不做任意转发"
+
+
+def test_proxy_serves_from_cache(server, tmp_path, monkeypatch):
+    """命中缓存就不再打上游：图床握手不稳，一张图只该成功取一次。"""
+    monkeypatch.setattr(web, "COVERS", str(tmp_path / "covers"))
+    url = "https://www.javbus.com/pics/thumb/cached.jpg"
+    web._cover_put(url, b"\xff\xd8JPEG", "image/jpeg")
+    real = urllib.request.urlopen
+    called = []
+
+    def guard(req, *a, **k):
+        # 只拦「去取封面」，测试自己的 HTTP 请求照常发
+        target = req.full_url if hasattr(req, "full_url") else str(req)
+        if "javbus.com/pics" in target:
+            called.append(target)
+            raise RuntimeError("不该联网")
+        return real(req, *a, **k)
+
+    monkeypatch.setattr(web.urllib.request, "urlopen", guard)
+    resp = get(server + "/proxy?u=" + urllib.parse.quote(url, safe=""))
+    assert resp.status == 200 and resp.read() == b"\xff\xd8JPEG"
+    assert called == []

@@ -534,6 +534,48 @@ def local_disk_inventory() -> dict:
     }
 
 
+# ── 图片代理：白名单 + 磁盘缓存
+IMG_HOSTS = ("whatslink.info", "www.whatslink.info", "jdbstatic.com", "javbus.com",
+             "www.javbus.com", "pics.dmm.co.jp", "awsimgsrc.dmm.co.jp")
+IMG_TIMEOUT = 6.0
+IMG_ATTEMPTS = 3
+# 缓存目录跟 state 放一起（随 ./data 一起备份），一张图一个文件，扩展名带 ctype
+COVERS = os.getenv("COVER_CACHE", str(Path(STATE).parent / "covers"))
+_cover_lock = threading.Lock()
+
+
+def _cover_paths(url: str) -> tuple[Path, Path]:
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+    base = Path(COVERS) / digest[:2]
+    return base / (digest + ".bin"), base / (digest + ".type")
+
+
+def _cover_get(url: str) -> tuple[bytes, str] | None:
+    """命中缓存就返回 (字节, ctype)。**任何异常都当没命中**：缓存坏了不该让图挂掉。"""
+    data_path, type_path = _cover_paths(url)
+    try:
+        blob = data_path.read_bytes()
+        ctype = type_path.read_text(encoding="utf-8").strip() or "image/jpeg"
+    except OSError:
+        return None
+    return (blob, ctype) if blob else None
+
+
+def _cover_put(url: str, data: bytes, ctype: str) -> None:
+    """写缓存。失败只记日志：拿不到图的问题比写不进缓存严重得多。"""
+    if not data:
+        return
+    data_path, type_path = _cover_paths(url)
+    try:
+        data_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = data_path.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(data_path)
+        type_path.write_text(ctype or "image/jpeg", encoding="utf-8")
+    except OSError as exc:
+        log.warning("写封面缓存失败：%s", exc)
+
+
 CANCEL: dict[str, threading.Event] = {}
 # 上传进度回调按线程传递：upload_folder 的两参签名被测试大量 monkeypatch，
 # 不适合加参数；CD2/OpenList 适配器有真实进度，就靠这个把进度送到 _upload_loop。
@@ -3201,43 +3243,48 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
     def _proxy_image(self, query: dict) -> None:
-        """同源转发 whatslink 的截图，避免浏览器直连第三方域名。"""
-        url = (query.get("u") or [""])[0]
+        """同源转发图片（截图 / 封面），避免浏览器直连第三方域名。
+
+        加磁盘缓存是被图床逼出来的：`www.javbus.com` 在本机实测握手很不稳
+        （同一张图连打 5 次：200/200/200/超时/超时），媒体墙一次要 12 张，
+        不缓存就是一半「无封面」、还每张白等 8 秒。缓存后一张图只需成功一次。
+        """
+        url = (query.get("u") or [""])[0].strip()
         host = (urlsplit(url).hostname or "").lower()
-        # 只放行白名单：截图来自 whatslink，封面来自 javdb 的图床
-        # javbus 的封面在图床上；javdb 用 jdbstatic。白名单只放这三个域，别的一律 400
-        allowed = ("whatslink.info", "www.whatslink.info", "jdbstatic.com", "javbus.com",
-                   "www.javbus.com", "pics.dmm.co.jp")
-        if not url or not any(host == h or host.endswith("." + h) for h in allowed):
+        # 白名单只放已知图床（javbus / jdbstatic / dmm / whatslink），别的一律 400；
+        # 代理永远不做任意 URL 转发。
+        if not url or not any(host == h or host.endswith("." + h) for h in IMG_HOSTS):
             self._send(400, b"bad proxy url", "text/plain; charset=utf-8")
+            return
+        cached = _cover_get(url)
+        if cached:
+            data, ctype = cached
+            self._send(200, data, ctype, {"Cache-Control": "public, max-age=86400"})
             return
         referer = ("https://whatslink.info/" if "whatslink" in host
                    else "https://www.javbus.com/" if "javbus" in host
                    else "https://javdb.com/")
         req_headers = {"User-Agent": "Mozilla/5.0", "Referer": referer}
-        # 重试只对外面的「偶发 500」有意义。原来 3 次 × 20s 超时，碰上图床拒绝
-        # 或图已删（4xx 不会自愈），页面上就是一块黑着等一分钟。
-        # 现在：4xx 立刻放弃，传输类错误最多再试一次，单张图最坏 ~17s。
+        # 4xx 立刻放弃（403/404 再试也是同一个结果）；传输错误多给几次机会 ——
+        # 图床是「偶发握手超时」，同一张图第二、三次就成，这不是白等。
         last = None
-        for attempt in range(2):
+        for attempt in range(IMG_ATTEMPTS):
             try:
                 req = urllib.request.Request(url, headers=req_headers)
-                with urllib.request.urlopen(req, timeout=8) as resp:
+                with urllib.request.urlopen(req, timeout=IMG_TIMEOUT) as resp:
                     data = resp.read(4 * 1024 * 1024)
                     ctype = resp.headers.get("Content-Type") or "image/jpeg"
+                _cover_put(url, data, ctype)
                 self._send(200, data, ctype, {"Cache-Control": "public, max-age=86400"})
                 return
             except urllib.error.HTTPError as exc:
                 last = exc
-                if exc.code < 500:          # 403 / 404 再试也是同一个结果
+                if exc.code < 500:
                     break
             except Exception as exc:
-                # 超时 / 连接失败：重试等于再等一整个 timeout，一张封面不值得。
-                # 只有上游明确吐 5xx 才值得再试一次（下面 HTTPError 分支）。
                 last = exc
-                break
-            if attempt == 0:
-                time.sleep(0.4)
+            if attempt + 1 < IMG_ATTEMPTS:
+                time.sleep(0.3 * (attempt + 1))
         self._send(502, f"proxy failed: {last}".encode(), "text/plain; charset=utf-8")
 
     def _json(self, payload: dict, code: int = 200, extra: dict | None = None) -> None:
