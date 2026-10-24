@@ -611,9 +611,11 @@ def test_candidate_list_has_sort_control():
     assert "RES_SORTS" in js, "要有排序定义"
     assert "sortCandidates" in js, "要有排序函数"
     assert "res-sort" in js, "要有排序控件的样式/类名"
-    # 0 种子的必须永远垫底（三种排序都一样）
+    # 0 种子的必须永远垫底（三种排序都一样）—— 靠「先分组再各组内排」实现：
+    # 混在一个比较器里排不出来（体积排序时 5.24GB 的死种会压过 2.13GB 的活种）。
     assert "isDead" in js
-    assert "isDead(a) ? 1 : -1" in js
+    assert "splitDead" in js
+    assert "[...live, ...dead]" in js, "活种在前、死种在后"
 
 
 def test_candidate_sort_is_re_renderable():

@@ -1815,14 +1815,21 @@ async function downloadCandidate(code, item, btn) {
 // 默认「推荐」= 有种子优先 → 字幕 → 高清 → 做种数 → 体积。
 // 0 种子的永远垫底：迅雷云盘解析不了它们（2026-10-24 实测 MIMK-267）。
 const RES_SORTS = {
-  rec: {label: "推荐", fn: (a, b) => cmpCand(a, b)},
-  seed: {label: "种子数", fn: (a, b) => (num(b.seeders) - num(a.seeders)) || cmpCand(a, b)},
-  size: {label: "体积", fn: (a, b) => (num(b.size_bytes) - num(a.size_bytes)) || cmpCand(a, b)},
+  rec: {label: "推荐"},
+  seed: {label: "种子数"},
+  size: {label: "体积"},
 };
 const num = (v) => Number(v) || 0;
 const isDead = (it) => "seeders" in it && !num(it.seeders);
+// 死种（0 个种子）永远垫底：迅雷云盘解析不了它们（2026-10-24 实测 MIMK-267）。
+// 先单独分两组再各组内排序 —— 混在一个比较器里排不出「死种全在最后」：
+// 体积排序时 5.24GB 的死种会压过 2.13GB 的活种，那正是要避免的。
+const splitDead = (items) => {
+  const live = items.filter((x) => !isDead(x));
+  const dead = items.filter(isDead);
+  return {live, dead};
+};
 const cmpCand = (a, b) => {
-  if (isDead(a) !== isDead(b)) return isDead(a) ? 1 : -1;   // 死种垫底
   const sub = (x) => (x.has_subtitle ? 0 : 1);
   const hd = (x) => (x.is_hd ? 0 : 1);
   return sub(a) - sub(b) || hd(a) - hd(b)
@@ -1831,7 +1838,11 @@ const cmpCand = (a, b) => {
 };
 function sortCandidates(items) {
   const key = resState.sort && RES_SORTS[resState.sort] ? resState.sort : "rec";
-  return [...items].sort(RES_SORTS[key].fn);
+  const {live, dead} = splitDead(items);
+  if (key === "seed") live.sort((a, b) => (num(b.seeders) - num(a.seeders)) || cmpCand(a, b));
+  else if (key === "size") live.sort((a, b) => (num(b.size_bytes) - num(a.size_bytes)) || cmpCand(a, b));
+  else live.sort(cmpCand);
+  return [...live, ...dead];
 }
 
 async function searchResources(code) {
