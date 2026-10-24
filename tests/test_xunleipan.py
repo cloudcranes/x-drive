@@ -64,6 +64,14 @@ def test_configured_needs_both_values(monkeypatch):
     assert xunleipan.configured() is True
 
 
+def test_device_id_follows_script_truncation(monkeypatch):
+    """脚本取 deviceid 点后前 32 字符（localStorage 是 wdi10.<hex>）。"""
+    _env(monkeypatch, device="wdi10." + "a" * 64)
+    assert xunleipan._device_id() == "a" * 32
+    _env(monkeypatch, device="plain-id-12345")
+    assert xunleipan._device_id() == "plain-id-12345"
+
+
 # ─────────────────────────────────────────── 列目录 / 详情
 
 def test_list_files_parses_items(monkeypatch):

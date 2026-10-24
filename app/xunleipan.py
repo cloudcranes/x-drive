@@ -43,17 +43,34 @@ def configured() -> bool:
 
 
 def _setting(key: str) -> str:
-    """网页设置 > 环境变量 > 空。"""
+    """网页设置 > 环境变量 > 空。
+
+    与 storage.settings() 同一个入口：bot、离线脚本、`--check` 这些进程里
+    settings 没绑定也要能读到网页保存的值（缓存在 jobs.db 的 state 表）。
+    """
     import os
     try:
+        from . import storage as storage_mod
+        value = storage_mod.settings().get(key)
+        if value:
+            return str(value)
+    except Exception:                            # noqa: BLE001
+        pass
+    try:
         inst = settings_mod.bound()
-        if inst is not None:
-            value = inst.get(key)
-            if value:
-                return str(value)
+        if inst is not None and inst.get(key):
+            return str(inst.get(key))
     except Exception:                            # noqa: BLE001
         pass
     return str(os.getenv(key) or "")
+
+
+def _device_id() -> str:
+    """x-device-id：照脚本取 deviceid 点后前 32 字符（localStorage 里是 wdi10.<hex>）。"""
+    raw = _setting("XLPAN_DEVICE_ID").strip()
+    if not raw:
+        return ""
+    return raw.split(".", 1)[-1][:32] if "." in raw else raw[:32]
 
 
 def _headers() -> dict:
@@ -63,7 +80,7 @@ def _headers() -> dict:
     out = {"Authorization": token,
            "clientid": _setting("XLPAN_CLIENT_ID").strip(),
            "content-type": "application/json"}
-    device = _setting("XLPAN_DEVICE_ID").strip()
+    device = _device_id()
     if device:
         out["x-device-id"] = device
     return out
