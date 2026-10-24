@@ -73,16 +73,26 @@ def snapshot(backend, inbox: str) -> dict[str, int]:
 
 
 def measure(backend, inbox: str) -> dict[str, dict]:
-    """inbox 里每个条目的体量。
+    """inbox 里**目录**的体量（往里数一层）。
 
-    迅雷把种子放进一个同名**目录**，文件写在里面 —— 只看 inbox 这一层永远只有
-    一个空目录，所以目录要往里数一层。
+    只认目录，不认 inbox 根下散落的裸文件 —— 这条是踩出来的：
+
+      · 迅雷落地一定是「建一个种子同名目录」再往里写（实测）；
+      · 而落地目录里本来就可能躺着用户自己的文件（实测 inbox 里有
+        `MIMK-212ch.mp4`、几个 zip/iso）。把它们当「新落地」会拿一个**普通文件**
+        去当目录名整理，报「是文件，不是目录」；
+      · 根层读文件还可能超时，那种情况下 before 快照只有目录，
+        于是所有既存文件都变成「新增」—— 只认目录就天然绕开了这个坑。
     """
     out: dict[str, dict] = {}
-    for name, size in snapshot(backend, inbox).items():
-        if size >= 0:                            # 普通文件：大小就是它自己
-            out[name] = {"files": [{"name": name, "size": size}],
-                         "count": 1, "bytes": size}
+    try:
+        names = backend.list_dirs(inbox)
+    except Exception as exc:                     # noqa: BLE001 读不到就当没有
+        log.info("列 %s 目录失败（当作空）：%s", inbox, exc)
+        return out
+    for name in names:
+        name = str(name)
+        if not name or name.startswith("."):
             continue
         inner = f"{inbox.rstrip('/')}/{name}"
         files: list[dict] = []

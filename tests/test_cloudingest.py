@@ -97,6 +97,18 @@ def test_measure_counts_inside_directories():
     assert measured["MIMK-290"]["bytes"] == 105
 
 
+def test_measure_ignores_loose_files_in_inbox():
+    """inbox 根下散落的裸文件不算落地：实测那里本来就躺着用户的 zip/iso/mp4。
+
+    第一版把它们当新落地，于是拿一个**普通文件**当目录名去整理，
+    报「是文件，不是目录」。
+    """
+    b = FakeBackend()
+    b.files["/inbox/MIMK-212ch.mp4"] = 5_209_527_709
+    b.files["/inbox/迅雷11 绿色版.zip"] = 83_875_532
+    assert cloudingest.measure(b, "inbox") == {}
+
+
 # ─────────────────────────────────────────── 落地判定
 
 def test_waits_until_stable():

@@ -138,8 +138,14 @@ def renamed_files(plan_obj: Plan, folder_code: str) -> list[tuple[str, str]]:
     return out
 
 
-def apply(backend, inbox: str, plan_obj: Plan, folder_code: str = "") -> dict:
+def apply(backend, src_root: str, plan_obj: Plan, folder_code: str = "",
+          dst_root: str = "") -> dict:
     """执行整理：建目标目录 → 逐个 move → purge 原目录。
+
+    `src_root` 是落地目录所在的父目录（inbox），`dst_root` 是归档根目录。
+    **两者必须分开传**：第一版把 dst 也算在 inbox 下面，结果文件只是原地改了名、
+    广告也留着，而记账里写的却是归档路径 —— 账实不符。dst_root 省略时退回
+    src_root（原地整理，仅用于「归档根就是落地目录」的部署）。
 
     返回 {target, folder, files, size}。任何一步失败都抛 OrganizeError，
     并**不动原目录**（除了已经搬走的那些文件 —— 这是远端的固有限制，
@@ -147,9 +153,12 @@ def apply(backend, inbox: str, plan_obj: Plan, folder_code: str = "") -> dict:
     """
     if _BAD_NAME.search(plan_obj.source or "") or _BAD_NAME.search(plan_obj.target or ""):
         raise OrganizeError("目录名不安全，拒绝执行")
-    root = inbox.strip("/")                     # 后端内相对路径，不带前导斜杠
-    src = f"{root}/{plan_obj.source}"
-    dst = f"{root}/{plan_obj.target}"
+    src_base = src_root.strip("/")               # 后端内相对路径，不带前导斜杠
+    dst_base = (dst_root or src_root).strip("/")
+    src = f"{src_base}/{plan_obj.source}"
+    dst = f"{dst_base}/{plan_obj.target}"
+    if not src_base or not dst_base:
+        raise OrganizeError("落地目录或归档根为空，拒绝执行")
     mapping = renamed_files(plan_obj, folder_code or plan_obj.target)
     if len({new for _old, new in mapping}) != len(mapping):
         raise OrganizeError(f"改名后出现重名：{mapping}")

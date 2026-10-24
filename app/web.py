@@ -785,7 +785,8 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
     for item in landed:
         job_event(job_id, "stage", f"landed {item.folder}（{item.total} 字节）")
         plan = cloudorganize.plan(item.folder, item.files)
-        moved = cloudorganize.apply(backend, inbox, plan, code or plan.target)
+        moved = cloudorganize.apply(backend, inbox, plan, code or plan.target,
+                                    dst_root=dest)
         record = {
             "folder": moved["target"],
             "path": f"{backend.kind}:{dest}/{moved['target']}",

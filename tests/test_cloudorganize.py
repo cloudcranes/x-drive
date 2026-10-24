@@ -129,9 +129,9 @@ def test_apply_moves_and_purges():
                        "inbox/seed_xxx/广告.txt": 1})
     plan = cloudorganize.plan("seed_xxx", cloudorganize_measure(cloud, "seed_xxx"))
     plan.target = "MIMK-290"                    # 目录名认不出番号，但文件里有
-    out = cloudorganize.apply(cloud, "inbox", plan, "MIMK-290")
+    out = cloudorganize.apply(cloud, "inbox", plan, "MIMK-290", dst_root="archive")
     assert out["files"] == ["MIMK-290.mp4"]
-    assert "inbox/MIMK-290/MIMK-290.mp4" in cloud.files
+    assert "archive/MIMK-290/MIMK-290.mp4" in cloud.files, "要真的搬到归档根"
     assert cloud.purged == ["inbox/seed_xxx"], "原目录连带广告一起清掉"
 
 
@@ -197,3 +197,22 @@ def test_apply_guards_against_duplicate_targets(monkeypatch):
     with pytest.raises(OrganizeError) as err:
         cloudorganize.apply(FakeCloud({}), "inbox", plan, "A-1")
     assert "重名" in str(err.value)
+
+
+def test_apply_moves_to_separate_dst_root():
+    """落地目录（inbox）与归档根必须分开：混成一个就会「原地改名」，账实不符。"""
+    cloud = FakeCloud({"inbox/seed_1/BIG-999.mp4": 900,
+                       "inbox/seed_1/广告.mp4": 10})
+    plan = cloudorganize.plan("seed_1", cloudorganize_measure(cloud, "seed_1"))
+    out = cloudorganize.apply(cloud, "inbox", plan, "BIG-999", dst_root="archive")
+    assert out["folder"] == "archive/BIG-999"
+    assert "archive/BIG-999/BIG-999.mp4" in cloud.files
+    assert "inbox/seed_1/BIG-999.mp4" not in cloud.files, "原位置要清干净"
+    assert cloud.purged == ["inbox/seed_1"]
+
+
+def test_apply_rejects_empty_roots():
+    cloud = FakeCloud({})
+    plan = cloudorganize.plan("A-1", [F("x.mp4", 1)])
+    with pytest.raises(OrganizeError):
+        cloudorganize.apply(cloud, "", plan, "A-1", dst_root="archive")
