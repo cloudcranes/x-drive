@@ -138,13 +138,17 @@ def put(url: str, data: bytes, ctype: str = "image/jpeg") -> Path | None:
 
 
 def stats() -> dict:
-    """给面板用：多少张、占多大、目录在哪。"""
+    """给面板用：多少张、占多大、目录在哪。
+
+    递归数：老布局是两级目录（`ab/hash.bin`），只 glob 顶层会显示 0 张，
+    看着像「缓存没生效」，其实盘上有一堆。
+    """
     directory = root()
     files = 0
     total = 0
     newest = 0.0
     try:
-        for entry in directory.glob("*"):
+        for entry in directory.rglob("*"):
             if not entry.is_file() or entry.name.endswith(".tmp"):
                 continue
             try:
@@ -167,7 +171,7 @@ def trim(max_bytes: int) -> int:
     directory = root()
     entries = []
     try:
-        for entry in directory.glob("*"):
+        for entry in directory.rglob("*"):
             if not entry.is_file() or entry.name.endswith(".tmp"):
                 continue
             try:

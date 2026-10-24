@@ -278,6 +278,7 @@ def storage_view() -> dict:
 
 def image_cache_view() -> dict:
     """图片缓存的现状（面板展示 + 清空入口用）。"""
+    imgcache.purge_legacy()          # 老布局无法迁移，看到就清掉，别让它一直占地方
     info = imgcache.stats()
     info["ok"] = True
     info["limit_mb"] = round(img_cache_max_bytes() / 1048576, 1) if img_cache_max_bytes() else 0
