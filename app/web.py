@@ -293,6 +293,22 @@ def image_cache_clear(confirm: bool = False) -> dict:
     return {"ok": True, **result, "after": imgcache.stats()}
 
 
+def wall_find(keyword: str) -> dict:
+    """按关键词找片子（MIMK、SSIS 这类前缀或标题里的词）。
+
+    与 /api/magnets 的区别：那个是「给我这个番号的磁力」（下载用），
+    这个是「有哪些片」（发现用）。上游挂了也只回 ok:false。
+    """
+    keyword = (keyword or "").strip()[:64]
+    if not keyword:
+        return {"ok": False, "query": "", "items": [], "error": "关键词为空"}
+    try:
+        return wall.find(keyword)
+    except Exception as exc:
+        log.warning("关键词搜索失败：%s", exc)
+        return {"ok": False, "query": keyword, "items": [], "error": str(exc)[:200]}
+
+
 def wall_feed(page: int = 1, which: str = "") -> dict:
     """首页媒体墙的一页。上游挂了也只回 ok:false，不影响首页其它部分。"""
     if not get_setting("WALL_ON"):
@@ -3223,6 +3239,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/cleanup/preview":
             self._json({"ok": True, **build_cleanup_plan(dry_run=True)})
+            return
+        if path == "/api/find":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            query = parse_qs(urlsplit(self.path).query)
+            keyword = (query.get("q") or [""])[0]
+            self._json(wall_find(keyword))
             return
         if path == "/api/images":
             if not self._authorized():

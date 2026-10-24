@@ -138,3 +138,55 @@ def test_source_choice_reads_settings(tmp_path, monkeypatch):
 
 def test_disabled_setting():
     assert wall.enabled() is True
+
+
+# ─────────────────────────────────────────── 关键词搜索
+
+def test_find_returns_cards(monkeypatch):
+    async def fake_search(keyword):
+        assert keyword == "MIMK"
+        return [{"code": "MIMK-289", "img": "http://x/1.jpg", "title": "标题",
+                 "date": "2026-10-02"}]
+
+    monkeypatch.setattr(wall.javbus, "search", fake_search)
+    result = wall.find("MIMK")
+    assert result["ok"] and result["query"] == "MIMK"
+    assert result["items"][0]["code"] == "MIMK-289"
+
+
+def test_find_dedupes_and_limits(monkeypatch):
+    rows = [{"id": "MIMK-1", "img": "u1"}, {"id": "MIMK-1", "img": "u2"},
+            {"id": "MIMK-2", "img": "u3"}]
+
+    async def fake_search(_keyword):
+        return rows
+
+    monkeypatch.setattr(wall.javbus, "search", fake_search)
+    assert [i["code"] for i in wall.find("MIMK")["items"]] == ["MIMK-1", "MIMK-2"]
+    assert len(wall.find("MIMK", limit=1)["items"]) == 1
+
+
+def test_find_empty_keyword():
+    assert wall.find("   ")["ok"] is False
+
+
+def test_find_upstream_failure_is_not_raised(monkeypatch):
+    async def boom(_keyword):
+        raise RuntimeError("上游 503")
+
+    monkeypatch.setattr(wall.javbus, "search", boom)
+    result = wall.find("MIMK")
+    assert result["ok"] is False and "503" in result["error"]
+
+
+def test_find_is_cached(monkeypatch):
+    calls = []
+
+    async def fake_search(keyword):
+        calls.append(keyword)
+        return [{"id": "A-1", "img": "u"}]
+
+    monkeypatch.setattr(wall.javbus, "search", fake_search)
+    wall.find("MIMK")
+    second = wall.find("MIMK")
+    assert second["cached"] is True and calls == ["MIMK"]

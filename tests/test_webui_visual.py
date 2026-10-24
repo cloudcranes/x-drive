@@ -431,3 +431,16 @@ def test_home_settings_show_image_cache_row():
     assert 'subsApi("/api/images/clear", {confirm: true})' in js
     assert 'if (group === "首页") pane.append(imageCacheRow());' in js
     assert "function mbText(" in js
+
+
+def test_search_box_keyword_enter_searches():
+    """输入 MIMK 回车以前什么都不发生（看着像搜索框坏了）：现在按关键词找片。"""
+    page = html()
+    js = script(page)
+    assert 'id="find-slot"' in page
+    assert "async function searchKeyword(" in js
+    assert '"/api/find?q="' in js
+    # 番号仍走精确磁力搜索，其余非空输入走关键词搜索
+    assert "searchResources(q.code)" in js and "searchKeyword(text)" in js
+    # 点结果卡 = 切到精确番号
+    assert "closeFind();" in js

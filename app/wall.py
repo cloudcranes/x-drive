@@ -166,6 +166,54 @@ _CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
 
 def clear_cache() -> None:
     _CACHE.clear()
+    _SEARCH_CACHE.clear()
+
+
+# 关键词搜索缓存：(关键词, 条数上限) -> (时间, 结果)。同一个词 5 分钟内只打一次上游。
+# 上限也要进键：曾只按关键词缓存，先搜 60 条再要 1 条会拿到 60 条。
+_SEARCH_CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
+SEARCH_TTL = 300.0
+
+
+async def find_async(keyword: str, limit: int = 60) -> dict:
+    """按关键词找片子（不是按番号）。返回像媒体墙那样的卡片列表。
+
+    为什么要它：番号精确匹配是「下载」那条路的入口，但用户常先输入一个前缀
+    （`MIMK`、`SSIS`）或标题里的词看看有什么。上游的 `/api/movies/search`
+    就是干这个的，能返回 30 条，之前前端完全没用上 —— 输入 `MIMK` 回车
+    什么都不发生，看着像搜索框坏了。
+    """
+    text = (keyword or "").strip()
+    if not text:
+        return {"ok": False, "query": "", "items": [], "error": "关键词为空"}
+    cap = max(1, int(limit))
+    key = (text, cap)
+    hit = _SEARCH_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < SEARCH_TTL:
+        return {**hit[1], "cached": True}
+    try:
+        rows = await javbus.search(text)
+    except Exception as exc:                    # 上游挂了只回错误，不抛
+        log.warning("关键词搜索失败（%s）：%s", text, exc)
+        return {"ok": False, "query": text, "items": [], "error": str(exc)[:200]}
+    seen = set()
+    items = []
+    for row in rows:
+        item = normalize_item(row)
+        if not item or item["code"] in seen:
+            continue
+        seen.add(item["code"])
+        items.append(item)
+        if len(items) >= cap:
+            break
+    result = {"ok": True, "query": text, "items": items, "error": ""}
+    _SEARCH_CACHE[key] = (time.monotonic(), result)
+    return {**result, "cached": False}
+
+
+def find(keyword: str, limit: int = 60) -> dict:
+    """同步入口（web 处理函数是同步的）。"""
+    return asyncio.run(find_async(keyword, limit))
 
 
 async def feed_async(page: int = 1, which: str = "") -> dict:

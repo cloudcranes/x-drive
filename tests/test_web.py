@@ -452,3 +452,25 @@ def test_images_endpoints_need_auth(server, monkeypatch):
     assert exc.value.code == 401
     status, body = _post_json(server + "/api/images/clear", {"confirm": True})
     assert status == 401 and body["ok"] is False
+
+
+# ---------------------------------------------------------------- 关键词搜索
+
+def test_api_find_shape(server, monkeypatch):
+    monkeypatch.setattr(web, "wall_find",
+                        lambda q: {"ok": True, "query": q, "items": [{"code": "MIMK-289"}]})
+    data = json.loads(get(server + "/api/find?q=MIMK").read())
+    assert data["ok"] is True and data["query"] == "MIMK"
+    assert data["items"][0]["code"] == "MIMK-289"
+
+
+def test_api_find_empty_query(server):
+    data = json.loads(get(server + "/api/find?q=").read())
+    assert data["ok"] is False and "空" in data["error"]
+
+
+def test_api_find_needs_auth(server, monkeypatch):
+    monkeypatch.setattr(web, "AUTH", "u:p")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        get(server + "/api/find?q=MIMK")
+    assert exc.value.code == 401

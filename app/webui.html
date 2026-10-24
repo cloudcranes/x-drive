@@ -238,6 +238,12 @@
     font-family:var(--mono); font-size:10px; color:var(--cyan); background:rgba(4,20,13,.72);
     border:1px solid rgba(62,186,244,.45)}
   .wall-empty{font-family:var(--mono); font-size:11.5px; color:var(--dim); padding:10px 2px}
+  /* 关键词搜索结果：与媒体墙同一套卡片观感，省一套样式 */
+  #find-slot .find-grid{display:grid; gap:10px; margin-top:10px;
+    grid-template-columns:repeat(auto-fill,minmax(132px,1fr))}
+  @media (max-width:700px){
+    #find-slot .find-grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:8px}
+  }
   @media (max-width:700px){
     /* 手机上 3 列：132px 的下限会把一行挤成 2 张，露出半屏空白 */
     .wall-grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:8px}
@@ -1028,6 +1034,9 @@
 
   <!-- 搜索框直接搜网络资源的结果：本地没有这条番号时的出口 -->
   <section class="panel res" id="resource-slot" hidden aria-label="网络资源"></section>
+
+  <!-- 搜索框输入关键词（MIMK / SSIS 这类前缀、标题里的词）回车的结果 -->
+  <section class="panel res" id="find-slot" hidden aria-label="关键词搜索"></section>
 
   <!-- 首页媒体墙：最近上架的封面流。点一张 = 把这个番号填进搜索框去搜资源 -->
   <section class="wall" id="wall" hidden aria-label="媒体墙">
@@ -1890,9 +1899,18 @@ $("q").addEventListener("keydown", e => {
     submitDownload(q.value, null);
     return;
   }
-  if (q.kind !== "code") return;
+  if (q.kind === "code") {
+    e.preventDefault();
+    closeFind();                    // 换成精确番号了，关键词结果收掉
+    searchResources(q.code);
+    return;
+  }
+  // 不是番号也不是链接：以前这里直接 return，输入 MIMK 回车毫无反应，
+  // 看着像搜索框坏了。现在按关键词去上游找片（MIMK / SSIS 这类前缀都能找）。
+  const text = (view.q || "").trim();
+  if (!text) return;
   e.preventDefault();
-  searchResources(q.code);
+  searchKeyword(text);
 });
 $("clear-series").addEventListener("click", () => { view.series = ""; renderSidebar(); applyFilter(); });
 $("dimtabs").addEventListener("click", e => {
@@ -1921,6 +1939,8 @@ $("q").addEventListener("input", e => {
   clearSubmit();
   // 关键词换了，上一次的资源结果就过期了（别让人对着 A 的候选去下 B）
   if (resState.code && codeOfQuery(view.q) !== resState.code) closeResources();
+  // 关键词搜索同理：输入变了就收掉上一次的结果
+  if (findState.q && (view.q || "").trim() !== findState.q) closeFind();
   // 在设置/元数据/订阅界面里搜索：先回到归档列表再筛，
   // 否则输入半天看不到任何变化，像搜索框坏了。
   if ($("q").value && $("feed").hidden) showView("archive");
@@ -2308,6 +2328,8 @@ function showView(name) {
   const resBox = $("resource-slot");
   const views = [
     ["resultbar", isArchive], ["feed", isArchive], ["empty-slot", isArchive],
+    // 关键词搜索结果：归档视图、且真的搜过（有内容）才显示
+    ["find-slot", isArchive && !!$("find-slot") && $("find-slot").childElementCount > 0],
     // 媒体墙只在归档视图、且确实取到东西时才显示（取不到就别占版面）
     ["wall", isArchive && wallState.items.length > 0 && !wallState.off],
     // 资源结果面板只在归档视图、且真的搜过（有内容）时才显示
@@ -2981,7 +3003,7 @@ function wallOwned(code) {
   return false;
 }
 
-function wallCard(item) {
+function wallCard(item, onClick) {
   const node = el("button", "wall-card");
   node.type = "button";
   node.title = [item.code, item.title, item.date].filter(Boolean).join("\n");
@@ -3020,12 +3042,12 @@ function wallCard(item) {
   const meta = el("div", "wall-meta", metaBits || "—");
   meta.title = item.title || "";
   node.append(meta);
-  node.addEventListener("click", () => {
+  node.addEventListener("click", onClick || (() => {
     view.q = item.code;
     $("q").value = item.code;
     applyFilter();
     searchResources(item.code);
-  });
+  }));
   return node;
 }
 
@@ -3048,6 +3070,84 @@ function drainWall() {
   const batch = wallState.queue.splice(0, wallBatch());
   renderWall(batch);
   return wallState.queue.length > 0;
+}
+
+// ── 搜索框关键词搜索（MIMK / SSIS 这类前缀、标题里的词）
+// 番号精确匹配走 searchResources（那是「下载这个番号」）；这里只做「有哪些片」。
+const findState = {q: "", seq: 0, items: []};
+
+function closeFind() {
+  findState.seq += 1;          // 丢弃还没回来的响应
+  const slot = $("find-slot");
+  if (!slot) return;
+  slot.hidden = true;
+  slot.textContent = "";
+  findState.q = "";
+  findState.items = [];
+}
+
+async function searchKeyword(keyword) {
+  const text = (keyword || "").trim();
+  const slot = $("find-slot");
+  if (!slot) return;
+  if (!text) { closeFind(); return; }
+  const seq = ++findState.seq;
+  findState.q = text;
+  slot.hidden = false;
+  slot.textContent = "";
+  const head = el("div", "res-head");
+  head.append(el("h3", null, `搜索 · ${text}`));
+  const hint = el("span", "hint", "搜索中…");
+  hint.id = "find-hint";
+  head.append(hint);
+  const close = el("button", "ghost", "关闭");
+  close.type = "button";
+  close.addEventListener("click", () => { closeFind(); applyFilter(); });
+  head.append(close);
+  slot.append(head);
+
+  let data = null;
+  try {
+    const r = await fetch(BASE + "/api/find?q=" + encodeURIComponent(text),
+                          authInit({cache: "no-store"}));
+    data = await r.json().catch(() => ({}));
+  } catch (e) {
+    if (seq !== findState.seq) return;
+    setFindHint("搜索失败：" + (e.message || e), "err");
+    return;
+  }
+  if (seq !== findState.seq) return;      // 又搜了别的词，这条响应整条丢掉
+  if (!data || !data.ok) {
+    setFindHint("搜索失败：" + ((data && data.error) || "未知错误"), "err");
+    return;
+  }
+  const items = data.items || [];
+  findState.items = items;
+  if (!items.length) {
+    setFindHint(`没找到「${text}」：换个关键词，或直接输入完整番号（如 MIMK-289）`, "err");
+    return;
+  }
+  setFindHint(`找到 ${items.length} 条 · 点封面看这个番号的资源`, "ok");
+  const grid = el("div", "find-grid");
+  for (const item of items) {
+    // 点一张 = 用这个番号去搜磁力（与媒体墙同一套动作）。
+    // 顺手收起关键词结果：不然两块结果面板叠在一起，得往下滚才看得到磁力列表。
+    grid.append(wallCard(item, () => {
+      closeFind();
+      view.q = item.code;
+      $("q").value = item.code;
+      applyFilter();
+      searchResources(item.code);
+    }));
+  }
+  slot.append(grid);
+}
+
+function setFindHint(text, kind) {
+  const h = $("find-hint");
+  if (!h) return;
+  h.textContent = text || "";
+  h.className = "hint" + (kind ? " " + kind : "");
 }
 
 async function loadWall(append) {
