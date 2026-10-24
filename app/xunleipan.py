@@ -30,6 +30,9 @@ from . import settings as settings_mod
 log = logging.getLogger("x-drive.xunleipan")
 
 API = "https://api-pan.xunlei.com"
+# captcha 签发端点（在 xluser 账号服务上，不在 pan 上；实测 captcha/image 那种
+# 图片验证码不需要——写操作走这个 shield 端点直接签发）
+SHIELD_API = "https://xluser-ssl.xunlei.com"
 _TIMEOUT = 15.0
 
 
@@ -117,11 +120,100 @@ def _get(path: str, params: dict | None = None, *, client=None) -> dict:
     return data
 
 
-def list_files(parent_id: str = "", limit: int = 100, *, client=None) -> list[dict]:
-    """列一个目录（不给 parent_id 就是网盘根）。返回 [{id,name,kind,phase,trashed}]。"""
+def sign_captcha(action: str, *, previous: str = "", meta: dict | None = None,
+                 client=None) -> tuple[str, int]:
+    """签发一个 captcha token（写操作的风控凭据）。返回 (token, expires_in)。
+
+    契约来自公开前端 chunk `service-captcha`：
+        POST {shield}/v1/shield/captcha/init
+        body: {client_id, action, device_id, captcha_token, meta}
+
+    **关键**：`captcha_token` 要回传**上一次用过的** token（首次传空串）——
+    服务端按轮换链校验。实测：回传旧 token 签发出来的才能通过写操作；
+    传空串签发的会被判 captcha_invalid（读操作反而都能过，所以容易误判为可用）。
+    """
+    own = client is None
+    client = client or httpx.Client(follow_redirects=True, timeout=_TIMEOUT)
+    body = {"client_id": _setting("XLPAN_CLIENT_ID").strip() or "Xqp0kJBXWhwaTpB6",
+            "action": action,
+            "device_id": _device_id(),
+            "captcha_token": previous or "",
+            "meta": meta or {}}
+    try:
+        res = client.post(f"{SHIELD_API}/v1/shield/captcha/init",
+                          headers={**_headers(), "content-type": "application/json"},
+                          json=body)
+        if res.status_code != 200:
+            raise PanError(f"签发 captcha 失败：{res.status_code} {res.text[:120]}")
+        data = res.json() or {}
+    except (httpx.HTTPError, ValueError) as exc:
+        raise PanError(f"签发 captcha 请求失败：{exc}") from exc
+    finally:
+        if own:
+            client.close()
+    token = str(data.get("captcha_token") or "")
+    if not token:
+        raise PanError("签发 captcha 没拿到 token")
+    return token, int(data.get("expires_in") or 0)
+
+
+def delete_file(file_id: str, *, client=None) -> str:
+    """删一个文件（回收站里的也能删）。返回一句回执。
+
+    **写操作要 captcha**，流程（实测）：
+      1. 带当前 token 打一次 → 被判 captcha_invalid（说明该换了）；
+      2. 用「回传旧 token」的方式签发新的；
+      3. 带新 token 再打一次 → 生效。
+    直接拿新签的 token 去打会被拒（轮换链对不上），所以第 1 步不能省。
+    """
+    own = client is None
+    client = client or httpx.Client(follow_redirects=True, timeout=_TIMEOUT)
+    fid = str(file_id or "").strip()
+    if not fid:
+        raise PanError("缺少 file_id")
+    url = f"{API}/drive/v1/files/{quote(fid, safe='')}"
+    try:
+        res = client.delete(url, headers=_headers())
+        if res.status_code != 400 or "captcha" not in (res.text or ""):
+            return _finish_delete(res)
+        old = _setting("XLPAN_CAPTCHA_TOKEN").strip()
+        token, _exp = sign_captcha(f"DELETE:/drive/v1/files/{fid}",
+                                   previous=old, client=client)
+        res = client.delete(url, headers={**_headers(), "x-captcha-token": token})
+        if res.status_code == 400 and "captcha" in (res.text or ""):
+            raise PanError("captcha 仍被拒：轮换链对不上（浏览器里刷新一次 captcha 再试）")
+        return _finish_delete(res)
+    finally:
+        if own:
+            client.close()
+
+
+def _finish_delete(res) -> str:
+    if res.status_code == 200:
+        return "已删除"
+    j = {}
+    try:
+        j = res.json() or {}
+    except ValueError:
+        pass
+    err = str(j.get("error") or j.get("error_description") or res.text or "")[:120]
+    if res.status_code == 404:
+        return "文件不存在"
+    raise PanError(f"删除失败：{res.status_code} {err}")
+
+
+def list_files(parent_id: str = "", limit: int = 100, *, client=None,
+               trashed: bool = False) -> list[dict]:
+    """列一个目录（不给 parent_id 就是网盘根）。返回 [{id,name,kind,phase,trashed}]。
+
+    trashed=True 时列的是**回收站**（实测 GET /drive/v1/files?trashed=true 返回
+    回收站条目，CD2 视图里看不到这些）。
+    """
     params: dict = {"limit": limit}
     if parent_id:
         params["parent_id"] = parent_id
+    if trashed:
+        params["trashed"] = "true"
     data = _get("/drive/v1/files", params, client=client)
     out = []
     for item in data.get("files") or []:

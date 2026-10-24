@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -206,3 +208,73 @@ def test_direct_link_missing_path_raises(monkeypatch):
 
     with pytest.raises(xunleipan.PanError):
         xunleipan.direct_link("没有的文件.mp4", client=client(handler))
+
+
+# ─────────────────────────────────────────── captcha 签发与写操作
+
+def test_sign_captcha_posts_contract(monkeypatch):
+    """契约来自公开 chunk service-captcha：
+    POST {shield}/v1/shield/captcha/init
+    body {client_id, action, device_id, captcha_token, meta}
+    """
+    _env(monkeypatch)
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"captcha_token": "ck0.new", "expires_in": 300})
+
+    token, expires = xunleipan.sign_captcha("DELETE:/drive/v1/files/x",
+                                            previous="ck0.old", client=client(handler))
+    assert token == "ck0.new" and expires == 300
+    assert seen["url"].endswith("/v1/shield/captcha/init")
+    assert seen["body"]["action"] == "DELETE:/drive/v1/files/x"
+    assert seen["body"]["captcha_token"] == "ck0.old", "必须回传旧 token 走轮换链"
+    assert seen["body"]["device_id"]
+
+
+def test_list_files_trashed_flag(monkeypatch):
+    _env(monkeypatch)
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return httpx.Response(200, json={"files": []})
+
+    xunleipan.list_files(trashed=True, client=client(handler))
+    assert seen.get("trashed") == "true"
+
+
+def test_delete_file_rotates_captcha(monkeypatch):
+    """删除流程：先带旧 token 打一次（被判 captcha）→ 回传旧 token 签发新的
+    → 带新 token 再打一次才生效。跳过第一步会被判 captcha_invalid。"""
+    _env(monkeypatch)
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/shield/captcha/init"):
+            calls.append("sign")
+            return httpx.Response(200, json={"captcha_token": "ck0.fresh", "expires_in": 300})
+        calls.append("delete")
+        tok = request.headers.get("x-captcha-token")
+        if tok == "ck0.fresh":
+            return httpx.Response(200, json={})
+        return httpx.Response(400, json={"error": "captcha_invalid"})
+
+    out = xunleipan.delete_file("f1", client=client(handler))
+    assert out == "已删除"
+    assert calls == ["delete", "sign", "delete"], calls
+
+
+def test_delete_file_reports_when_captcha_still_refused(monkeypatch):
+    _env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/shield/captcha/init"):
+            return httpx.Response(200, json={"captcha_token": "ck0.fresh", "expires_in": 300})
+        return httpx.Response(400, json={"error": "captcha_invalid"})
+
+    with pytest.raises(xunleipan.PanError) as err:
+        xunleipan.delete_file("f1", client=client(handler))
+    assert "captcha" in str(err.value)
