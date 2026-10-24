@@ -603,3 +603,21 @@ def test_candidate_row_shows_zero_seeders():
     assert "种子 0" in body, "0 种子必须显式提示"
     assert "dead" in body, "0 种子的行要加标记类"
     assert "var(--red)" in html(), "dead 样式要用红色"
+
+
+def test_candidate_list_has_sort_control():
+    """候选列表要有排序下拉（推荐 / 种子数 / 体积）。"""
+    js = script(html())
+    assert "RES_SORTS" in js, "要有排序定义"
+    assert "sortCandidates" in js, "要有排序函数"
+    assert "res-sort" in js, "要有排序控件的样式/类名"
+    # 0 种子的必须永远垫底（三种排序都一样）
+    assert "isDead" in js
+    assert "isDead(a) ? 1 : -1" in js
+
+
+def test_candidate_sort_is_re_renderable():
+    """改排序要重画列表（不是只画一次）。"""
+    js = script(html())
+    assert "renderCandidates" in js
+    assert "renderCandidates(items, got, info)" in js, "改排序后要重画"

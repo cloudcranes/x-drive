@@ -190,6 +190,8 @@
   .res-head{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
   .res-head h3{margin:0; font-size:13px; font-weight:700; letter-spacing:-.01em}
   .res-head .hint{flex:1}
+  .res-sort{background:var(--panel-2); color:var(--text-2); border:1px solid var(--line);
+            border-radius:7px; padding:3px 7px; font-size:11px; cursor:pointer}
   .res-meta{display:flex; gap:11px; align-items:flex-start; margin-top:10px}
   .res-meta img{width:104px; border-radius:6px; flex:none; background:#0a0a0a}
   .res-meta .t{font-size:12.5px; line-height:1.5; color:var(--text)}
@@ -1746,7 +1748,7 @@ function codeOfQuery(text) {
   return m ? `${m[1].toUpperCase()}-${m[2]}` : "";
 }
 
-const resState = {code: "", seq: 0, items: 0};
+const resState = {code: "", seq: 0, items: 0, sort: "rec"};
 
 function closeResources() {
   resState.seq += 1;           // 丢弃还没回来的响应
@@ -1809,6 +1811,29 @@ async function downloadCandidate(code, item, btn) {
   }
 }
 
+// ── 候选排序（跟后端 sources.rank 同一口径，但用户可以改）
+// 默认「推荐」= 有种子优先 → 字幕 → 高清 → 做种数 → 体积。
+// 0 种子的永远垫底：迅雷云盘解析不了它们（2026-10-24 实测 MIMK-267）。
+const RES_SORTS = {
+  rec: {label: "推荐", fn: (a, b) => cmpCand(a, b)},
+  seed: {label: "种子数", fn: (a, b) => (num(b.seeders) - num(a.seeders)) || cmpCand(a, b)},
+  size: {label: "体积", fn: (a, b) => (num(b.size_bytes) - num(a.size_bytes)) || cmpCand(a, b)},
+};
+const num = (v) => Number(v) || 0;
+const isDead = (it) => "seeders" in it && !num(it.seeders);
+const cmpCand = (a, b) => {
+  if (isDead(a) !== isDead(b)) return isDead(a) ? 1 : -1;   // 死种垫底
+  const sub = (x) => (x.has_subtitle ? 0 : 1);
+  const hd = (x) => (x.is_hd ? 0 : 1);
+  return sub(a) - sub(b) || hd(a) - hd(b)
+         || (num(b.seeders) - num(a.seeders))
+         || (num(b.size_bytes) - num(a.size_bytes));
+};
+function sortCandidates(items) {
+  const key = resState.sort && RES_SORTS[resState.sort] ? resState.sort : "rec";
+  return [...items].sort(RES_SORTS[key].fn);
+}
+
 async function searchResources(code) {
   if (!code) return;
   const slot = $("resource-slot");
@@ -1856,8 +1881,29 @@ async function searchResources(code) {
   resState.items = items.length;
   applyFilter();              // 有结果就把空态里那个重复的按钮收掉
   setResHint(`${got} 找到 ${items.length} 条候选 · 点「下载」才进队列`, "ok");
+  // 排序选择：默认「推荐」（有种子优先）。0 种子的永远垫底且标红。
+  const sortSel = el("select", "res-sort");
+  for (const [k, v] of Object.entries(RES_SORTS)) {
+    const opt = el("option", null, `排序：${v.label}`);
+    opt.value = k;
+    if (k === resState.sort) opt.selected = true;
+    sortSel.append(opt);
+  }
+  sortSel.addEventListener("change", () => {
+    resState.sort = sortSel.value;
+    renderCandidates(items, got, info);
+  });
+  head.append(sortSel);
+  renderCandidates(items, got, info);
+}
+
+// 渲染候选列表（重排序时重画，所以单独抽出来）
+function renderCandidates(items, got, info) {
+  const slot = $("resource-slot");
+  const old = slot.querySelector(".res-list");
+  if (old) old.remove();
   const list = el("div", "res-list");
-  for (const item of items) {
+  for (const item of sortCandidates(items)) {
     const row = el("div", "sub-row");
     row.append(el("span", "tag " + (item.has_subtitle ? "vid" : ""),
                   item.has_subtitle ? "字幕" : (item.is_hd ? "高清" : "磁力")));
