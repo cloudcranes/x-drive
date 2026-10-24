@@ -70,6 +70,9 @@ class MyCloud(Backend):
     def rename_dir(self, src: str, new_name: str) -> None:
         raise StorageError("mycloud：rename_dir 还没实现")
 
+    def move_file(self, src: str, dst: str) -> None:
+        raise StorageError("mycloud：move_file 还没实现")
+
     # ── 自检
     def check(self) -> tuple[bool, str]:
         return False, "mycloud：check 还没实现"

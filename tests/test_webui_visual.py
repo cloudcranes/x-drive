@@ -478,3 +478,19 @@ def test_render_queue_block_removes_rebuilt_node():
     body = js[js.index("function renderQueueBlock"):js.index("async function loadJobs")]
     assert "if (old) old.node.remove();" in body
     assert 'key.startsWith(scope)' in body, "清理必须按区限定，否则两次渲染互相删"
+
+
+# ---------------------------------------------------------------- 11. 云盘归档
+
+def test_cloud_ingest_has_status_row_and_stage():
+    """云添加依赖很硬（CD2 的离线能力），面板要先把「能不能用」摆出来。"""
+    page = html()
+    js = script(page)
+    assert 'if (group === "云盘归档") pane.append(cloudStatusRow());' in js
+    assert "function cloudStatusRow()" in js
+    assert 'subsApi("/api/cloud/capability", {})' in js
+    # 队列里要有「云端落地中」这个阶段
+    assert 'cloud: "云端落地中"' in js
+    assert '"uploading", "cloud"]' in js, "云端任务也要能停止（只是不再等）"
+    # 如实说明没有进度接口
+    assert "不提供离线任务状态" in js

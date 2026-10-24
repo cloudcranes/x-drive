@@ -240,3 +240,60 @@ def test_space_is_asked_at_archive_root(fake):
     ok, detail = real.check(probe_path="X-Drive")
     assert ok and "1.0TB" in detail, detail
     assert "/X-Drive" in asked and "/" not in asked
+
+
+# ─────────────────────────────────────────── 云添加（离线下载）
+
+def test_offline_add_accepts_and_reports_nothing(fake):
+    """实测：AddOfflineFiles 对假磁力也回 success —— 返回值不能当成功。"""
+    cd2 = backend(fake)
+    cd2.ensure_dir("迅雷云盘/我的资源")
+    cd2.offline_add("magnet:?xt=urn:btih:" + "0" * 40, "迅雷云盘/我的资源")
+    assert fake.offline_accepted == ["magnet:?xt=urn:btih:" + "0" * 40]
+    # 目录里什么都没有：这就是「接口说成功但没落地」
+    assert cd2.list_dirs("迅雷云盘/我的资源") == []
+
+
+def test_offline_add_rejects_empty(fake):
+    with pytest.raises(StorageError) as err:
+        backend(fake).offline_add("   ", "迅雷云盘")
+    assert "链接为空" in str(err.value)
+
+
+def test_offline_add_accepts_multiple_urls(fake):
+    backend(fake).offline_add(["magnet:?xt=urn:btih:" + "a" * 40,
+                               "magnet:?xt=urn:btih:" + "b" * 40], "迅雷云盘")
+    assert fake.offline_accepted == ["magnet:?xt=urn:btih:" + "a" * 40
+                                     + "\n" + "magnet:?xt=urn:btih:" + "b" * 40]
+
+
+def test_landed_files_become_visible(fake):
+    cd2 = backend(fake)
+    cd2.ensure_dir("迅雷云盘/我的资源")
+    cd2.offline_add("magnet:?xt=urn:btih:" + "c" * 40, "迅雷云盘/我的资源")
+    fake.land_offline("迅雷云盘/我的资源", {"MIMK-290.mp4": 4096, "movie.nfo": 12},
+                      name="MIMK-290")
+    files = {f.name: f.size for f in cd2.list_files("迅雷云盘/我的资源/MIMK-290")}
+    assert files == {"MIMK-290.mp4": 4096, "movie.nfo": 12}
+
+
+def test_offline_supported_reads_capability_bit(fake):
+    cd2 = backend(fake)
+    cd2.ensure_dir("迅雷云盘/我的资源")
+    ok, detail = cd2.offline_supported("迅雷云盘/我的资源")
+    assert ok and "可离线下载" in detail
+    assert "不可查询进度" in detail, "这台 CD2 不支持管理，要如实说明"
+
+
+def test_offline_supported_false_when_bit_off(fake):
+    fake.can_offline = False
+    cd2 = backend(fake)
+    cd2.ensure_dir("迅雷云盘/我的资源")
+    ok, detail = cd2.offline_supported("迅雷云盘/我的资源")
+    assert not ok and "不支持离线下载" in detail
+
+
+def test_cloud_roots_lists_clouds(fake):
+    roots = backend(fake).cloud_roots()
+    assert [r["name"] for r in roots] == ["迅雷云盘"]
+    assert roots[0]["path"] == "/迅雷云盘"

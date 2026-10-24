@@ -31,9 +31,10 @@ from uuid import uuid4
 
 import httpx
 
-from . import (backlog, cleanup, codes, core, diskspace, fetcher, imgcache, meta, metadata, metatube,
-               notify, pipeline, preview, retry, settings as settings_mod, sources, storage,
-               store, subscribe, wall, workspace, xunlei)
+from . import (backlog, cleanup, cloudingest, cloudorganize, codes, core, diskspace, fetcher,
+               imgcache, meta, metadata, metatube, notify, pipeline, preview, retry,
+               settings as settings_mod, sources, storage, store, subscribe, wall, workspace,
+               xunlei)
 
 log = logging.getLogger("x-drive.web")
 
@@ -695,6 +696,113 @@ def _resume_stage(job: dict, work: Path, key: str) -> tuple[str, list[Path], int
     return folder, files, size
 
 
+# ─────────────────────────────────────────── 云盘归档（不占本地磁盘）
+#
+# 链路：磁力 → 云盘离线下载 → 落地 → 远端整理 → 记账。
+# 与本地链路的关键差别：没有本地文件，所以「整理」是远端的 move/rename/purge，
+# 「上传」这一步根本不存在（文件本来就在云盘里）。
+
+def cloud_ready() -> tuple[bool, str]:
+    """云添加链路能不能用。返回 (可用, 说明)。**不抛异常**：面板要能直接显示原因。"""
+    if not get_setting("CLOUD_INGEST"):
+        return False, "未启用「云添加」（设置 → 云盘归档）"
+    inbox = str(get_setting("CLOUD_INBOX") or "").strip()
+    if not inbox:
+        return False, "没配「离线落地目录」"
+    try:
+        backend = storage.get()
+    except Exception as exc:
+        return False, f"存储后端不可用：{exc}"
+    if backend.kind != "clouddrive2":
+        return False, f"云添加只支持 CloudDrive2（当前 {backend.kind}）"
+    probe = getattr(backend, "offline_supported", None)
+    if probe is None:
+        return False, "当前后端没有离线下载能力"
+    try:
+        ok, detail = probe(inbox)
+    except Exception as exc:
+        return False, f"探测失败：{exc}"
+    return ok, detail
+
+
+def cloud_capability() -> dict:
+    """给面板看：这条链路能不能用、云盘有哪些、落地目录在哪。"""
+    ok, detail = cloud_ready()
+    info = {"ok": ok, "detail": detail,
+            "inbox": str(get_setting("CLOUD_INBOX") or ""),
+            "dest": str(get_setting("CLOUD_DEST") or "") or storage.root(),
+            "backend": storage.kind(),
+            "clouds": [], "error": ""}
+    try:
+        backend = storage.get()
+        if hasattr(backend, "cloud_roots"):
+            info["clouds"] = backend.cloud_roots()
+    except Exception as exc:
+        info["error"] = str(exc)[:200]
+    return info
+
+
+def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
+    """云添加整条链路（同步执行，由 run_web_job 在线程里调）。"""
+    ok, why = cloud_ready()
+    if not ok:
+        raise RuntimeError(f"云添加不可用：{why}")
+    backend = storage.get()
+    inbox = str(get_setting("CLOUD_INBOX")).strip().strip("/")
+    dest = str(get_setting("CLOUD_DEST") or "").strip().strip("/") or storage.root()
+
+    job_update(job_id, stage="cloud", percent=0.0, speed=0)
+    job_event(job_id, "stage", f"cloud 提交到 {inbox}")
+    submitted = cloudingest.submit(backend, source, inbox)
+    job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
+                              "cloud_inbox": inbox, "cloud_url": source})
+
+    def on_progress(snapshot: dict, rounds: int) -> None:
+        if cancel_requested(job_id):
+            raise Cancelled("已停止")
+        # 没有百分比：只报「已出现几个文件、多少字节」
+        count = sum(int(v.get("count") or 0) for v in snapshot.values())
+        total = sum(int(v.get("bytes") or 0) for v in snapshot.values())
+        job_update(job_id, downloaded=total, total=total,
+                   error="" if not count else f"云端落地中：{count} 个文件")
+
+    async def wait() -> list:
+        return await cloudingest.wait_landing(
+            backend, inbox, submitted["before"],
+            poll=float(get_setting("CLOUD_POLL") or 10),
+            timeout=float(get_setting("CLOUD_LAND_TIMEOUT") or 7200),
+            stable=int(get_setting("CLOUD_LAND_STABLE") or 3),
+            progress=on_progress, cancel_check=lambda: cancel_requested(job_id))
+
+    try:
+        landed = asyncio.run(wait())
+    except cloudingest.LandingTimeout as exc:
+        raise RuntimeError(str(exc)) from exc
+    if not landed:
+        raise RuntimeError("云添加没有落地任何内容")
+
+    results = []
+    for item in landed:
+        job_event(job_id, "stage", f"landed {item.folder}（{item.total} 字节）")
+        plan = cloudorganize.plan(item.folder, item.files)
+        moved = cloudorganize.apply(backend, inbox, plan, code or plan.target)
+        record = {
+            "folder": moved["target"],
+            "path": f"{backend.kind}:{dest}/{moved['target']}",
+            "files": moved["files"],
+            "files_detail": [{"name": n, "size": next(
+                (int(f.get("size") or 0) for f in item.files if f.get("name") == old), 0)}
+                for old, n in zip(plan.move, moved["files"])],
+            "size": moved["size"],
+            "inbox": f"{inbox}/{item.folder}",
+        }
+        job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
+                                  "cloud": record})
+        results.append(record)
+    return {"landed": [x.folder for x in landed], "records": results,
+            "inbox": inbox, "dest": dest}
+
+
 def scrape_attachments(work: Path, folder: str, files: list[Path],
                        job_id: str = "") -> dict:
     """在写盘前刮好元数据并生成附件。失败只登记，绝不阻断视频上传。
@@ -793,6 +901,51 @@ def _upload_loop(job_id: str, work: Path, folder: str, size: int,
                 raise Cancelled("已停止")
         finally:
             _UPLOAD_PROGRESS.fn = None
+
+
+def _finish_cloud(job_id: str, source: str, out: dict) -> None:
+    """云添加落地的记账：不做上传、不复制文件，只把远端结果写进归档表。
+
+    与 `_finish` 的字段契约保持一致（`metadata.archive_record`），只是 files
+    来自远端清单、path 是云盘路径。刮削附件这一步跳过：附件要写进云盘目录，
+    云添加链路先不做（下一步再做，单独可回滚）。
+    """
+    records = out.get("records") or []
+    if not records:
+        raise RuntimeError("云添加没有产出可归档的目录")
+    for rec in records:
+        folder = rec["folder"]
+        names = list(rec.get("files") or [])
+        size = int(rec.get("size") or 0)
+        try:
+            info = asyncio.run(meta.lookup(folder))
+        except Exception as exc:                # 元数据只是锦上添花
+            log.warning("查 %s 的元数据失败：%s", folder, exc)
+            info = None
+        record = metadata.archive_record(
+            folder, rec["path"], "", names, size, source,
+            Path("/nonexistent-cloud"),          # 没有本地工作区，清单按远端回填
+            scraped=info or {},
+            manifest_files=names,
+            pending=True,                        # 附件没推，标成待补
+        )
+        # 云端没有本地文件可 stat：清单大小直接用落地时读到的那份
+        by_size = {str(f.get("name")): int(f.get("size") or 0)
+                   for f in (rec.get("files_detail") or [])}
+        if by_size:
+            for entry in (record.get("manifest") or {}).get("files") or []:
+                if entry.get("name") in by_size:
+                    entry["size"] = by_size[entry["name"]]
+            record["manifest"]["total_size"] = sum(
+                int(e.get("size") or 0) for e in record["manifest"]["files"])
+        record["cloud_inbox"] = rec.get("inbox") or ""
+        core.update_state(STATE, {folder: record})
+        job_event(job_id, "done", f"{folder} · {core.human_size(size)} · 云盘")
+    last = records[-1]
+    job_update(job_id, stage="done", code=last["folder"], folder=last["folder"],
+               size=int(last.get("size") or 0), link="", error="", resume_from="",
+               extra={**(_store().get(job_id).get("extra") or {}), "cloud": last})
+    notify.job_done(last["folder"], core.human_size(int(last.get("size") or 0)), "")
 
 
 def _finish(job_id: str, work: Path, folder: str, files: list[Path], size: int,
@@ -988,6 +1141,27 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
     key = workspace.key_of(code or job_id)
     download_dir = workspace.staging(TMP_ROOT, key)
     work = workspace.workspace(STATE_DIR, key)
+
+    # 云添加：磁力直接进云盘，落地后远端整理 —— 完全不碰本地磁盘与 rclone
+    cloud_on, cloud_why = cloud_ready()
+    if cloud_on:
+        try:
+            job_event(job_id, "stage", "cloud 云盘离线下载")
+            out = _cloud_run(job_id, source, code, key)
+            _finish_cloud(job_id, source, out)
+        except Cancelled as exc:
+            job_update(job_id, stage="cancelled", error="已停止")
+            job_event(job_id, "cancelled", _first_line(str(exc)) or "已停止")
+        except Exception as exc:                # noqa: BLE001 失败要落到任务状态上
+            log.exception("云添加任务失败")
+            job_update(job_id, stage="failed", error=str(exc)[:300])
+            job_event(job_id, "failed", _first_line(str(exc)))
+            if retry.classify(str(exc)) == retry.QUOTA:
+                until = core.next_quota_retry()
+                _store().defer(job_id, until, str(exc)[:200])
+        finally:
+            lease_end(job_id)
+        return
 
     async def main() -> dict:
         xl = xunlei_client()
@@ -3231,6 +3405,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._drain()
             self._json(storage_view())
+            return
+        if path == "/api/cloud/capability":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            self._json(cloud_capability())
             return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑

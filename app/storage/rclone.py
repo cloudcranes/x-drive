@@ -121,6 +121,10 @@ class Rclone(Backend):
         if rc != 0:
             raise StorageError("移动完成，但清空原目录失败（不影响归档，可稍后重试）")
 
+    def move_file(self, src: str, dst: str) -> None:
+        """`rclone moveto`：单文件移动并改名。"""
+        self._run("moveto", self.spec(src), self.spec(dst), timeout=1800.0)
+
     # ── 自检
     def check(self, probe_path: str = "") -> tuple[bool, str]:
         """探一次：能不能连上、能不能写。

@@ -2524,9 +2524,9 @@ async function submitDownload(text, btn) {
 
 // ── 任务队列
 const STAGE_TEXT = {queued: "等空间", downloading: "下载中", organizing: "整理中",
-  uploading: "上传中", deferred: "额度等待", done: "完成", cancelled: "已停止",
-  failed: "失败"};
-const ACTIVE = new Set(["queued", "downloading", "organizing", "uploading"]);
+  uploading: "上传中", cloud: "云端落地中", deferred: "额度等待", done: "完成",
+  cancelled: "已停止", failed: "失败"};
+const ACTIVE = new Set(["queued", "downloading", "organizing", "uploading", "cloud"]);
 // 已结束：这些可以删记录（后端也按同一份集合校验）
 const DONE_STAGES = new Set(["done", "failed", "cancelled"]);
 let lastJobs = [];
@@ -4425,6 +4425,8 @@ async function loadSettings() {
       if (group === "存储") pane.append(storageStatusRow());
       // 首页分区最上面一行：图片缓存占了多少 + 「清空缓存」
       if (group === "首页") pane.append(imageCacheRow());
+      // 云盘归档分区最上面一行：这条链路当前能不能用（云添加要求很硬）
+      if (group === "云盘归档") pane.append(cloudStatusRow());
       for (const [key, it] of groups[group]) pane.append(settingsRow(key, it));
       list.append(pane);
     });
@@ -4563,6 +4565,51 @@ function refreshImageCache(val) {
     val.textContent = `${d.files} 张 · ${mbText(d.bytes)}${limit} · ${d.dir}`;
     val.title = d.dir;
   }).catch(() => { val.textContent = "读取失败"; });
+}
+
+// 云添加链路的状态：能不能用、云盘有哪些、落地目录在哪。
+// 这条链路依赖 CD2 的离线下载能力，缺一项就跑不动 —— 所以先摆结论再让人填参数。
+function cloudStatusRow() {
+  const row = el("div", "kvrow setting");
+  const nm = el("span", "nm", "云添加状态");
+  nm.title = "磁力直接进云盘离线下载，落地后远端整理，不占本地磁盘";
+  row.append(nm);
+  const val = el("span", "sval wide svalread", "检测中…");
+  row.append(val);
+  const btn = el("button", "ghost", "检测");
+  btn.type = "button";
+  btn.title = "问一次 CD2：这个目录能不能离线下载";
+  const hint = el("span", "hint", "");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    hint.className = "hint";
+    hint.textContent = "检测中…";
+    try {
+      const d = await subsApi("/api/cloud/capability", {});
+      if (!d) throw new Error("无响应");
+      val.textContent = d.ok
+        ? `可用 · 落地 ${d.inbox} → 归档 ${d.dest}`
+        : `不可用 · ${d.detail || d.error || "未知原因"}`;
+      val.classList.toggle("dirty", !d.ok);
+      const clouds = (d.clouds || []).map(c => c.name).join(" / ");
+      hint.textContent = d.ok
+        ? `后端 ${d.backend}${clouds ? " · 云盘 " + clouds : ""}`
+        : (d.detail || d.error || "");
+      hint.className = "hint" + (d.ok ? " ok" : " err");
+    } catch (e) {
+      hint.textContent = "检测失败：" + (e.message || e);
+      hint.className = "hint err";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  row.append(btn);
+  row.append(hint);
+  const note = el("div", "why",
+    "云添加只有「提交」没有「进度」：CD2 对迅雷云盘不提供离线任务状态，"
+    + "所以落地判定靠「目录出现 + 大小连续几次不变」。");
+  row.append(note);
+  return row;
 }
 
 function storageStatusRow() {

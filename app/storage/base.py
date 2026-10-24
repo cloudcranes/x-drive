@@ -83,6 +83,13 @@ class Backend(Protocol):
     def rename_dir(self, src: str, new_name: str) -> None:
         """同父目录改名（归档改名只用这一种）。"""
 
+    def move_file(self, src: str, dst: str) -> None:
+        """把一个文件从 src 移到 dst（dst 是完整文件路径，含新名字）。
+
+        云端整理用它：落地目录里的文件要按规范名搬进归档目录，全程远端，
+        不下载。目标已存在时应抛错而不是覆盖。
+        """
+
     # ── 自检
     def check(self, probe_path: str = "") -> tuple[bool, str]:
         """(可用, 说明)。说明里带上版本/配额之类有用信息。

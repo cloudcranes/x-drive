@@ -474,3 +474,22 @@ def test_api_find_needs_auth(server, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as exc:
         get(server + "/api/find?q=MIMK")
     assert exc.value.code == 401
+
+
+# ---------------------------------------------------------------- 云盘归档
+
+def test_api_cloud_capability(server, monkeypatch):
+    monkeypatch.setattr(web, "cloud_capability",
+                        lambda: {"ok": True, "detail": "可离线下载（不可查询进度）",
+                                 "inbox": "迅雷云盘/我的资源", "dest": "迅雷云盘/X-Drive",
+                                 "backend": "clouddrive2", "clouds": [{"name": "迅雷云盘"}]})
+    data = json.loads(get(server + "/api/cloud/capability").read())
+    assert data["ok"] is True and data["backend"] == "clouddrive2"
+    assert data["clouds"][0]["name"] == "迅雷云盘"
+
+
+def test_cloud_capability_needs_auth(server, monkeypatch):
+    monkeypatch.setattr(web, "AUTH", "u:p")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        get(server + "/api/cloud/capability")
+    assert exc.value.code == 401

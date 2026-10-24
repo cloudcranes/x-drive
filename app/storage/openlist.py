@@ -290,6 +290,20 @@ class OpenList(Backend):
         self._api("POST", "/api/fs/remove", {"dir": parent or "/", "names": [name]})
         return "已删除"
 
+    def move_file(self, src: str, dst: str) -> None:
+        """单文件搬运：同目录改名走 rename，跨目录走 move（AList 的 move 只能改目录）。"""
+        src_p, dst_p = self._p(src), self._p(dst)
+        src_dir, _, src_name = src_p.rpartition("/")
+        dst_dir, _, dst_name = dst_p.rpartition("/")
+        if src_dir == dst_dir:
+            self._api("POST", "/api/fs/rename", {"path": src_p, "name": dst_name})
+            return
+        self._api("POST", "/api/fs/move",
+                  {"src_dir": src_dir or "/", "dst_dir": dst_dir or "/", "names": [src_name]})
+        if dst_name != src_name:               # 跨目录 + 改名：两步走
+            self._api("POST", "/api/fs/rename",
+                      {"path": f"{dst_dir}/{src_name}", "name": dst_name})
+
     def rename_dir(self, src: str, new_name: str) -> None:
         self._api("POST", "/api/fs/rename", {"path": self._p(src), "name": new_name})
 

@@ -53,6 +53,12 @@ class FakeCd2:
     server: object = None
     port: int = 0
     get_space: object = None
+    # 云添加：AddOfflineFiles 只登记，过 land_after 秒后「迅雷侧」才把文件放进来
+    offline_accepted: list = field(default_factory=list)
+    offline_files: list = field(default_factory=list)   # (落地时刻, 目录, {文件名: 字节})
+    land_after: float = 0.0
+    offline_ok: bool = True          # False = 磁力无效：接口仍回 success，但永不出文件
+    can_offline: bool = True
 
     # ── 生命周期
     def start(self) -> "FakeCd2":
@@ -95,6 +101,10 @@ class FakeCd2:
                                    lambda r, c: pb.GetUploadFileCountResult(
                                        fileCount=len(self.uploads))),
             "MoveFile": (pb.MoveFileRequest, pb.FileOperationResult, self.move_file),
+            "GetAllCloudApis": (Empty, pb.CloudAPIList, self.get_all_cloud_apis),
+            "FindFileByPath": (pb.FindFileByPathRequest, pb.CloudDriveFile, self.find_by_path),
+            "AddOfflineFiles": (pb.AddOfflineFileRequest, pb.FileOperationResult,
+                                self.add_offline_files),
         }
         out = {}
         for name, (req, resp, fn) in unary.items():
@@ -134,7 +144,9 @@ class FakeCd2:
         for d in sorted(self.dirs):
             if d != prefix.rstrip("/") and d.startswith(prefix) and "/" not in d[len(prefix):]:
                 rows.append(pb.CloudDriveFile(name=d.rsplit("/", 1)[-1], fullPathName=d,
-                                              isDirectory=True, fileType=pb.FileType_Directory))
+                                              isDirectory=True, fileType=pb.FileType_Directory,
+                                              canOfflineDownload=self.can_offline,
+                                              supportOfflineDownloadManagement=False))
         for f, size in sorted(self.files.items()):
             if f.startswith(prefix) and "/" not in f[len(prefix):]:
                 rows.append(pb.CloudDriveFile(name=f.rsplit("/", 1)[-1], fullPathName=f,
@@ -274,6 +286,55 @@ class FakeCd2:
             for d in [d for d in self.dirs if d == path or d.startswith(prefix)]:
                 self.dirs.discard(d)
         return pb.FileOperationResult(success=True, resultFilePaths=list(req.path))
+
+    # ── 云添加（离线下载）
+    def find_by_path(self, req, _ctx):
+        path = req.path if req.path.startswith("/") else "/" + req.path
+        path = path.rstrip("/") or "/"
+        if path == "/":
+            return pb.CloudDriveFile(name="/", fullPathName="/", isDirectory=True,
+                                     canOfflineDownload=self.can_offline)
+        if path in self.dirs:
+            return pb.CloudDriveFile(name=path.rsplit("/", 1)[-1], fullPathName=path,
+                                     isDirectory=True, canOfflineDownload=self.can_offline,
+                                     supportOfflineDownloadManagement=False)
+        if path in self.files:
+            return pb.CloudDriveFile(name=path.rsplit("/", 1)[-1], fullPathName=path,
+                                     size=self.files[path], fileType=pb.FileType_File)
+        _ctx.abort(grpc.StatusCode.NOT_FOUND, f"no such path {path}")
+
+    def get_all_cloud_apis(self, _req, _ctx):
+        return pb.CloudAPIList(apis=[pb.CloudAPI(name="迅雷云盘", userName="814926528",
+                                                 path="/迅雷云盘")])
+
+    def add_offline_files(self, req, _ctx):
+        """真机行为：一律回 success=True，哪怕链接是假的。
+
+        落地则要等 land_after 秒后由 `land_offline()` 模拟 —— 测试里显式调用，
+        这样「多久之后才出现」由测试控制，不引入真实 sleep。
+        """
+        self.offline_accepted.append(req.urls)
+        return pb.FileOperationResult(success=True)
+
+    def land_offline(self, folder: str, files: dict[str, int], name: str = "") -> str:
+        """模拟「迅雷侧下好了」：在 folder 下建一个种子同名目录并放文件。
+
+        返回目录路径。测试自己决定什么时候调它（可在第一次轮询之后再调，
+        用来验证「未落地时不误判」）。
+        """
+        # 一律换成绝对路径：假服务的文件表用 "/xxx" 形式，相对路径会挂错地方
+        base = "/" + folder.strip("/")
+        dir_name = name or f"LANDED-{len(self.offline_files) + 1}"
+        path = f"{base}/{dir_name}"
+        self._mkdirs(path)
+        for fname, size in files.items():
+            self.files[f"{path}/{fname}"] = size
+        self.offline_files.append((path, dict(files)))
+        return path
+
+    def can_offline_flag(self) -> None:
+        """把「可离线下载」能力位挂到根目录上（供 offline_supported 读）。"""
+        self.can_offline = True
 
     # ── 测试辅助
     def add_file(self, path: str, size: int = 1) -> None:

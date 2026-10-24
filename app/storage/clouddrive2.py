@@ -239,6 +239,57 @@ class CloudDrive2(Backend):
                 progress(min(done / total_bytes, 1.0), f"{index}/{len(files)} {path.name}")
         return done
 
+    # ── 云添加（离线下载）：把磁力/直链直接扔进云盘，不留本地文件
+    #
+    # 实测（CD2 1.0.18 + 迅雷云盘，2026-10-24）三条必须记住的行为：
+    #   1. `AddOfflineFiles` 一旦被接受就回 `success=True`，**哪怕磁力是假的**
+    #      —— 返回值不能当成功，只能靠「云盘里真的出现目录」判定；
+    #   2. `GetOfflineQuotaInfo` / `ListAllOfflineFiles` / `ListOfflineFilesByPath`
+    #      对迅雷云盘**全部不支持**（`supportOfflineDownloadManagement=False`），
+    #      所以没有进度、没有任务列表、不能暂停/重试；
+    #   3. 落地形态是 `toFolder/<种子名>/` 一个目录（实测 15 秒后出现，5 个文件）。
+    def offline_add(self, urls: str | list[str], folder: str) -> None:
+        """提交云添加。**返回不代表成功** —— 调用方必须自己轮询目录是否真的出现。"""
+        text = "\n".join(urls) if isinstance(urls, (list, tuple)) else str(urls or "")
+        text = text.strip()
+        if not text:
+            raise StorageError("clouddrive2 云添加失败：链接为空")
+        try:
+            res = self.chan.call("AddOfflineFiles",
+                                 pb.AddOfflineFileRequest(urls=text, toFolder=self._p(folder)),
+                                 pb.FileOperationResult, timeout=90.0)
+        except StorageError as exc:
+            raise StorageError(f"clouddrive2 云添加失败：{exc}") from exc
+        if res is not None and not res.success:
+            raise StorageError(f"clouddrive2 云添加失败：{res.errorMessage or 'CD2 未给原因'}")
+
+    def cloud_roots(self) -> list[dict]:
+        """列出「支持离线下载」的云盘（给设置页选 CLOUD_INBOX 用）。"""
+        try:
+            apis = self.chan.call("GetAllCloudApis", Empty(), pb.CloudAPIList, timeout=30.0)
+        except StorageError as exc:
+            raise StorageError(f"clouddrive2 读取云盘列表失败：{exc}") from exc
+        return [{"name": a.name, "user": a.userName, "path": a.path or f"/{a.name}",
+                 "locked": bool(a.isLocked)}
+                for a in apis.apis if a.name and not a.isLocked]
+
+    def offline_supported(self, folder: str) -> tuple[bool, str]:
+        """这个目录所在的云盘能不能离线下载（看 CD2 给的能力位）。
+
+        探测方式是问目录自己的 `canOfflineDownload`：这比猜云盘类型可靠，
+        而且换云盘（115 / 阿里）时不用改代码。
+        """
+        try:
+            entry = self.chan.call("FindFileByPath",
+                                   pb.FindFileByPathRequest(path=self._p(folder)),
+                                   pb.CloudDriveFile, timeout=20.0)
+        except StorageError as exc:
+            return False, f"读不到 {folder}：{exc}"
+        if getattr(entry, "canOfflineDownload", False):
+            manage = getattr(entry, "supportOfflineDownloadManagement", False)
+            return True, "可离线下载" + ("（可管理）" if manage else "（不可查询进度/不可暂停）")
+        return False, f"{folder} 所在云盘不支持离线下载"
+
     # ── 分享 / 变更
     def link(self, dest: str) -> str | None:
         """CD2 没有「创建分享」的接口（AddSharedLink 是「把别人的分享加进来」）。"""
@@ -268,6 +319,31 @@ class CloudDrive2(Backend):
         if res2.success:
             return f"已移入回收站（{reason}）"
         raise StorageError(f"clouddrive2 删除失败：{res2.errorMessage or reason}")
+
+    def move_file(self, src: str, dst: str) -> None:
+        """单文件搬进目标目录（必要时再改名）。目标已存在时明确失败，不覆盖。"""
+        src_parent, src_name = self._split(src)
+        dst_parent, dst_name = self._split(dst)
+        if not src_name or not dst_name:
+            raise StorageError("clouddrive2 移动失败：路径为空")
+        self.ensure_dir(dst_parent)
+        if self._find(dst) is not None:
+            raise StorageError(f"目标已存在：{dst_name}")
+        res = self.chan.call("MoveFile",
+                             pb.MoveFileRequest(theFilePaths=[self._p(src)],
+                                                destPath=self._p(dst_parent),
+                                                conflictPolicy=pb.ConflictPolicy_Skip),
+                             pb.FileOperationResult, timeout=300.0)
+        if not res.success:
+            raise StorageError(f"clouddrive2 移动失败：{res.errorMessage or '未知原因'}")
+        if dst_name != src_name:
+            renamed = self.chan.call("RenameFile",
+                                     pb.RenameFileRequest(
+                                         theFilePath=f"{self._p(dst_parent)}/{src_name}",
+                                         newName=dst_name),
+                                     pb.FileOperationResult, timeout=120.0)
+            if not renamed.success:
+                raise StorageError(f"clouddrive2 改名失败：{renamed.errorMessage or '未知原因'}")
 
     def rename_dir(self, src: str, new_name: str) -> None:
         parent, old = self._split(src)

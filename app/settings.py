@@ -125,6 +125,27 @@ SETTINGS_SPEC: dict[str, dict] = {
     "IMG_CACHE_DIR": {"type": "str", "default": "", "group": "首页",
                       "label": "图片缓存目录",
                       "note": "留空 = <data>/covers（随 ./data 一起备份）"},
+    # ── 云盘归档：磁力直接扔进云盘的离线下载，落地后远端整理，不占本地磁盘
+    #    实测（CD2 1.0.18 + 迅雷云盘）：AddOfflineFiles 对假磁力也回 success，
+    #    且没有离线任务列表/进度接口，所以「完成」只能靠看云盘目录稳不稳。
+    "CLOUD_INGEST": {"type": "bool", "default": False, "group": "云盘归档",
+                     "label": "启用云添加",
+                     "note": "开：磁力直接进云盘离线下载，落地后远端整理（不占本地盘）。"
+                             "关：还是本地下载 → 整理 → 上传"},
+    "CLOUD_INBOX": {"type": "str", "default": "", "group": "云盘归档",
+                    "label": "离线落地目录",
+                    "note": "云盘里的目录，例如 迅雷云盘/我的资源；留空则不允许启用云添加"},
+    "CLOUD_DEST": {"type": "str", "default": "", "group": "云盘归档",
+                   "label": "归档根目录",
+                   "note": "整理后的位置，例如 迅雷云盘/X-Drive；留空 = 用「存储」里的归档根"},
+    "CLOUD_LAND_TIMEOUT": {"type": "float", "default": 7200.0, "group": "云盘归档",
+                           "label": "等落地上限 (秒)",
+                           "note": "超过还没落地就判失败（迅雷侧可能没接收）"},
+    "CLOUD_LAND_STABLE": {"type": "int", "default": 3, "group": "云盘归档",
+                          "label": "连续几次不变算落地",
+                          "note": "云盘没有进度接口，只能看大小稳不稳；默认 3 次"},
+    "CLOUD_POLL": {"type": "float", "default": 10.0, "group": "云盘归档",
+                   "label": "落地轮询间隔 (秒)", "note": "太密会打疼云盘 API"},
     # ── 存储：归档往哪儿放。默认还是 rclone；切到 openlist / clouddrive2 之后
     #    网页改完下一次上传就生效（连接实例会按配置指纹重建）。
     "STORAGE_BACKEND": {"type": "str", "default": "rclone", "group": "存储",
