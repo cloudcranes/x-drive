@@ -99,6 +99,22 @@ SETTINGS_SPEC: dict[str, dict] = {
     "META_USE_JAVBUS": {"type": "bool", "default": True, "group": "数据源",
                         "label": "优先用 JavBus",
                         "note": "关掉就只走 javdb 页面解析"},
+    # ── 首页媒体墙：把「最近上架」的封面流摆出来，看着顺眼、点了能搜
+    "WALL_ON": {"type": "bool", "default": True, "group": "首页",
+                "label": "显示媒体墙", "note": "关掉就只留归档列表（首页更快）"},
+    "WALL_SOURCE": {"type": "str", "default": "javbus", "group": "首页",
+                    "label": "媒体墙来源",
+                    "choices": ["javbus", "custom"],
+                    "note": "javbus = 数据源里那个 JavBus 实例的最新列表；custom = 下面那个地址"},
+    "WALL_URL": {"type": "str", "default": "", "group": "首页",
+                 "label": "自定义接口地址",
+                 "note": "返回 JSON 即可，`{page}` 会被替换成页码；字段名自动按常见别名认"
+                         "（movies/items/data、id/code、img/cover、title/name …）"},
+    "WALL_TTL": {"type": "float", "default": 120.0, "group": "首页",
+                 "label": "媒体墙缓存 (秒)",
+                 "note": "同一页这么久内只打一次上游，翻页不会把对方打疼"},
+    "WALL_ROWS": {"type": "int", "default": 2, "group": "首页",
+                  "label": "首屏显示几行", "note": "一行约 6 张，按窗口宽度自动增减"},
     # ── 存储：归档往哪儿放。默认还是 rclone；切到 openlist / clouddrive2 之后
     #    网页改完下一次上传就生效（连接实例会按配置指纹重建）。
     "STORAGE_BACKEND": {"type": "str", "default": "rclone", "group": "存储",

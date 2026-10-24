@@ -33,7 +33,7 @@ import httpx
 
 from . import (backlog, cleanup, codes, core, diskspace, fetcher, meta, metadata, metatube,
                notify, pipeline, preview, retry, settings as settings_mod, sources, storage,
-               store, subscribe, workspace, xunlei)
+               store, subscribe, wall, workspace, xunlei)
 
 log = logging.getLogger("x-drive.web")
 
@@ -274,6 +274,21 @@ def storage_view() -> dict:
     except Exception as exc:
         log.warning("读存储状态失败：%s", exc)
         return {"ok": False, "error": str(exc)[:200]}
+
+
+def wall_feed(page: int = 1, which: str = "") -> dict:
+    """首页媒体墙的一页。上游挂了也只回 ok:false，不影响首页其它部分。"""
+    if not get_setting("WALL_ON"):
+        return {"ok": False, "off": True, "source": "", "page": page,
+                "items": [], "more": False, "error": "媒体墙已在设置里关闭"}
+    try:
+        result = wall.feed(page, which)
+    except Exception as exc:                    # 兜底：媒体墙不该让首页 500
+        log.warning("媒体墙失败：%s", exc)
+        return {"ok": False, "source": which, "page": page, "items": [],
+                "more": False, "error": str(exc)[:200]}
+    result["rows"] = int(get_setting("WALL_ROWS") or 2)
+    return result
 
 
 def storage_test() -> dict:
@@ -3163,6 +3178,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/cleanup/preview":
             self._json({"ok": True, **build_cleanup_plan(dry_run=True)})
+            return
+        if path == "/api/wall":
+            query = parse_qs(urlsplit(self.path).query)
+            page = int((query.get("page") or ["1"])[0] or 1)
+            which = (query.get("source") or [""])[0]
+            self._json(wall_feed(page, which))
             return
         if path == "/api/jobs":
             self._json({"jobs": jobs_snapshot()})

@@ -237,6 +237,22 @@ async def search(keyword: str, client: httpx.AsyncClient | None = None) -> list[
     return parse_movies(await _get(client, "/api/movies/search?keyword=" + quote(keyword)))
 
 
+async def latest(page: int = 1, client: httpx.AsyncClient | None = None) -> tuple[list[dict], bool]:
+    """最新上架（首页媒体墙用）。返回 (条目, 还有下一页)。
+
+    分页信息在响应的 pagination 里，不自己猜「满 30 条就还有下一页」——
+    上游的每页条数是它定的，猜错了要么漏页要么死循环。
+    """
+    data = await _get(client, f"/api/movies?page={max(1, int(page))}")
+    items = parse_movies(data)
+    more = False
+    if isinstance(data, dict):
+        page_info = data.get("pagination") or {}
+        if isinstance(page_info, dict):
+            more = bool(page_info.get("hasNextPage"))
+    return items, more
+
+
 async def available(client: httpx.AsyncClient | None = None) -> bool:
     """这个数据源当前能不能用。订阅/元数据决定要不要回退时先问一下。"""
     data = await _get(client, "/api/movies?page=1")

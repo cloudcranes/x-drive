@@ -356,3 +356,33 @@ def test_saving_settings_resets_storage_cache(server, tmp_path, monkeypatch):
                               {"updates": {"CD2_URL": "http://127.0.0.1:19798"}})
     assert status == 200 and body["ok"] is True
     assert calls, "保存设置后必须让存储实例缓存失效"
+
+
+# ---------------------------------------------------------------- 首页媒体墙
+
+def test_api_wall_shape(server, monkeypatch):
+    monkeypatch.setattr(web, "wall_feed",
+                        lambda page=1, which="": {"ok": True, "source": "javbus",
+                                                  "page": page, "more": True, "rows": 2,
+                                                  "items": [{"code": "A-1", "cover": "u"}]})
+    data = json.loads(get(server + "/api/wall?page=2").read())
+    assert data["ok"] is True and data["page"] == 2 and data["items"][0]["code"] == "A-1"
+
+
+def test_api_wall_hides_when_disabled(server, monkeypatch):
+    """设置里关掉就明确回 off，前端据此整块不显示（不是报错）。"""
+    monkeypatch.setattr(web, "get_setting",
+                        lambda key, d=None: False if key == "WALL_ON" else d)
+    data = json.loads(get(server + "/api/wall").read())
+    assert data["ok"] is False and data["off"] is True
+
+
+def test_api_wall_never_breaks_the_page(server, monkeypatch):
+    """媒体墙是锦上添花：上游炸了也只回 ok:false，首页其它部分照常。"""
+    def boom(page=1, which=""):
+        raise RuntimeError("上游 500")
+    monkeypatch.setattr(web.wall, "feed", boom)
+    data = json.loads(get(server + "/api/wall").read())
+    assert data["ok"] is False and "上游 500" in data["error"]
+    # 首页本身照样能开
+    assert "<title>x-drive" in get(server + "/").read().decode()

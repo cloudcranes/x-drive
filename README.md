@@ -182,6 +182,31 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
 | `CLEANUP_KEEP_RECENT` | 归档回收：永远保留最近几个，默认 10 |
 | `CLEANUP_OLDER_DAYS` | 归档回收：只考虑这么久的归档 |
 
+## 首页媒体墙
+
+归档列表上方是「最近上架」的封面流：点一张卡 = 把这个番号填进搜索框并搜资源，
+后面仍然走「选一条磁力 → 确认 → 下载」，媒体墙本身不发任何下载请求。
+
+- 默认来源是「数据源」里那个 JavBus 实例的最新列表（`/api/movies?page=N`）；
+- **不只限于它**：设置 → 首页 → 媒体墙来源选 `custom`，填一个返回 JSON 的地址即可，
+  `{page}` 会替换成页码。字段名按常见别名认：
+  列表 `movies` / `items` / `data` / `results` / `list` / `records`，
+  番号 `id` / `code` / `number`，封面 `img` / `cover` / `thumb` / `poster`，
+  标题 `title` / `name`，日期 `date` / `release_date` / `updated`，
+  分页 `hasNextPage` / `has_more` / `hasMore` / `next`（都没有就按「满页=还有」兜底）；
+- 首屏只摆「几行」（设置里可调，一行约 6 张），剩下的点「更多」按批放；
+  「换一批」会越过 120 秒缓存重新取；
+- 封面走同源 `/proxy`，图床域名在白名单里（`javbus.com` / `jdbstatic.com` /
+  `pics.dmm.co.jp` / `whatslink.info`）。自定义源的封面若不在白名单内会显示「无封面」——
+  这是刻意的：代理不做任意 URL 转发；
+- 已归档的番号在封面上有绿标，不会重复点；
+- 上游挂了不影响首页其它部分，媒体墙那一条会写明失败原因；
+- 关掉入口：设置 → 首页 → 取消「显示媒体墙」（首页更快，也不再请求外部接口）。
+
+实现分两层：`app/wall.py` 负责取数与字段归一，`app/webui.html` 的 `loadWall()`
+负责渲染。要加一个内置来源，在 `app/wall.py` 的 `SOURCES` 与 `_FETCHERS`
+里各加一项即可，前端下拉框照着这份注册表渲染。
+
 ## 存储后端（rclone / OpenList / CloudDrive2）
 
 归档往哪儿放是三选一，**不需要 rclone 也能接网络存储**。三种后端共用同一套
