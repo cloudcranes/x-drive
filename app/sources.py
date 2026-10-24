@@ -177,14 +177,28 @@ REGISTRY = {
 # ---------------------------------------------------------------- 汇总
 
 def rank(item: dict) -> tuple:
-    """字幕优先，其次高清，再看做种数，最后体积。
+    """排序：**有种子优先**，然后字幕 → 高清 → 做种数 → 体积。
+
+    「有没有种子」排在最前：0 种子的种子迅雷云盘会「解析失败」
+    （2026-10-24 实测 MIMK-267：选了 0 种子的那条，任务干等两小时）。
+    它哪怕带字幕、高清、大体积，也排在有种子但没字幕的后面 ——
+    字幕是锦上添花，能下下来才是前提。
 
     用 .get 而不是下标：这条排序会用在两种形状不同的数据上 —— sources 的
     统一字段（has_subtitle / is_hd / seeders / size_bytes 都在）与
     javbus.magnets_for 的原始字段（键名不同）。缺哪个都当「没有」，
     不能因为少一个键就抛 KeyError。
+
+    注意「没有 seeders 字段」≠「0 个种子」：javbus/bt4g 不给做种数，
+    那是「不知道」，不是「没人做种」。所以只有**明确是 0** 才算死种，
+    字段缺失按「未知」处理，排在有种子的后面但不当作死种。
     """
-    return (0 if item.get("has_subtitle") else 1,
+    if "seeders" in item and not int(item.get("seeders") or 0):
+        dead = 1                    # 明确 0 个种子 —— 排最后
+    else:
+        dead = 0                    # 有种子，或不知道
+    return (dead,
+            0 if item.get("has_subtitle") else 1,
             0 if item.get("is_hd") else 1,
             -int(item.get("seeders") or 0),
             -int(item.get("size_bytes") or 0))

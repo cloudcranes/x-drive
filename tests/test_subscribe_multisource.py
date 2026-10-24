@@ -166,21 +166,37 @@ def test_tried_and_too_big_together_reports_size(fake_search):
 # ─────────────────────────────────────────── 排序口径
 
 def test_subtitle_wins_over_everything(fake_search):
-    """字幕是内容需求，排在最前。"""
+    """字幕是内容需求 —— 在**都有种子**的前提下排在最前。
+
+    0 种子的排最后（2026-10-24 改）：迅雷云盘解析 0 种子的种子会
+    「解析失败」，选了就是白等（实测 MIMK-267）。
+    """
     fake_search["items"]["SSIS-123"] = [
         cand("magnet:?xt=urn:btih:plain", size_gb=9, seeders=100),
-        cand("magnet:?xt=urn:btih:subs", size_gb=1, sub=True, seeders=0)]
+        cand("magnet:?xt=urn:btih:subs", size_gb=1, sub=True, seeders=5)]
 
     item, _ = asyncio.run(subscribe.fetch_best("SSIS-123"))
 
     assert item["magnet"] == "magnet:?xt=urn:btih:subs"
 
 
+def test_dead_seed_loses_even_with_subtitle(fake_search):
+    """0 种子的排最后 —— 哪怕带字幕、体积大。"""
+    fake_search["items"]["SSIS-123"] = [
+        cand("magnet:?xt=urn:btih:plain", size_gb=9, seeders=100),
+        cand("magnet:?xt=urn:btih:subs", size_gb=1, sub=True, seeders=0)]
+
+    item, _ = asyncio.run(subscribe.fetch_best("SSIS-123"))
+
+    assert item["magnet"] == "magnet:?xt=urn:btih:plain", \
+        "0 种子的不该被选中（迅雷云盘解析不了）"
+
+
 def test_hd_wins_over_seeders_when_no_subtitle(fake_search):
-    """没有字幕可比时，高清优先于做种数。"""
+    """没有字幕可比时，高清优先于做种数（两条都有种子时）。"""
     fake_search["items"]["SSIS-123"] = [
         cand("magnet:?xt=urn:btih:manyseeds", size_gb=9, seeders=100),
-        cand("magnet:?xt=urn:btih:hd", size_gb=1, hd=True, seeders=0)]
+        cand("magnet:?xt=urn:btih:hd", size_gb=1, hd=True, seeders=5)]
 
     item, _ = asyncio.run(subscribe.fetch_best("SSIS-123"))
 

@@ -196,6 +196,9 @@
   .res-meta .m{font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:3px}
   .res-list{margin-top:9px; display:flex; flex-direction:column; gap:6px}
   .res-list .seed{font-family:var(--mono); font-size:10px; color:var(--faint)}
+  /* 0 种子的候选：标红并压暗 —— 迅雷云盘多半解析失败，别让人误选 */
+  .res-list .seed.dead{color:var(--red); font-weight:600}
+  .res-list .sub-row.dead .nm{opacity:.62}
 
   /* 结果条 */
   .resultbar{display:flex; align-items:baseline; gap:10px; padding:16px var(--pad) 0; min-height:34px}
@@ -1860,7 +1863,16 @@ async function searchResources(code) {
                   item.has_subtitle ? "字幕" : (item.is_hd ? "高清" : "磁力")));
     row.append(el("span", "nm", item.size_text || "体积未知"));
     const seed = Number(item.seeders);
-    if (seed > 0) row.append(el("span", "seed", `种子 ${seed}`));
+    // 做种数**不论多少都要显示**：0 种子的候选迅雷云盘会「解析失败」，
+    // 而之前 0 种子什么都不显示 —— 用户看不出哪条能下，只能凭体积猜
+    // （2026-10-24 实测：MIMK-267 选了 0 种子的那条，迅雷解析失败，
+    // 任务干等两小时）。0 种子的标红并写明。
+    if (seed > 0) {
+      row.append(el("span", "seed", `种子 ${seed}`));
+    } else {
+      row.append(el("span", "seed dead", "种子 0（迅雷多半下不了）"));
+      row.classList.add("dead");
+    }
     const acts = el("div", "r");
     const detail = el("button", null, "详情");
     detail.addEventListener("click", () => showDetail(got, info));

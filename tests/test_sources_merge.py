@@ -66,15 +66,34 @@ def test_candidates_from_all_sources_are_merged(monkeypatch):
 
 
 def test_merged_result_is_ranked(monkeypatch):
-    """合并后仍按 rank 排序：字幕 → 高清 → 做种 → 体积。"""
+    """合并后仍按 rank 排序：有种子 → 字幕 → 高清 → 做种 → 体积。
+
+    「有种子」排在字幕前面是 2026-10-24 加的：0 种子的种子迅雷云盘会
+    「解析失败」，选了就是白等两小时（实测 MIMK-267）。
+    """
     plain = _item("magnet:?xt=urn:btih:" + "1" * 40, size=10 ** 10, seeders=99,
                   source="javbus")
-    with_sub = _item("magnet:?xt=urn:btih:" + "2" * 40, sub=True, source="sukebei")
+    with_sub = _item("magnet:?xt=urn:btih:" + "2" * 40, sub=True, seeders=5,
+                      source="sukebei")
     _install(monkeypatch, {"javbus": [plain], "sukebei": [with_sub]})
 
     got = asyncio.run(sources.search("SSIS-123"))
 
+    # 两条都是活种，字幕仍然赢 —— 只有死种才排到最后
     assert got[0]["has_subtitle"] is True, "带字幕的应排前，哪怕体积小种子少"
+
+
+def test_dead_seed_sorts_last_even_with_subtitle(monkeypatch):
+    """0 种子的排最后 —— 哪怕带字幕、高清、体积更大（实测 MIMK-267 的坑）。"""
+    dead = _item("magnet:?xt=urn:btih:" + "1" * 40, size=10 ** 10, seeders=0,
+                 sub=True, hd=True, source="javbus")
+    live = _item("magnet:?xt=urn:btih:" + "2" * 40, size=1, seeders=1,
+                 source="sukebei")
+    _install(monkeypatch, {"javbus": [dead], "sukebei": [live]})
+
+    got = asyncio.run(sources.search("SSIS-123"))
+
+    assert got[0]["seeders"] == 1, "有种子的应排前面"
 
 
 def test_rank_prefers_seeders_within_same_flags(monkeypatch):

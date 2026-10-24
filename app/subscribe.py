@@ -286,20 +286,24 @@ async def discover_javbus(sub_id: str, cursor: str, client: httpx.AsyncClient | 
 def pick_candidate(items: list[dict]) -> dict | None:
     """从多源候选里挑一条。
 
-    口径用**做种数优先**（sources.rank 的顺序：字幕 → 高清 → 做种数 → 体积），
-    而不是 javbus.pick_magnet 的「字幕 → 高清 → 体积」。理由：合并多源之后，
-    候选池里混着 bt4g 的老种和 sukebei 的有人做的种，做种数是「这条能不能下
-    下来」最直接的信号；只看体积的话，一条 4GB 没人做的老种会赢过 2GB 有几十
-    个种的。字幕与高清仍然排在最前，因为它们是内容需求，做种数只是可达性。
+    口径：**有种子优先**，然后字幕 → 高清 → 做种数 → 体积
+    （与 sources.rank 一致）。
+
+    为什么「有没有种子」排在字幕前面：0 种子的种子迅雷云盘会「解析失败」
+    （2026-10-24 实测 MIMK-267：选了 0 种子的那条，任务干等两小时）。
+    字幕与高清是内容需求，做种数是**可达性** —— 下不下来，字幕再多也没用。
+
     体积仍作最后一项 —— 同等条件下大体积通常是画质更好的一版。
     """
     if not items:
         return None
-    # 不能直接用 sources.rank：它按 item["has_subtitle"] 下标取字段，
-    # 而 javbus.magnets_for 返回的那套候选没有 seeders（javbus 不给做种数），
-    # 少一个键就 KeyError。这里自己排，口径与 sources.rank 一致。
+
     def score(item: dict) -> tuple:
-        return (0 if item.get("has_subtitle") else 1,
+        # 「字段缺失」= 不知道（javbus 不给做种数），不是「没人做种」——
+        # 那种按未知处理，不能当成死种。
+        dead = 1 if ("seeders" in item and not int(item.get("seeders") or 0)) else 0
+        return (dead,
+                0 if item.get("has_subtitle") else 1,
                 0 if item.get("is_hd") else 1,
                 -int(item.get("seeders") or 0),
                 -int(item.get("size_bytes") or 0))

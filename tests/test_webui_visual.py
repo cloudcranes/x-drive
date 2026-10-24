@@ -588,3 +588,18 @@ def test_cloud_ingest_has_status_row_and_stage():
     assert '"cloud", "deferred"]' in js, "云端任务也要能停止（只是不再等）"
     # 如实说明没有进度接口
     assert "不提供离线任务状态" in js
+
+
+def test_candidate_row_shows_zero_seeders():
+    """候选行上 0 种子的要**显示出来**并标红 —— 之前 `if (seed > 0)` 不显示。
+
+    迅雷云盘解析 0 种子的种子会回「解析失败」（2026-10-24 实测 MIMK-267），
+    用户看不出哪条能下就会误选。
+    """
+    js = script(html())
+    body = js[js.index("const list = el(\"div\", \"res-list\");"):
+             js.index("slot.append(list);")]
+    assert "if (seed > 0)" in body, "有种子的分支要保留"
+    assert "种子 0" in body, "0 种子必须显式提示"
+    assert "dead" in body, "0 种子的行要加标记类"
+    assert "var(--red)" in html(), "dead 样式要用红色"
