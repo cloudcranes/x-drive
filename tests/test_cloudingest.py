@@ -97,16 +97,30 @@ def test_measure_counts_inside_directories():
     assert measured["MIMK-290"]["bytes"] == 105
 
 
-def test_measure_ignores_loose_files_in_inbox():
-    """inbox 根下散落的裸文件不算落地：实测那里本来就躺着用户的 zip/iso/mp4。
+def test_measure_collects_loose_files_in_inbox():
+    """inbox 根下的裸文件**要**算落地：单文件种子就落成这样（实测 MIMK-267）。
 
-    第一版把它们当新落地，于是拿一个**普通文件**当目录名去整理，
-    报「是文件，不是目录」。
+    早先「只认目录」是为共享 inbox 设防：那里躺着用户的 zip/iso/mp4。
+    现在收件目录是**任务专属**的（`<inbox>/<任务键>`），别的任务和用户手动
+    放的东西都进不来 —— 这个风险不存在了，而不看裸文件就会让单文件种子
+    永远等不到落地（MIMK-267 就这么卡住的）。
     """
     b = FakeBackend()
-    b.files["/inbox/MIMK-212ch.mp4"] = 5_209_527_709
-    b.files["/inbox/迅雷11 绿色版.zip"] = 83_875_532
-    assert cloudingest.measure(b, "inbox") == {}
+    b.files["/inbox/MIMK-267ch.mp4"] = 5_282_620_174
+    items = cloudingest.measure(b, "inbox")
+    assert cloudingest.LOOSE_KEY in items, items
+    assert items[cloudingest.LOOSE_KEY]["count"] == 1
+    assert items[cloudingest.LOOSE_KEY]["bytes"] == 5_282_620_174
+    assert items[cloudingest.LOOSE_KEY]["files"][0]["name"] == "MIMK-267ch.mp4"
+
+
+def test_measure_still_counts_subdirectories():
+    """多文件种子那种「建个种子同名目录再往里写」的形态照旧。"""
+    b = FakeBackend()
+    b.script = [{"kss55.cc@MAAN-1199": {"MAAN-1199.mp4": 911_376_996}}] * 3
+    items = cloudingest.measure(b, "inbox")
+    assert "kss55.cc@MAAN-1199" in items
+    assert items["kss55.cc@MAAN-1199"]["bytes"] == 911_376_996
 
 
 # ─────────────────────────────────────────── 落地判定
@@ -160,7 +174,8 @@ def test_existing_entries_are_not_treated_as_new():
 def test_submit_snapshots_before_and_adds():
     b = FakeBackend()
     out = cloudingest.submit(b, "magnet:?xt=urn:btih:" + "a" * 40, "inbox")
-    assert out["inbox"] == "inbox" and out["before"] == {}
+    assert out["inbox"] == "inbox"
+    assert out["before"] == {cloudingest.LOOSE_KEY: 0}
     assert b.added == [("magnet:?xt=urn:btih:" + "a" * 40, "inbox")]
     assert "/inbox" in b.dirs
 

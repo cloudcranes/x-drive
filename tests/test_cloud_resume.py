@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from app import store, web
+from app import cloudingest, store, web
 
 
 class FakeBackend:
@@ -55,7 +55,7 @@ def test_first_submit_really_submits_and_records(tmp_path, monkeypatch):
     assert b.added == ["magnet:one"], "第一次要真的投"
     extra = st.get("j1")["extra"]
     assert extra["cloud_submit"]["url"] == "magnet:one"
-    assert extra["cloud_submit"]["before"] == {}, out
+    assert extra["cloud_submit"]["before"] == {cloudingest.LOOSE_KEY: 0}, out
 
 
 def test_retry_reuses_submission_instead_of_resubmitting(tmp_path, monkeypatch):
@@ -66,7 +66,7 @@ def test_retry_reuses_submission_instead_of_resubmitting(tmp_path, monkeypatch):
     web._cloud_submit(b, "j1", "magnet:one", "inbox/task")
     out2 = web._cloud_submit(b, "j1", "magnet:one", "inbox/task")
     assert b.added == ["magnet:one"], f"重投了：{b.added}"
-    assert out2["before"] == {}, "续接沿用提交前快照"
+    assert out2["before"] == {cloudingest.LOOSE_KEY: 0}, "续接沿用提交前快照"
 
 
 def test_different_source_submits_again(tmp_path, monkeypatch):

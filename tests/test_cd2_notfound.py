@@ -60,8 +60,14 @@ def test_snapshot_strict_still_raises_on_real_read_failure():
 
 
 def test_snapshot_strict_reads_existing_dir():
+    """目录在 → 快照记下子目录 + 根下文件（后者记在 LOOSE_KEY 下）。
+
+    根下文件整体记一个键，是为了让快照与 measure() 对齐 ——
+    否则单文件种子每轮都算「新增」，永远不稳定。
+    """
     b = _Backend(dirs=["a", "b"], files=[("c.mp4", 10)])
-    assert cloudingest.snapshot_strict(b, "/inbox/KEY") == {"a": -1, "b": -1, "c.mp4": 10}
+    assert cloudingest.snapshot_strict(b, "/inbox/KEY") == {
+        "a": -1, "b": -1, cloudingest.LOOSE_KEY: 10}
 
 
 def test_snapshot_strict_missing_dir_skips_file_read():

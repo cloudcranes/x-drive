@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .storage.base import NotFoundError
+from .storage.base import NotFoundError, StorageError
 
 log = logging.getLogger("x-drive.cloudingest")
 
@@ -33,6 +33,10 @@ DEFAULT_TIMEOUT = 7200.0
 DEFAULT_STABLE = 3
 # 空目录也要给足稳定次数：种子刚解析完时目录先建出来、文件随后才写
 MIN_STABLE = 2
+
+# 「文件直接躺在收件目录根下」这种落地的键（单文件种子实测如此）。
+# 用一个不会跟真实目录名撞的固定键 —— 目录名不会以 "=" 开头。
+LOOSE_KEY = "=loose"
 
 
 class LandingTimeout(RuntimeError):
@@ -96,8 +100,15 @@ def snapshot_strict(backend, inbox: str) -> dict[str, int]:
         # 这个目录还没有建 —— 快照就是空的（等提交时建出来再往里落地）。
         # 但**只**在「目录不存在」时这么办；别的读失败照旧抛。
         return out
-    for entry in backend.list_files(inbox):
-        out[str(entry.name)] = int(entry.size or 0)
+    try:
+        loose = 0
+        for entry in backend.list_files(inbox):
+            loose += int(entry.size or 0)
+        # 收件目录根下的文件（单文件种子实测如此）整体记一个键，
+        # 与 measure() 的 LOOSE_KEY 对齐 —— 否则它们每轮都算「新增」。
+        out[LOOSE_KEY] = loose
+    except Exception as exc:                    # noqa: BLE001
+        raise StorageError(f"列 {inbox} 文件失败：{exc}") from exc
     return out
 
 
@@ -110,23 +121,34 @@ def task_inbox(inbox: str, job_key: str) -> str:
 
 
 def measure(backend, inbox: str) -> dict[str, dict]:
-    """inbox 里**目录**的体量（往里数一层）。
+    """inbox 里的落地内容。
 
-    只认目录，不认 inbox 根下散落的裸文件 —— 这条是踩出来的：
+    两种落地形态都要认（2026-10-24 实测两种都出现过）：
 
-      · 迅雷落地一定是「建一个种子同名目录」再往里写（实测）；
-      · 而落地目录里本来就可能躺着用户自己的文件（实测 inbox 里有
-        `MIMK-212ch.mp4`、几个 zip/iso）。把它们当「新落地」会拿一个**普通文件**
-        去当目录名整理，报「是文件，不是目录」；
-      · 根层读文件还可能超时，那种情况下 before 快照只有目录，
-        于是所有既存文件都变成「新增」—— 只认目录就天然绕开了这个坑。
+      A. 迅雷建一个「种子同名目录」再往里写 —— 绝大多数多文件种子是这样，
+         统计的是**子目录里的文件**（往里数一层）。
+      B. 单文件种子直接躺在收件目录下（实测 MIMK-267：`MIMK-267ch.mp4`
+         直接在 `我的资源/MIMK267/` 下，没有中间那层）—— 这时统计的是
+         收件目录**根下的文件**。
+
+    怎么区分「本次落地」和「用户自己放在这儿的文件」？靠 **inbox 是任务专属
+    目录**这件事：`my_inbox = <inbox>/<任务键>`，观察范围圈死在一个任务
+    自己的地盘里，别的任务和用户手动放的东西都进不来（共享 inbox 曾让两个
+    任务互相认领对方的落地目录）。
+
+    早先的「只认目录」是为了防另一件事：落地目录里躺着用户自己的文件时，
+    拿一个**普通文件**当目录名去整理会报「是文件，不是目录」。现在收件目录
+    是任务专属的，这个风险不存在了 —— 但仍要保证「只统计收件目录这一层」，
+    不要再往深层数（深层是种子目录内部，归档时要整体搬）。
+
+    根下的文件单独收在一个固定的键下（""），整理时作为「一个整体」处理。
     """
     out: dict[str, dict] = {}
     try:
         names = backend.list_dirs(inbox)
     except Exception as exc:                     # noqa: BLE001 读不到就当没有
         log.info("列 %s 目录失败（当作空）：%s", inbox, exc)
-        return out
+        names = []
     for name in names:
         name = str(name)
         if not name or name.startswith("."):
@@ -140,6 +162,17 @@ def measure(backend, inbox: str) -> dict[str, dict]:
             files = []
         out[name] = {"files": files, "count": len(files),
                      "bytes": sum(f["size"] for f in files)}
+    # B 形态：文件直接躺在收件目录根下（单文件种子）
+    try:
+        loose: list[dict] = []
+        for entry in backend.list_files(inbox):
+            loose.append({"name": str(entry.name), "size": int(entry.size or 0)})
+    except Exception:                            # noqa: BLE001
+        loose = []
+    if loose:
+        out[LOOSE_KEY] = {"files": loose, "count": len(loose),
+                          "bytes": sum(f["size"] for f in loose),
+                          "loose": True}
     return out
 
 

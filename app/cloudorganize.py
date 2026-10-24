@@ -91,7 +91,12 @@ def pick_main(files: list[dict]) -> list[dict]:
 
 
 def target_name(folder: str, files: list[dict]) -> str:
-    """目标目录名：能认出番号就用番号，否则保留落地目录名（清洗后）。"""
+    """目标目录名：能认出番号就用番号，否则保留落地目录名（清洗后）。
+
+    folder 为空 = 文件直接躺在收件目录根下（单文件种子实测如此），
+    这时没有「落地目录名」可用，只能从**文件名**里认番号
+    （MIMK-267ch.mp4 → MIMK-267）。
+    """
     from . import codes
 
     base = codes.canonical(folder) or codes.canonical(
@@ -103,20 +108,29 @@ def target_name(folder: str, files: list[dict]) -> str:
     return safe or "unsorted"
 
 
-def plan(source: str, files: list[dict], *, rename: bool = True) -> Plan:
-    """给落地目录出整理计划。纯函数，不发任何请求。"""
+def plan(source: str, files: list[dict], *, rename: bool = True,
+         folder_code: str = "") -> Plan:
+    """给落地目录出整理计划。纯函数，不发任何请求。
+
+    folder_code 是**任务里的番号**（如 MIMK-267）—— 目标目录名优先用它。
+    单文件种子落地时没有「落地目录名」（文件直接躺在收件目录根下），
+    只能靠番号定名：从文件名认番号认不出来（`MIMK-267ch.mp4` 认不出）。
+    """
     if _BAD_NAME.search(source or ""):
         raise OrganizeError(f"落地目录名不安全，拒绝整理：{source!r}")
     keep = pick_main(files)
     if not keep:
-        raise OrganizeError(f"{source} 里没有可归档的媒体文件（只有广告？）")
+        raise OrganizeError(f"{source or '收件目录'} 里没有可归档的媒体文件（只有广告？）")
     kept_names = [str(f.get("name") or "") for f in keep if f.get("name")]
     if len(set(kept_names)) != len(kept_names):
-        raise OrganizeError(f"{source} 里有同名文件，云端无法区分：{kept_names}")
+        raise OrganizeError(f"{source or '收件目录'} 里有同名文件，云端无法区分：{kept_names}")
     drop = [str(f.get("name") or "") for f in files
-            if str(f.get("name") or "") and str(f.get("name")) not in kept_names]
+            if str(f.get("name") or "") and str(f.get("name") or "") not in kept_names]
+    target = (folder_code or "").strip()
+    if not target:
+        target = target_name(source, keep) if rename else source
     return Plan(source=source,
-                target=target_name(source, keep) if rename else source,
+                target=target,
                 move=kept_names,
                 drop=drop,
                 size=sum(int(f.get("size") or 0) for f in keep),
@@ -162,7 +176,8 @@ def apply(backend, src_root: str, plan_obj: Plan, folder_code: str = "",
         raise OrganizeError("目录名不安全，拒绝执行")
     src_base = src_root.strip("/")               # 后端内相对路径，不带前导斜杠
     dst_base = (dst_root or src_root).strip("/")
-    src = f"{src_base}/{plan_obj.source}"
+    # source 为空 = 文件直接躺在收件目录根下（单文件种子实测如此）
+    src = f"{src_base}/{plan_obj.source}" if plan_obj.source else src_base
     dst = f"{dst_base}/{plan_obj.target}"
     if not src_base or not dst_base:
         raise OrganizeError("落地目录或归档根为空，拒绝执行")
@@ -214,12 +229,24 @@ def cleanup_source(backend, src_root: str, plan_obj: Plan, dst_root: str = "") -
     """
     if _BAD_NAME.search(plan_obj.source or "") or _BAD_NAME.search(plan_obj.target or ""):
         raise OrganizeError("目录名不安全，拒绝清理")
-    src = f"{src_root.strip('/')}/{plan_obj.source}"
+    src_base = src_root.strip("/")
+    # source 为空 = 文件直接躺在收件目录根下（单文件种子实测如此）
+    src = f"{src_base}/{plan_obj.source}" if plan_obj.source else src_base
     dst = f"{(dst_root or src_root).strip('/')}/{plan_obj.target}"
     if src == dst:
         raise OrganizeError(f"源目录与目标目录同名（{src}），拒绝清理")
     try:
-        return backend.purge(src)
+        if plan_obj.source:
+            return backend.purge(src)
+        # 文件直接躺在收件目录根下：只删搬走的那几个文件，收件目录本身留着
+        for name in plan_obj.move:
+            backend.purge(f"{src}/{name}")
+        for name in plan_obj.drop:
+            try:
+                backend.purge(f"{src}/{name}")
+            except Exception as exc:                # noqa: BLE001 广告删不掉不影响
+                log.info("删广告 %s/%s 失败（不影响归档）：%s", src, name, exc)
+        return "已清理收件目录里的落地文件"
     except Exception as exc:
         raise OrganizeError(f"清理源目录 {src} 失败：{exc}") from exc
 

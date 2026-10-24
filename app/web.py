@@ -960,7 +960,11 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
     for item in landed:
         require_lease(job_id, code)              # 整理前确认租约还在自己手里
         job_event(job_id, "stage", f"landed {item.folder}（{item.total} 字节）")
-        plan = cloudorganize.plan(item.folder, item.files)
+        # 「文件直接躺在收件目录根下」的落地（单文件种子实测如此）：
+        # 源目录就是收件目录本身，不是它下面的某个子目录。
+        loose = item.folder == cloudingest.LOOSE_KEY
+        source = "" if loose else item.folder
+        plan = cloudorganize.plan(source, item.files, folder_code=code or "")
         moved = cloudorganize.apply(backend, my_inbox, plan, code or plan.target,
                                     dst_root=dest)
         # 1.5：归档记录自带定位（backend + root + rel），之后的核验/补刮/改名/删除
@@ -976,7 +980,7 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
                 (int(f.get("size") or 0) for f in item.files if f.get("name") == old), 0)}
                 for old, n in zip(plan.move, moved["files"])],
             "size": moved["size"],
-            "inbox": f"{my_inbox}/{item.folder}",
+            "inbox": my_inbox if loose else f"{my_inbox}/{item.folder}",
         }
         job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
                                   "cloud": record})
