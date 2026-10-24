@@ -154,13 +154,24 @@ def resolve(path: str, *, client=None) -> str:
     """把 `迅雷云盘/X-Drive/SSIS-555/xx.mp4` 这样的路径解析成 file_id。
 
     逐级下钻、按名字匹配；找不到返回空串。目录里用第一个同名命中。
+
+    首段是 CD2 的挂载名（官方 API 根下**没有**它——实测根目录直接是
+    `我的资源`/`X-Drive`/…），完整路径找不到时自动去掉首段再试一次。
     """
     parts = [p for p in (path or "").strip("/").split("/") if p]
-    if not parts:
-        return ""
+    for candidate in (parts, parts[1:]):
+        if not candidate:
+            continue
+        found = _walk(candidate, client=client)
+        if found:
+            return found
+    return ""
+
+
+def _walk(parts: list[str], *, client=None) -> str:
     parent = ""
     found = ""
-    for index, part in enumerate(parts):
+    for part in parts:
         hit = ""
         for item in list_files(parent, client=client):
             if item["name"] == part and not item["trashed"]:
@@ -170,7 +181,7 @@ def resolve(path: str, *, client=None) -> str:
             return ""
         found = hit
         parent = hit
-    return found if found else ""
+    return found
 
 
 def direct_link(path: str, *, client=None) -> dict:

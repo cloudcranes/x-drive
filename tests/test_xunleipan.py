@@ -166,6 +166,22 @@ def test_resolve_walks_path(monkeypatch):
     assert xunleipan.resolve("迅雷云盘/没有这个", client=client(handler)) == ""
 
 
+def test_resolve_drops_mount_prefix_when_absent(monkeypatch):
+    """CD2 路径带挂载名 `迅雷云盘/`，官方 API 根下没有它（实测）：自动去首段。"""
+    _env(monkeypatch)
+    listing = {
+        "": [{"id": "c1", "name": "我的资源", "kind": "drive#folder", "trashed": False}],
+        "c1": [{"id": "f1", "name": "迅雷11 绿色版.zip", "kind": "drive#file", "trashed": False}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        parent = request.url.params.get("parent_id", "")
+        return httpx.Response(200, json={"files": listing.get(parent, [])})
+
+    fid = xunleipan.resolve("迅雷云盘/我的资源/迅雷11 绿色版.zip", client=client(handler))
+    assert fid == "f1"
+
+
 def test_direct_link_end_to_end(monkeypatch):
     _env(monkeypatch)
 
