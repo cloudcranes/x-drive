@@ -321,7 +321,13 @@ class CloudDrive2(Backend):
         raise StorageError(f"clouddrive2 删除失败：{res2.errorMessage or reason}")
 
     def move_file(self, src: str, dst: str) -> None:
-        """单文件搬进目标目录（必要时再改名）。目标已存在时明确失败，不覆盖。"""
+        """单文件搬进目标目录（必要时再改名）。目标已存在时明确失败，不覆盖。
+
+        这是**两步远端操作**（MoveFile + RenameFile），不是原子的：移动成功、
+        改名失败时文件已经在目标目录里、用的是旧名，而调用方的回滚清单里
+        还没有它 —— 就这么抛错会留一个谁都不知道的孤儿。所以改名失败时
+        在这里尽力把文件搬回去；搬回去也失败就报出**实际位置**，不许含糊。
+        """
         src_parent, src_name = self._split(src)
         dst_parent, dst_name = self._split(dst)
         if not src_name or not dst_name:
@@ -343,7 +349,20 @@ class CloudDrive2(Backend):
                                          newName=dst_name),
                                      pb.FileOperationResult, timeout=120.0)
             if not renamed.success:
-                raise StorageError(f"clouddrive2 改名失败：{renamed.errorMessage or '未知原因'}")
+                why = renamed.errorMessage or "未知原因"
+                # 补偿：把已经搬进目标目录的文件搬回原位
+                back = self.chan.call("MoveFile",
+                                      pb.MoveFileRequest(
+                                          theFilePaths=[f"{self._p(dst_parent)}/{src_name}"],
+                                          destPath=self._p(src_parent),
+                                          conflictPolicy=pb.ConflictPolicy_Skip),
+                                      pb.FileOperationResult, timeout=300.0)
+                if back is not None and back.success:
+                    raise StorageError(
+                        f"clouddrive2 改名失败（已回滚到原目录）：{why}")
+                raise StorageError(
+                    f"clouddrive2 改名失败，且回滚失败：{why}；"
+                    f"文件实际在 {dst_parent}/{src_name}（旧名），需要人工处理")
 
     def rename_dir(self, src: str, new_name: str) -> None:
         parent, old = self._split(src)

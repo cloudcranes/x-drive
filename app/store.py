@@ -573,6 +573,58 @@ class Store:
                 " WHERE id=? AND stage='deferred'", (json.dumps(extra), now, job_id))
             return bool(cur.rowcount)
 
+    # ------------------------------------------------------------ 跨进程取消
+    #
+    # 取消请求必须落库：web 与 bot 是两个进程，进程内的取消事件互相看不见。
+    # Web 的停止按钮停不了 bot 正在跑的任务（曾表现为「任务不存在」/点了没反应）。
+    # 执行者在阶段边界与进度回调里消费这个标记，消费到就走正常收尾。
+
+    def request_cancel(self, job_id: str, now: float | None = None) -> bool:
+        """记一个取消请求。只对未结束的任务有效；返回 False 表示无事可做。"""
+        if not job_id:
+            return False
+        now = time.time() if now is None else now
+        with self._lock, self._conn() as conn:
+            row = conn.execute("SELECT stage FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row or row["stage"] in FINISHED:
+                return False
+            conn.execute(
+                "UPDATE jobs SET extra=json_set(extra, '$.cancel_requested', ?),"
+                " updated_at=? WHERE id=?", (now, now, job_id))
+            return True
+
+    def cancel_marked(self, job_id: str) -> bool:
+        """这条任务是否已被请求取消（跨进程可见）。"""
+        if not job_id:
+            return False
+        with self._conn() as conn:
+            row = conn.execute("SELECT extra FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            return False
+        try:
+            extra = json.loads(row["extra"] or "{}")
+        except json.JSONDecodeError:
+            return False
+        return bool(extra.get("cancel_requested"))
+
+    def clear_cancel(self, job_id: str) -> bool:
+        """任务收尾时抹掉取消标记（否则重试会被自己上一次的取消卡住）。"""
+        if not job_id:
+            return False
+        with self._lock, self._conn() as conn:
+            row = conn.execute("SELECT extra FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                return False
+            try:
+                extra = json.loads(row["extra"] or "{}")
+            except json.JSONDecodeError:
+                extra = {}
+            if extra.pop("cancel_requested", None) is None:
+                return False
+            conn.execute("UPDATE jobs SET extra=?, updated_at=? WHERE id=?",
+                         (json.dumps(extra), time.time(), job_id))
+            return True
+
     # ------------------------------------------------------------ 执行者领取
     def claim_owner(self, job_id: str, owner: str, now: float | None = None) -> bool:
         """抢占任务执行权：同一任务只能有一个执行者。

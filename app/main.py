@@ -157,6 +157,21 @@ class LeaseLost(RuntimeError):
     """
 
 
+class JobCancelled(RuntimeError):
+    """用户请求取消（跨进程）：执行者在阶段边界消费后正常收尾成 cancelled。"""
+
+
+def cancel_requested(cfg: "Config", job_id: str) -> bool:
+    """任务是否被请求取消。取消标记在任务表里，web 与 bot 都能看到。"""
+    if not job_id:
+        return False
+    try:
+        return bool(task_store(cfg).cancel_marked(job_id))
+    except Exception as exc:                   # 库暂时不可用时不误杀
+        log.warning("读取消标记失败：%s", exc)
+        return False
+
+
 def _flag(name: str, default: str = "1") -> bool:
     """环境变量开关：0/false/False 视为关。与网页侧同一套写法。
 
@@ -433,13 +448,15 @@ def lease_alive(cfg: Config, job_id: str) -> bool:
 
 
 def require_lease(cfg: Config, job_id: str) -> None:
-    """关键节点自查：失租就停手，绝不和另一个执行者抢同一目录。
+    """关键节点自查：失租/取消就停手，绝不和另一个执行者抢同一目录。
 
     抛 LeaseLost（不是普通 RuntimeError）：外层据此区分「自己的任务失败了」
     和「这个任务已经归别人管了」—— 后者不能写终态、不能删外部下载任务。
     """
     if job_id and not lease_alive(cfg, job_id):
         raise LeaseLost(f"任务 {job_id} 已由另一个执行者接手，本端停止")
+    if cancel_requested(cfg, job_id):
+        raise JobCancelled("已停止")
 
 
 def lease_end(cfg: Config, job_id: str) -> None:
@@ -559,8 +576,12 @@ async def run_task(
     progress,
     force: bool = False,
     chat_id: int | None = None,
+    resume_id: str = "",
 ) -> str:
-    """番号 → 下载（磁力/直链都投给迅雷）→ 整理 → 按番号上传 Drive。"""
+    """番号 → 下载（磁力/直链都投给迅雷）→ 整理 → 按番号上传 Drive。
+
+    resume_id：恢复已有任务时沿用原 job_id（不新建），重启续跑同一条记录。
+    """
     xl = xunlei.Xunlei(cfg.xunlei_url, cfg.xunlei_parent, cfg.tmp_root, cfg.xunlei_token)
     sources = fetcher.sources(text)
     if not sources:
@@ -585,11 +606,23 @@ async def run_task(
             results.append(f"♻️ {code} 已存在：{known['link']}")
             continue
 
-        # 与网页端共用任务表：同番号在两边只会有一个执行者
-        job_id = claim_task(cfg, key, source, chat_id)
-        if not job_id:
-            failures.append(f"{key} 正在下载（任务表里已有未结束任务），跳过重复提交")
+        # 2.6 统一准入：闸门关闭（恢复后待对账）时新消息/重试一律不开工，
+        # 任务留在任务表等网页端放行。以前只有启动补跑查这里，
+        # 用户在待对账期间发的消息照样会按旧快照开工。
+        gate = scheduling_gate(cfg)
+        if not gate["open"]:
+            failures.append(f"{key} 调度闸门关闭（{gate['reason']}），本轮不执行")
             continue
+
+        if resume_id and index == 1:
+            job_id = resume_id              # 2.5 沿用原任务记录，不新建
+            task_event(cfg, job_id, "resumed", f"重启续跑 {key}")
+        else:
+            # 与网页端共用任务表：同番号在两边只会有一个执行者
+            job_id = claim_task(cfg, key, source, chat_id)
+            if not job_id:
+                failures.append(f"{key} 正在下载（任务表里已有未结束任务），跳过重复提交")
+                continue
 
         info = await pipeline.probe(client, source) if fetcher.is_magnet(source) else None
         hint = ""
@@ -635,6 +668,8 @@ async def run_task(
         meta_info: dict = {}
         try:
             async def on_progress(percent, speed, status, _p=progress, _i=index):
+                if cancel_requested(cfg, job_id):
+                    raise JobCancelled("已停止")
                 mb = (speed or 0) / 1048576
                 await _p(f"⏳ 下载 {_i}/{len(sources)} · {percent * 100:.1f}% · {mb:.1f}MB/s")
 
@@ -823,6 +858,17 @@ async def run_task(
             # outcome_ok 决定「这条链路是否完整走完」。任务表没落库时统计记 fail，
             # 与给用户的 ⚠️ 保持一致 —— 同一任务不能一边说失败一边记 ok。
             outcome_ok = task_done
+        except JobCancelled as exc:
+            # 用户在 Web 上点了停止（跨进程取消标记）：正常收尾成 cancelled，
+            # 不是失败。只停我们自己的迅雷任务，留给重试的证据不动。
+            log.info("任务 %s 被用户取消：%s", job_id, exc)
+            finish_task(cfg, job_id, "cancelled", "已停止")
+            task_event(cfg, job_id, "cancelled", first_line(str(exc)) or "已停止")
+            if handle.get("id") and handle.get("ours", True):
+                try:
+                    await xl.remove(client, handle["id"])
+                except Exception as exc2:      # noqa: BLE001 停止流程不崩
+                    log.warning("取消时删除迅雷任务 %s 失败：%s", handle.get("id"), exc2)
         except LeaseLost as exc:
             # 失租只退出：任务已归新执行者。不能写 failed（会覆盖接管者的状态），
             # 也不能删迅雷任务 —— handle 里那个 id 现在可能正被接管者续接。
@@ -843,6 +889,10 @@ async def run_task(
             if handle.get("id") and handle.get("ours", True):
                 await xl.remove(client, handle["id"])
         finally:
+            try:
+                task_store(cfg).clear_cancel(job_id)   # 抹掉取消标记，重试不会被卡住
+            except Exception as exc:            # noqa: BLE001 收尾不抛
+                log.warning("清取消标记失败：%s", exc)
             metrics.record_timing(cfg.metrics_path, {
                 "code": key,
                 "size": job_size,
@@ -1274,19 +1324,67 @@ async def bootstrap(application: Application) -> None:
 
 
 async def resume_pending(application: Application) -> None:
-    """启动时补跑上次没完成/失败的下载任务，并把结果发回原会话。"""
+    """启动时补跑上次没完成的下载任务，并把结果发回原会话。
+
+    2.5：恢复的主数据源是**共享任务表**（jobs 表）。以前只读 pending/*.json，
+    而新任务只写 jobs 表 —— bot 单独重启后中断的任务没人接，番号还被它占着，
+    /retry 也撞唯一索引。旧 pending 文件仍兼容（历史遗留），一条任务以
+    jobs 表为准，避免两边重复补跑。
+    """
     cfg: Config = application.bot_data["cfg"]
     pending: dict = application.bot_data["pending"]
     # 与网页端同一份调度闸门：恢复后「待对账」期间一律不补跑。
     # bot 与 web 是两条独立进程，靠库内标记 + 同目录旁路文件互相看见，不靠内存开关。
     gate = scheduling_gate(cfg)
     if not gate["open"]:
-        log.warning("调度闸门关闭（%s），本次启动不补跑 %d 条待办；对账后由网页端放行",
-                    gate["reason"], len(pending))
+        log.warning("调度闸门关闭（%s），本次启动不补跑；对账后由网页端放行", gate["reason"])
         return
+
+    # ── 主路径：共享任务表里「还要跑」的任务（不含 deferred：它等额度到期唤醒）
+    try:
+        todo = [j for j in task_store(cfg).unfinished_any() if j.get("stage") != "deferred"]
+    except Exception as exc:                    # noqa: BLE001 读不到就退回旧路径
+        log.warning("读取共享任务表失败，退回 pending 文件：%s", exc)
+        todo = []
+    for job in todo:
+        job_id = job["id"]
+        source = job.get("source") or ""
+        code = job.get("code") or ""
+        if not source:
+            continue
+        chat_id = (job.get("extra") or {}).get("chat_id")
+        sent = None
+        if chat_id:
+            try:
+                sent = await application.bot.send_message(chat_id, "⏳ 重启后续跑：解析媒体…")
+            except TelegramError as exc:
+                log.warning("续跑时无法通知会话 %s：%s", chat_id, exc)
+
+        async def progress(text, _sent=sent):
+            if _sent is not None:
+                await edit(_sent, text)
+
+        try:
+            text = await run_task(
+                cfg, application.bot_data["http"], application.bot_data["state"],
+                source, progress, force=True, chat_id=chat_id, resume_id=job_id,
+            )
+            if sent is not None:
+                await edit(sent, text)
+        except Exception as exc:                # noqa: BLE001 单条失败不拖住其余
+            log.exception("续跑任务 %s 失败", job_id)
+            finish_task(cfg, job_id, "failed", str(exc)[:200])
+            if sent is not None:
+                try:
+                    await edit(sent, f"❌ 续跑失败：{first_line(str(exc))}")
+                except TelegramError:
+                    pass
+    if todo:
+        log.info("从共享任务表续跑 %d 条", len(todo))
+
     if not pending:
         return
-    log.info("发现 %d 条待补跑记录", len(pending))
+    log.info("发现 %d 条待补跑记录（旧 pending 文件）", len(pending))
     for key, record in list(pending.items()):
         url = record.get("url") or ""
         chat_id = record.get("chat_id")

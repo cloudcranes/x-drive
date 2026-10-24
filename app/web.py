@@ -591,17 +591,38 @@ _UPLOAD_PROGRESS = threading.local()
 
 
 def request_cancel(job_id: str) -> bool:
-    """标记任务取消；下载线程在下一个进度回调里抛异常收尾。"""
+    """标记任务取消；执行线程在下一个进度回调/阶段边界抛异常收尾。
+
+    **两处都记**：进程内事件（本进程立即生效）+ 任务表（跨进程生效）。
+    Web 与 bot 是两个进程：只记内存时，Web 的停止按钮停不了 bot 正在跑的
+    任务 —— 库里查得到任务，接口却说「任务不存在」。
+    已经结束的任务返回 False：没有可取消的东西，重复停止不该报成功。
+    """
+    st = _store()
+    marked = False
+    try:
+        marked = st.request_cancel(job_id)     # 库里查得到就受理（跨进程；终态 False）
+    except Exception as exc:                   # 库暂时不可用时退回纯内存
+        log.warning("写取消标记失败：%s", exc)
     with _jobs_lock:
-        if job_id not in JOBS:
-            return False
-    CANCEL.setdefault(job_id, threading.Event()).set()
-    return True
+        job = dict(JOBS.get(job_id) or {})
+    # 本进程内存里还在跑才配对进程内事件（终态不许「取消成功」）
+    in_proc_active = bool(job) and job.get("stage") not in ("done", "failed", "cancelled")
+    if in_proc_active:
+        CANCEL.setdefault(job_id, threading.Event()).set()
+    return bool(marked or in_proc_active)
 
 
 def cancel_requested(job_id: str) -> bool:
     event = CANCEL.get(job_id)
-    return bool(event and event.is_set())
+    if event and event.is_set():
+        return True
+    # 本进程没标，再看任务表：另一个进程（web / bot）可能刚请求了取消
+    try:
+        return bool(_store().cancel_marked(job_id))
+    except Exception as exc:
+        log.warning("读取消标记失败：%s", exc)
+        return False
 
 
 class Cancelled(RuntimeError):
@@ -752,6 +773,28 @@ def cloud_capability() -> dict:
     return info
 
 
+def _cloud_submit(backend, job_id: str, source: str, my_inbox: str) -> dict:
+    """提交（或续接）。返回给 wait_landing 用的 {before, inbox}。
+
+    2.1/2.2：同一链接已有提交记录时**不再重复投**。AddOfflineFiles 对假磁力
+    也回 success（实测），重投只可能制造重复落地或撞同名目录；沿用提交前
+    快照继续观察，落地已完成时 wait_landing 立刻就能收下。
+    """
+    prev_extra = _store().get(job_id).get("extra") or {}
+    prev = prev_extra.get("cloud_submit") or {}
+    if prev.get("url") == source and prev.get("inbox") == my_inbox \
+            and prev.get("before") is not None:
+        job_event(job_id, "stage", f"cloud 续接（有提交记录，不重复提交）到 {my_inbox}")
+        return {"before": dict(prev.get("before") or {}), "inbox": my_inbox}
+    job_event(job_id, "stage", f"cloud 提交到 {my_inbox}")
+    submitted = cloudingest.submit(backend, source, my_inbox)
+    job_update(job_id, extra={**prev_extra, "cloud_inbox": my_inbox, "cloud_url": source,
+                              "cloud_submit": {"url": source, "inbox": my_inbox,
+                                               "before": submitted["before"],
+                                               "at": time.time()}})
+    return submitted
+
+
 def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
     """云添加整条链路（同步执行，由 run_web_job 在线程里调）。"""
     ok, why = cloud_ready()
@@ -766,10 +809,7 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
     my_inbox = cloudingest.task_inbox(inbox, key or job_id)
 
     job_update(job_id, stage="cloud", percent=0.0, speed=0)
-    job_event(job_id, "stage", f"cloud 提交到 {my_inbox}")
-    submitted = cloudingest.submit(backend, source, my_inbox)
-    job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
-                              "cloud_inbox": my_inbox, "cloud_url": source})
+    submitted = _cloud_submit(backend, job_id, source, my_inbox)
 
     def on_progress(snapshot: dict, rounds: int) -> None:
         if cancel_requested(job_id):
@@ -967,9 +1007,11 @@ def _finish_cloud(job_id: str, source: str, out: dict) -> None:
         core.update_state(STATE, {folder: record})
         job_event(job_id, "done", f"{folder} · {core.human_size(size)} · 云盘")
     last = records[-1]
+    extra = {**(_store().get(job_id).get("extra") or {}), "cloud": last}
+    extra.pop("cloud_submit", None)          # 成功后提交记录退场，重跑时可以重新投
     job_update(job_id, stage="done", code=last["folder"], folder=last["folder"],
                size=int(last.get("size") or 0), link="", error="", resume_from="",
-               extra={**(_store().get(job_id).get("extra") or {}), "cloud": last})
+               extra=extra)
     notify.job_done(last["folder"], core.human_size(int(last.get("size") or 0)), "")
 
 
@@ -1370,6 +1412,10 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         record_timing(job_id, done_code, done_size, clock, outcome, started)
         with _jobs_lock:
             CANCEL.pop(job_id, None)
+        try:
+            _store().clear_cancel(job_id)       # 抹掉库里的取消标记，重试不会被卡住
+        except Exception as exc:                # noqa: BLE001 收尾不抛
+            log.warning("清取消标记失败：%s", exc)
         # 清理用迅雷上报的真实目录（重名时是 <键>-N），不是提交时预设的那个；
         # drop() 只删带本任务标记的目录，相邻的外部目录不受影响
         stored = _store().get(job_id)
@@ -1616,6 +1662,9 @@ def stop_job(job_id: str) -> bool:
     先摘队列、再写终态：admit() 只认 WAITING 里的条目，摘掉之后它就拿不到这个
     任务了。反过来的顺序（先写 cancelled 再摘）中间那一瞬 admit 仍会把线程起来，
     形成「已取消却又在下载」的竞态。
+
+    任务不在本进程（bot 在跑）时，改为写跨进程取消标记：执行者在下一个
+    阶段边界消费它并正常收尾。以前这种点下来什么也不发生。
     """
     with _waiting_lock:
         item = WAITING.pop(job_id, None)
@@ -1624,7 +1673,19 @@ def stop_job(job_id: str) -> bool:
         # 已经不在队列：只有「确实有线程在跑」才算停止成功（已经落 cancelled 的
         # 重复停止仍返回 False）。否则就是点了个已经在跑的任务，让它自停。
         if job_id not in running_threads():
-            return False
+            stored = {}
+            try:
+                stored = _store().get(job_id) or {}
+            except Exception as exc:            # noqa: BLE001 库不可用时走内存判断
+                log.warning("查任务 %s 失败：%s", job_id, exc)
+            if stored.get("stage") == "queued":
+                # 库里排队、本进程却不在 WAITING（重启后丢失）：没人会再跑它，
+                # 直接落终态，不能只记标记干等一个不存在的执行者
+                _store().update(job_id, stage="cancelled", error="已停止")
+                job_event(job_id, "cancelled", "排队中被用户停止")
+                return True
+            # 在跑（本进程或别的进程）：写取消标记让执行者自停
+            return request_cancel(job_id)
         revoked = request_cancel(job_id)
         if revoked:
             job_event(job_id, "cancelled", "正在开工的任务被用户停止")
@@ -2974,15 +3035,16 @@ class Handler(BaseHTTPRequestHandler):
                 job_id = (json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}).get("id", "")
             except (ValueError, json.JSONDecodeError):
                 job_id = ""
-            # 延期中（没有运行中的线程）也要能停：不抹掉唤醒时间就会被自动复活
-            cancelled = request_cancel(job_id) if job_id else False
+            # 延期中（没有运行中的线程）也要能停：不抹掉唤醒时间就会被自动复活。
+            # stop_job 自己会处理：排队中、本进程运行中、以及跨进程（bot 在跑）
+            # 三种情形 —— 最后一种写取消标记，执行者在阶段边界消费。
+            stopped = stop_job(job_id) if job_id else False
             defer_cancelled = _store().cancel_defer(job_id) if job_id else False
-            queued_cancelled = stop_job(job_id) if job_id else False
-            if not (cancelled or defer_cancelled or queued_cancelled):
+            if not (stopped or defer_cancelled):
                 self._json({"ok": False, "error": "任务不存在"}, 404)
                 return
             self._json({"ok": True, "deferred": defer_cancelled,
-                        "queued": queued_cancelled})
+                        "queued": stopped})
             return
         if path == "/api/archive/adopt":
             if not self._authorized():
