@@ -299,13 +299,19 @@ def _get(path: str, params: dict | None = None, *, client=None) -> dict:
         except PanError as exc:
             log.info("自动续期未成功（继续用旧 token）：%s", exc)
         res = client.get(url, params=params, headers=_headers())
+        if res.status_code != 200 and "captcha" in (res.text or ""):
+            # 被判 captcha_invalid：走一遍轮换链再打一次。
+            # 链的规则（实测）：签发时回传**上一次用过的** captcha，签出来的新
+            # captcha 带着它用才有效。所以这里要带上当前 token 去签发。
+            token, _exp = sign_captcha(f"GET:{path}", client=client)
+            res = client.get(url, params=params,
+                             headers={**_headers(), "x-captcha-token": token})
         if res.status_code != 200:
             text = res.text[:160]
             if "captcha" in text:
                 raise PanError(
-                    f"迅雷 API 要求验证码 token（captcha_invalid）："
-                    f"把浏览器 localStorage 里 captcha 开头那项的 token 填到"
-                    f"设置「迅雷 x-captcha-token」：{text}")
+                    f"迅雷 API 仍要求验证码 token（captcha_invalid）："
+                    f"轮换链对不上，需要从浏览器重新取一次 captcha：{text}")
             raise PanError(f"迅雷云盘 API {res.status_code}：{text}")
         data = res.json()
     except (httpx.HTTPError, ValueError) as exc:
@@ -461,12 +467,19 @@ def sign_captcha(action: str, *, previous: str = "", meta: dict | None = None,
         body: {client_id, action, device_id, captcha_token, meta}
 
     **关键**：`captcha_token` 要回传**上一次用过的** token（首次传空串）——
-    服务端按轮换链校验。实测：回传旧 token 签发出来的才能通过写操作；
-    传空串签发的会被判 captcha_invalid（读操作反而都能过，所以容易误判为可用）。
+    服务端按轮换链校验。实测（2026-10-24）：回传旧 token 签发出来的能通过
+    （列目录 200），传空串签发的会被判 captcha_invalid（400）。
+
+    所以签发成功要把新 token **记下来**（存进设置）：它就是链上的当前节点，
+    下一次签发要回传它。以前签完就丢，链断在第一步 —— 下次回传的仍是
+    最初手工粘的那个（服务端早轮换掉了），于是列目录一直 captcha_invalid。
     """
     own = client is None
     client = client or httpx.Client(follow_redirects=True, timeout=_TIMEOUT)
-    body = {"client_id": _setting("XLPAN_CLIENT_ID").strip() or "Xqp0kJBXWhwaTpB6",
+    if not previous:
+        # 链的当前节点：上一次签发/用过的那个（存在设置里）
+        previous = _setting("XLPAN_CAPTCHA_TOKEN").strip()
+    body = {"client_id": _setting("XLPAN_CLIENT_ID").strip() or OAUTH_CLIENT_ID,
             "action": action,
             "device_id": _device_id(),
             "captcha_token": previous or "",
@@ -486,7 +499,19 @@ def sign_captcha(action: str, *, previous: str = "", meta: dict | None = None,
     token = str(data.get("captcha_token") or "")
     if not token:
         raise PanError("签发 captcha 没拿到 token")
+    _remember_captcha(token)
     return token, int(data.get("expires_in") or 0)
+
+
+def _remember_captcha(token: str) -> None:
+    """把**刚签发**的 captcha 记下来：它就是轮换链的当前节点。"""
+    if not token:
+        return
+    try:
+        from . import web as web_mod
+        web_mod.set_settings({"XLPAN_CAPTCHA_TOKEN": token})
+    except Exception as exc:                    # noqa: BLE001 记不住不该阻断主流程
+        log.warning("记下 captcha 失败：%s", exc)
 
 
 def delete_file(file_id: str, *, client=None) -> str:

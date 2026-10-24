@@ -64,6 +64,10 @@ def test_headers_carry_captcha_token_when_set(monkeypatch):
 
 
 def test_captcha_error_says_what_to_fill(monkeypatch):
+    """captcha 走不通时的提示：链对不上，让人从浏览器再取一次 captcha。
+
+    （不再让人手填设置项 —— 那是上一版的做法；现在程序自己签发并轮换。）
+    """
     _env(monkeypatch)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -71,7 +75,7 @@ def test_captcha_error_says_what_to_fill(monkeypatch):
 
     with pytest.raises(xunleipan.PanError) as err:
         xunleipan.list_files(client=client(handler))
-    assert "x-captcha-token" in str(err.value)
+    assert "captcha" in str(err.value).lower()
 
 
 def test_headers_keep_explicit_bearer(monkeypatch):

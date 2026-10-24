@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 
+import httpx
 import pytest
 
 from app import xunleipan
@@ -18,6 +19,15 @@ from app import xunleipan
 def _jwt(aud: str = "Xqp0kJBXWhwaTpB6") -> str:
     body = base64.urlsafe_b64encode(json.dumps({"aud": aud, "exp": 1792882687}).encode())
     return "eyJ." + body.rstrip(b"=").decode() + ".sig"
+
+
+def _env(monkeypatch, token="", refresh=""):
+    """给 xunleipan 的 _setting 打桩（凭据从「设置」读）。"""
+    values = {"XLPAN_TOKEN": token, "XLPAN_REFRESH_TOKEN": refresh,
+              "XLPAN_CLIENT_ID": "Xqp0kJBXWhwaTpB6", "XLPAN_DEVICE_ID": "",
+              "XLPAN_CAPTCHA_TOKEN": ""}
+    monkeypatch.setattr(xunleipan, "_setting", lambda key: values.get(key, ""))
+    return values
 
 
 CRED = json.dumps({
@@ -158,3 +168,74 @@ def test_apply_with_bad_auth_code_reports_error(monkeypatch):
                             xunleipan.PanError("invalid code")))
     out = xunleipan.apply_credentials("code=BAD")
     assert out["error"] and "授权码" in out["error"]
+
+
+# ---------------------------------------------------------------- captcha 轮换链
+
+def test_sign_captcha_remembers_the_new_token(monkeypatch):
+    """签发出来的 captcha 必须记下来：它就是链的当前节点，下次签发要回传它。
+
+    以前签完就丢，链断在第一步：下次回传的仍是最初手工粘的那个（服务端早
+    轮换掉了），于是列目录一直 captcha_invalid。
+    """
+    _env(monkeypatch)
+    saved = {}
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings",
+                        lambda u: saved.update(u) or {"ok": True, "saved": list(u)})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"captcha_token": "ck0.NEW", "expires_in": 300})
+
+    c = httpx.Client(transport=httpx.MockTransport(handler),
+                     base_url=xunleipan.SHIELD_API)
+    token, exp = xunleipan.sign_captcha("GET:/drive/v1/files", client=c)
+    assert token == "ck0.NEW" and exp == 300
+    assert saved.get("XLPAN_CAPTCHA_TOKEN") == "ck0.NEW", "新 captcha 没记下来 → 链断"
+
+
+def test_sign_captcha_sends_previous_token(monkeypatch):
+    """签发时 body 里的 captcha_token 要是链上当前节点。"""
+    _env(monkeypatch, token="eyJ.a.b")
+    monkeypatch.setattr(xunleipan, "_setting",
+                        lambda key: {"XLPAN_CAPTCHA_TOKEN": "ck0.CURRENT",
+                                     "XLPAN_CLIENT_ID": "CID",
+                                     "XLPAN_DEVICE_ID": "dev"}.get(key, ""))
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings", lambda u: {"ok": True, "saved": []})
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _j
+        seen.update(_j.loads(request.content))
+        return httpx.Response(200, json={"captcha_token": "ck0.NEW", "expires_in": 300})
+
+    c = httpx.Client(transport=httpx.MockTransport(handler),
+                     base_url=xunleipan.SHIELD_API)
+    xunleipan.sign_captcha("GET:/x", client=c)
+    assert seen["captcha_token"] == "ck0.CURRENT"
+
+
+def test_get_retries_with_captcha_when_refused(monkeypatch):
+    """读接口被判 captcha_invalid 时，自动走一遍轮换链再打一次。"""
+    _env(monkeypatch, token="eyJ.a.b")
+    monkeypatch.setattr(xunleipan, "_setting",
+                        lambda key: {"XLPAN_CAPTCHA_TOKEN": "ck0.CUR",
+                                     "XLPAN_CLIENT_ID": "CID",
+                                     "XLPAN_DEVICE_ID": "dev"}.get(key, ""))
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings", lambda u: {"ok": True, "saved": []})
+    seen_captcha = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/shield/captcha/init"):
+            return httpx.Response(200, json={"captcha_token": "ck0.NEW", "expires_in": 300})
+        if request.headers.get("x-captcha-token") == "ck0.NEW":
+            seen_captcha.append("ok")
+            return httpx.Response(200, json={"files": []})
+        return httpx.Response(400, json={"error": "captcha_invalid"})
+
+    c = httpx.Client(transport=httpx.MockTransport(handler), base_url=xunleipan.API)
+    out = xunleipan.list_files(client=c)
+    assert out == []
+    assert seen_captcha == ["ok"], "被判 captcha 后应自动走链重试一次"
