@@ -774,11 +774,6 @@
              stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
         <span class="t">订阅</span></button>
-      <button class="it" id="maint-open" type="button" title="归档维护：补刮与字段纠正、完整性检查、目录命名">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 6h16M4 12h16M4 18h10"/><path d="m16.5 16.5 1.5 1.5 3-3"/></svg>
-        <span class="t">归档维护</span></button>
       <button class="it" id="settings-open" type="button" title="设置：配额、重试、并发、刮削开关等，改了立即生效">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
@@ -849,6 +844,8 @@
         <button type="button" data-filter="video">视频</button>
         <button type="button" data-filter="image">图片</button>
       </div>
+      <button class="ghostbtn" id="maint-open" type="button"
+              title="归档维护：补刮与字段纠正、远端完整性检查、目录命名">归档维护</button>
     </div>
     <div class="tb-row filters" id="activefilters"></div>
   </div>
@@ -894,18 +891,18 @@
       <button class="ghost" id="meta-close" type="button">关闭</button>
     </div>
 
-    <!-- 四个子块：都是对「同一条归档记录」的不同侧面做体检/纠正。
-         以前是三个独立视图（元数据维护 / 归档校验 / 智能整理），侧栏占三格，
-         说的其实是同一件事：这条归档哪里不对、怎么改、远端对不对得上。 -->
+    <!-- 两个子块：都是对「同一条归档记录」做体检/纠正。
+         以前是四个（甚至三个独立视图）：元数据维护 / 归档校验 / 智能整理，
+         侧栏占三格，说的其实是同一件事：这条归档哪里不对、怎么改、远端对不对得上。
+         再砍成两块：关于「记录本身」的（元数据 + 完整性 + 附件），
+         与关于「目录名」的（收编与改名）。 -->
     <div class="panel-body">
       <div class="maint-tabs" id="maint-tabs">
-        <button type="button" data-mtab="field" class="on">字段与补刮</button>
-        <button type="button" data-mtab="check">完整性检查</button>
+        <button type="button" data-mtab="meta" class="on">元数据与完整性</button>
         <button type="button" data-mtab="name">目录命名</button>
-        <button type="button" data-mtab="attach">附件同步</button>
       </div>
-      <!-- 子块 1：字段与补刮 -->
-      <div class="maint-pane" id="maint-field">
+      <!-- 子块 1：元数据与完整性（字段 / 补刮 / 附件 / 远端核对） -->
+      <div class="maint-pane" id="maint-meta">
         <div class="meta-h">配置体检</div>
         <div class="kv" id="meta-conn"></div>
         <div class="meta-h">待补刮番号 · 点一个填进输入框</div>
@@ -925,15 +922,21 @@
                   title="把输入框里这个番号的锁定字段全部解开">解除本番号全部锁定</button>
         </div>
         <div class="notice quiet" id="meta-note-rule">
-          预览绝不改数据；「应用」只改站内记录，要动云端附件得在「附件同步」里显式同步。
+          预览绝不改数据；「应用」只改站内记录，要动云端附件得在下面显式同步。
         </div>
         <div id="meta-report"></div>
         <div id="meta-diff"></div>
-      </div>
 
-      <!-- 子块 2：完整性检查（原「归档校验」视图） -->
-      <div class="maint-pane" id="maint-check" hidden>
-        <div class="meta-h">完整性检查 <span class="badge" id="maint-check-state">未检查</span></div>
+        <div class="meta-h">附件同步到 Drive</div>
+        <div class="panel-actions">
+          <button class="ghost warnful" id="meta-sync" type="button" title="重新生成 NFO / JSON / 封面并逐文件推到 Drive">
+            同步附件到 Drive
+          </button>
+          <span class="hint" id="meta-synchint">会改动云端附件：确认后才去碰 Drive，不重传视频</span>
+        </div>
+        <div id="meta-syncout"></div>
+
+        <div class="meta-h">远端完整性 <span class="badge" id="maint-check-state">未检查</span></div>
         <div class="notice">只报告，不自动补传或删除：缺文件可能是历史上传没传完，也可能有人手工动过，
           程序不自作主张，结论交给你判断。</div>
 
@@ -957,7 +960,7 @@
         <div id="dups-list"><span class="hint">点「查重复归档」列出同番号多条记录 / 同 infohash 多份</span></div>
       </div>
 
-      <!-- 子块 3：目录命名（原「智能整理」视图） -->
+      <!-- 子块 2：目录命名（原「智能整理」视图） -->
       <div class="maint-pane" id="maint-name" hidden>
         <div class="meta-h">目录命名 <span class="badge" id="maint-name-state">未检查</span></div>
         <div class="notice quiet">只做两件事：把未分类归档按文件名认回番号、把不合规的目录名改成规范名。
@@ -970,18 +973,6 @@
         <div class="norm-list" id="norm-rename"><span class="hint">展开时自动检查</span></div>
 
         <div id="norm-out"></div>
-      </div>
-
-      <!-- 子块 4：附件同步 -->
-      <div class="maint-pane" id="maint-attach" hidden>
-        <div class="meta-h">附件同步到 Drive</div>
-        <div class="panel-actions">
-          <button class="ghost warnful" id="meta-sync" type="button" title="重新生成 NFO / JSON / 封面并逐文件推到 Drive">
-            同步附件到 Drive
-          </button>
-          <span class="hint" id="meta-synchint">会改动云端附件：确认后才去碰 Drive，不重传视频</span>
-        </div>
-        <div id="meta-syncout"></div>
       </div>
     </div>
 
@@ -2352,11 +2343,18 @@ function showView(name) {
     const el = $(id);
     if (el) el.hidden = !on;
   }
+  // 归档列表在维护视图要藏起来：两块内容不能同时占主区
+  if (!isArchive) {
+    for (const id of ("feed", "empty-slot")) {
+      const el = $(id);
+      if (el) el.hidden = true;
+    }
+  }
   // 侧栏导航高亮：只有当前视图那一项 on（add/remove，不用 toggle，兼容假 DOM）
   // queuebtn（下载队列抽屉）单独维护 on，切视图时一并清掉，避免双高亮
   const navOn = [
     ["archive-open", isArchive],
-    ["subs-open", name === "subs"], ["maint-open", name === "maint"],
+    ["subs-open", name === "subs"],
     ["settings-open", name === "settings"],
     // 队列也是视图：在这一页时侧栏同样高亮，切走就清掉（别双高亮）
     ["queuebtn", name === "queue"],
@@ -3948,7 +3946,7 @@ function metaFailedRow(code, name, why) {
 
 function openMeta() {
   showView("maint");
-  switchMaintTab("field");
+  switchMaintTab("meta");
   loadMetaStatus();
   if ($("meta-code").value.trim() || metaState.code) renderMetaDiff();
 }
@@ -3957,12 +3955,11 @@ function closeMeta() {
   setMetaHint("");
 }
 
-// 归档维护台的四个子块：字段与补刮 / 完整性检查 / 目录命名 / 附件同步。
-// 以前是三个独立视图，各自一份标题栏与导航项；合到一起后侧栏少两格，
-// 而且「这条归档到底哪里不对」不用在三个页面之间来回跳。
-const MAINT_TABS = ["field", "check", "name", "attach"];
+// 归档维护台的两个子块：元数据与完整性（字段/补刮/附件/远端核对）、目录命名。
+// 以前是四个子块、三个独立视图，侧栏占三格；合到一块后这里只有两格。
+const MAINT_TABS = ["meta", "name"];
 function switchMaintTab(tab) {
-  const want = MAINT_TABS.includes(tab) ? tab : "field";
+  const want = MAINT_TABS.includes(tab) ? tab : "meta";
   for (const t of MAINT_TABS) {
     const pane = $("maint-" + t);
     if (pane) pane.hidden = (t !== want);
@@ -3973,15 +3970,9 @@ function switchMaintTab(tab) {
   const foot = $("maint-name-foot");
   if (foot) foot.hidden = (want !== "name");
   // 子块自己带数据：切过去就顺手把该拉的拉了（原来在各自视图里手动触发）
-  if (want === "check") { renderVerifySummary(); renderVerifyList(); }
   if (want === "name") loadNormPlan();
-  if (want === "attach") renderMetaSyncHint();
+  if (want === "meta") { loadMetaStatus(); renderVerifySummary(); renderVerifyList(); }
 }
-function renderMetaSyncHint() {
-  const h = $("meta-synchint");
-  if (h) h.textContent = "会改动云端附件：确认后才去碰 Drive，不重传视频";
-}
-
 $("maint-open").addEventListener("click",
   () => $("metapanel").hidden ? openMeta() : closeMeta());
 $("meta-close").addEventListener("click", closeMeta);
@@ -4260,7 +4251,7 @@ async function loadDups() {
 
 function openHealth() {
   showView("maint");
-  switchMaintTab("check");
+  switchMaintTab("meta");
   renderVerifySummary();
   renderVerifyList();
 }

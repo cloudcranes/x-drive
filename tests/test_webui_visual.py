@@ -266,15 +266,17 @@ def test_magnet_is_not_a_local_filter():
 
 # ---------------------------------------------------------------- 13. 归档维护台（四块合一）
 
-def test_maintenance_merges_three_views_into_four_tabs():
-    """归档校验 / 智能整理 / 元数据维护 合到「归档维护」一个面板，四个子块。
+def test_maintenance_merges_into_two_tabs():
+    """归档校验 / 智能整理 / 元数据维护 合到「归档维护」一个面板，两个子块。
 
-    侧栏从 7 项减到 5 项：归档 / 下载队列 / 订阅 / 归档维护 / 设置。
+    再砍一轮：子块从 4 个（字段与补刮 / 完整性检查 / 目录命名 / 附件同步）
+    变成 2 个（元数据与完整性 / 目录命名）——关于「记录本身」的都归一块，
+    关于「目录名」的归另一块。
     """
     page = html()
     assert 'id="metapanel"' in page, "维护台面板"
     assert 'id="maint-tabs"' in page
-    for tab in ("field", "check", "name", "attach"):
+    for tab in ("meta", "name"):
         assert f'id="maint-{tab}"' in page, f"缺子块 {tab}"
         assert f'data-mtab="{tab}"' in page, f"缺子块标签 {tab}"
     # 三块内容都在维护台里
@@ -291,8 +293,20 @@ def test_maintenance_merges_three_views_into_four_tabs():
     assert "function switchMaintTab" in js
     body = js[js.index("function showView"):js.index("function showArchive")]
     assert '["metapanel", name === "maint"]' in body, "showView 要管维护台视图"
-    assert '["maint-open", name === "maint"]' in body, "进维护台时侧栏要高亮"
     assert '"normpanel"' not in body and '"healthpanel"' not in body
+
+
+def test_maintenance_entry_is_in_toolbar_not_sidebar():
+    """侧栏 5→4：维护入口挪到顶部工具条，不再占侧栏一格。"""
+    page = html()
+    assert 'id="maint-open"' in page
+    # 入口在工具条里（工具条在 side 之外）
+    tb = page[page.index('class="toolbar"'):page.index('id="activefilters"')]
+    assert 'id="maint-open"' in tb, "维护入口应在顶部工具条"
+    # 侧栏只剩 4 项
+    for i in ("archive-open", "queuebtn", "subs-open", "settings-open"):
+        assert f'id="{i}"' in page, f"缺侧栏入口 {i}"
+    assert page.count('class="it" id=') == 4, "侧栏应只剩 4 个入口"
 
 
 def test_maintenance_tabs_keep_their_actions():
@@ -305,26 +319,24 @@ def test_maintenance_tabs_keep_their_actions():
     assert "askNormalize" not in js, "旧的一键动作应已移除"
 
 
-def test_settings_has_six_tabs():
-    """设置页子标签 12 → 6：合并成 存储/下载/刮削/归档/数据源/界面。
+def test_settings_has_four_tabs():
+    """设置页子标签 12 → 6 → 4：存储 / 下载 / 刮削 / 内容。
 
-    以前 12 个标签，每个只放两三项，翻起来比设置本身还费劲。
+    「归档回收」与「数据源」合成「内容」（内容从哪来、留多久）；
+    「面板」「其它」那两项本来就与界面无关，归位到「下载」。
     """
     from app import settings as settings_mod
     groups = {spec.get("group", "其它") for spec in settings_mod.SETTINGS_SPEC.values()}
-    assert groups == {"存储", "下载", "刮削", "归档", "数据源", "界面"}, groups
+    assert groups == {"存储", "下载", "刮削", "内容"}, groups
 
 
-def test_sidebar_has_five_entries():
-    """侧栏 7 → 5：归档 / 下载队列 / 订阅 / 归档维护 / 设置。"""
+def test_sidebar_has_four_entries():
+    """侧栏 7 → 5 → 4：归档 / 下载队列 / 订阅 / 设置。"""
     page = html()
-    for i in ("archive-open", "queuebtn", "subs-open", "maint-open", "settings-open"):
+    for i in ("archive-open", "queuebtn", "subs-open", "settings-open"):
         assert f'id="{i}"' in page, f"缺侧栏入口 {i}"
     for gone in ("norm-btn", "health-open", "metatool-open"):
         assert f'id="{gone}"' not in page, f"旧侧栏入口 {gone} 还在"
-    js = script(page)
-    body = js[js.index("function showView"):js.index("function showArchive")]
-    assert '"maint-open"' in body
 
 
 def test_normalize_actions_live_outside_scroll_area():

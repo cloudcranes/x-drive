@@ -139,7 +139,7 @@ def test_meta_failed_row_retries_single_attachment(js):
 
 def test_health_panel_dom_exists(html):
     """完整性检查那块现在是「归档维护」的一个子块，不再是独立面板。"""
-    for hook in ('id="maint-check"', 'id="verify-sum"', 'id="verify-limit"',
+    for hook in ('id="maint-meta"', 'id="verify-sum"', 'id="verify-limit"',
                  'id="verify-run"', 'id="verify-cancel"', 'id="verify-dups"',
                  'id="verify-prog"', 'id="verify-list"', 'id="dups-list"'):
         assert hook in html, f"缺少 {hook}"
@@ -217,8 +217,8 @@ def test_health_error_does_not_fake_completion(js):
 def test_health_is_report_only(html):
     """项目纪律：完整性检查只报告，不补传、不删除。"""
     assert "只报告，不自动补传或删除" in html
-    start = html.index('id="maint-check"')
-    panel = html[start:start + 3000]
+    start = html.index('id="maint-meta"')
+    panel = html[start:start + 4000]
     for bad in ("删除远端", "补传", "自动修复", "清理远端"):
         # 「不自动补传」这类否定说明是允许的，按钮文案不允许
         assert not re.search(r'<button[^>]*>[^<]*' + bad, panel), f"检查面板出现危险按钮：{bad}"

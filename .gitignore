@@ -3,3 +3,14 @@ do_*.py
 xl_*.js
 xl_index.html
 *.b64
+
+# 运行时与开发产物：不该进仓库
+.venv/
+.data/
+.dsh-progress/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/
+.env
+.env.local

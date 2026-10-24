@@ -85,10 +85,10 @@ def test_env_value_also_counts_when_bound(bound, monkeypatch):
 
 
 def test_settings_group_is_exposed_for_data_sources():
-    """设置面板要能看到这些项（分组「数据源」），否则用户还是找不到。"""
+    """设置面板要能看到这些项（分组「内容」，原「数据源」），否则用户还是找不到。"""
     keys = ("METATUBE_URL", "METATUBE_TOKEN", "METATUBE_PROXY", "METATUBE_TIMEOUT",
             "JAVBUS_BASE", "JAVBUS_TIMEOUT", "META_USE_JAVBUS")
     for key in keys:
         spec = settings_mod.SETTINGS_SPEC[key]
-        assert spec["group"] == "数据源", key
+        assert spec["group"] == "内容", key
         assert spec["label"], key
