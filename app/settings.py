@@ -115,6 +115,14 @@ SETTINGS_SPEC: dict[str, dict] = {
                  "note": "同一页这么久内只打一次上游，翻页不会把对方打疼"},
     "WALL_ROWS": {"type": "int", "default": 2, "group": "首页",
                   "label": "首屏显示几行", "note": "一行约 6 张，按窗口宽度自动增减"},
+    # ── 图片本地缓存：封面 / 截图取到过就落盘，之后不再请求外网
+    #    图床握手不稳（同一张图连打 5 次会有 2 次超时），不缓存就是一半「无封面」。
+    "IMG_CACHE_MB": {"type": "float", "default": 200.0, "group": "首页",
+                     "label": "图片缓存上限 (MB)",
+                     "note": "0 = 不限；超了从最久没用的开始删。缓存目录见下面一行"},
+    "IMG_CACHE_DIR": {"type": "str", "default": "", "group": "首页",
+                      "label": "图片缓存目录",
+                      "note": "留空 = <data>/covers（随 ./data 一起备份）"},
     # ── 存储：归档往哪儿放。默认还是 rclone；切到 openlist / clouddrive2 之后
     #    网页改完下一次上传就生效（连接实例会按配置指纹重建）。
     "STORAGE_BACKEND": {"type": "str", "default": "rclone", "group": "存储",

@@ -31,7 +31,7 @@ from uuid import uuid4
 
 import httpx
 
-from . import (backlog, cleanup, codes, core, diskspace, fetcher, meta, metadata, metatube,
+from . import (backlog, cleanup, codes, core, diskspace, fetcher, imgcache, meta, metadata, metatube,
                notify, pipeline, preview, retry, settings as settings_mod, sources, storage,
                store, subscribe, wall, workspace, xunlei)
 
@@ -274,6 +274,22 @@ def storage_view() -> dict:
     except Exception as exc:
         log.warning("读存储状态失败：%s", exc)
         return {"ok": False, "error": str(exc)[:200]}
+
+
+def image_cache_view() -> dict:
+    """图片缓存的现状（面板展示 + 清空入口用）。"""
+    info = imgcache.stats()
+    info["ok"] = True
+    info["limit_mb"] = round(img_cache_max_bytes() / 1048576, 1) if img_cache_max_bytes() else 0
+    return info
+
+
+def image_cache_clear(confirm: bool = False) -> dict:
+    """清空本地图片缓存。缓存是纯派生数据，删了只会让下次重新取图。"""
+    if not confirm:
+        return {"ok": True, **imgcache.stats(), "hint": "需要 confirm=true 才会清空"}
+    result = imgcache.clear()
+    return {"ok": True, **result, "after": imgcache.stats()}
 
 
 def wall_feed(page: int = 1, which: str = "") -> dict:
@@ -534,46 +550,20 @@ def local_disk_inventory() -> dict:
     }
 
 
-# ── 图片代理：白名单 + 磁盘缓存
+# ── 图片代理：白名单 + 本地缓存（缓存的细节都在 app/imgcache.py）
 IMG_HOSTS = ("whatslink.info", "www.whatslink.info", "jdbstatic.com", "javbus.com",
              "www.javbus.com", "pics.dmm.co.jp", "awsimgsrc.dmm.co.jp")
 IMG_TIMEOUT = 6.0
 IMG_ATTEMPTS = 3
-# 缓存目录跟 state 放一起（随 ./data 一起备份），一张图一个文件，扩展名带 ctype
-COVERS = os.getenv("COVER_CACHE", str(Path(STATE).parent / "covers"))
-_cover_lock = threading.Lock()
 
 
-def _cover_paths(url: str) -> tuple[Path, Path]:
-    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
-    base = Path(COVERS) / digest[:2]
-    return base / (digest + ".bin"), base / (digest + ".type")
-
-
-def _cover_get(url: str) -> tuple[bytes, str] | None:
-    """命中缓存就返回 (字节, ctype)。**任何异常都当没命中**：缓存坏了不该让图挂掉。"""
-    data_path, type_path = _cover_paths(url)
+def img_cache_max_bytes() -> int:
+    """缓存上限（字节）。设置里 0 = 不限。"""
     try:
-        blob = data_path.read_bytes()
-        ctype = type_path.read_text(encoding="utf-8").strip() or "image/jpeg"
-    except OSError:
-        return None
-    return (blob, ctype) if blob else None
-
-
-def _cover_put(url: str, data: bytes, ctype: str) -> None:
-    """写缓存。失败只记日志：拿不到图的问题比写不进缓存严重得多。"""
-    if not data:
-        return
-    data_path, type_path = _cover_paths(url)
-    try:
-        data_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = data_path.with_suffix(".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(data_path)
-        type_path.write_text(ctype or "image/jpeg", encoding="utf-8")
-    except OSError as exc:
-        log.warning("写封面缓存失败：%s", exc)
+        mb = float(get_setting("IMG_CACHE_MB") or 0)
+    except (TypeError, ValueError):
+        mb = 0
+    return int(mb * 1024 * 1024) if mb > 0 else 0
 
 
 CANCEL: dict[str, threading.Event] = {}
@@ -3055,6 +3045,18 @@ class Handler(BaseHTTPRequestHandler):
             updates = payload.get("updates") or payload.get("settings") or {}
             self._json(set_settings(updates))
             return
+        if path == "/api/images/clear":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            self._json(image_cache_clear(bool(payload.get("confirm"))))
+            return
         if path == "/api/storage/test":
             if not self._authorized():
                 self._drain()
@@ -3221,6 +3223,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/cleanup/preview":
             self._json({"ok": True, **build_cleanup_plan(dry_run=True)})
             return
+        if path == "/api/images":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            self._drain()
+            self._json(image_cache_view())
+            return
         if path == "/api/wall":
             query = parse_qs(urlsplit(self.path).query)
             page = int((query.get("page") or ["1"])[0] or 1)
@@ -3256,9 +3266,9 @@ class Handler(BaseHTTPRequestHandler):
         if not url or not any(host == h or host.endswith("." + h) for h in IMG_HOSTS):
             self._send(400, b"bad proxy url", "text/plain; charset=utf-8")
             return
-        cached = _cover_get(url)
+        cached = imgcache.get(url)
         if cached:
-            data, ctype = cached
+            data, ctype, _path = cached
             self._send(200, data, ctype, {"Cache-Control": "public, max-age=86400"})
             return
         referer = ("https://whatslink.info/" if "whatslink" in host
@@ -3274,7 +3284,11 @@ class Handler(BaseHTTPRequestHandler):
                 with urllib.request.urlopen(req, timeout=IMG_TIMEOUT) as resp:
                     data = resp.read(4 * 1024 * 1024)
                     ctype = resp.headers.get("Content-Type") or "image/jpeg"
-                _cover_put(url, data, ctype)
+                imgcache.put(url, data, ctype)
+                # 存完顺手修剪一次上限（删不掉也无所谓，取图不能被维护动作搞挂）
+                limit = img_cache_max_bytes()
+                if limit:
+                    imgcache.trim(limit)
                 self._send(200, data, ctype, {"Cache-Control": "public, max-age=86400"})
                 return
             except urllib.error.HTTPError as exc:

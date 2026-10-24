@@ -4217,6 +4217,8 @@ async function loadSettings() {
       // 存储分区最上面一行：当前后端 + 根目录 + 「测试连接」。
       // 以前改了地址要等到下一次上传才知道通不通，现在点点就能验。
       if (group === "存储") pane.append(storageStatusRow());
+      // 首页分区最上面一行：图片缓存占了多少 + 「清空缓存」
+      if (group === "首页") pane.append(imageCacheRow());
       for (const [key, it] of groups[group]) pane.append(settingsRow(key, it));
       list.append(pane);
     });
@@ -4298,6 +4300,63 @@ function applyStorageScope() {
     const badge = tab.querySelector(".n");
     if (badge) badge.textContent = String(n);
   }
+}
+
+// 图片缓存：占了多少张、多大、在哪，以及一键清空。
+// 这些图是纯派生数据（取到过就落盘），删了只是下次重新取，所以敢给直连按钮。
+function imageCacheRow() {
+  const row = el("div", "kvrow setting");
+  const nm = el("span", "nm", "本地图片缓存");
+  nm.title = "封面与截图取到过就存在本地，之后不再请求外网";
+  row.append(nm);
+  const val = el("span", "sval wide svalread", "读取中…");
+  row.append(val);
+  const btn = el("button", "ghost", "清空缓存");
+  btn.type = "button";
+  btn.title = "删掉已缓存的封面/截图（只影响下一次取图，不动归档）";
+  const hint = el("span", "hint", "");
+  btn.addEventListener("click", async () => {
+    if (!confirm("清空本地图片缓存？\n\n只是删掉缓存的封面/截图，下次看图会重新下载。")) return;
+    btn.disabled = true;
+    hint.className = "hint";
+    hint.textContent = "清空中…";
+    try {
+      const d = await subsApi("/api/images/clear", {confirm: true});
+      if (!d || !d.ok) throw new Error((d && d.error) || "清空失败");
+      hint.textContent = `已清 ${d.removed ?? 0} 个文件，释放 ${mbText(d.bytes)}`;
+      hint.className = "hint ok";
+      refreshImageCache(val);
+    } catch (e) {
+      hint.textContent = "清空失败：" + (e.message || e);
+      hint.className = "hint err";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  row.append(btn);
+  row.append(hint);
+  const note = el("div", "why",
+    "封面与截图取到过就落盘（目录见设置里的「图片缓存目录」），之后不再请求外网。");
+  row.append(note);
+  refreshImageCache(val);
+  return row;
+}
+
+function mbText(bytes) {
+  const n = Number(bytes || 0);
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + "MB";
+  if (n >= 1024) return (n / 1024).toFixed(0) + "KB";
+  return n + "B";
+}
+
+function refreshImageCache(val) {
+  if (!val) return;
+  subsApi("/api/images").then(d => {
+    if (!d || !d.ok) { val.textContent = "读取失败"; return; }
+    const limit = d.limit_mb ? ` / 上限 ${d.limit_mb}MB` : "";
+    val.textContent = `${d.files} 张 · ${mbText(d.bytes)}${limit} · ${d.dir}`;
+    val.title = d.dir;
+  }).catch(() => { val.textContent = "读取失败"; });
 }
 
 function storageStatusRow() {

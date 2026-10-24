@@ -390,22 +390,6 @@ def test_api_wall_never_breaks_the_page(server, monkeypatch):
 
 # ---------------------------------------------------------------- 封面缓存
 
-def test_cover_cache_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setattr(web, "COVERS", str(tmp_path / "covers"))
-    assert web._cover_get("http://x/1.jpg") is None
-    web._cover_put("http://x/1.jpg", b"abc", "image/jpeg")
-    assert web._cover_get("http://x/1.jpg") == (b"abc", "image/jpeg")
-
-
-def test_cover_cache_survives_broken_files(tmp_path, monkeypatch):
-    """缓存坏了当没命中（重新去取），不能让封面直接 500。"""
-    monkeypatch.setattr(web, "COVERS", str(tmp_path / "covers"))
-    data_path, type_path = web._cover_paths("http://x/2.jpg")
-    data_path.parent.mkdir(parents=True, exist_ok=True)
-    data_path.write_bytes(b"")            # 空文件 = 上次没写完
-    assert web._cover_get("http://x/2.jpg") is None
-
-
 def test_proxy_rejects_unknown_host(server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         get(server + "/proxy?u=https%3A%2F%2Fevil.example.com%2Fa.jpg")
@@ -414,9 +398,9 @@ def test_proxy_rejects_unknown_host(server):
 
 def test_proxy_serves_from_cache(server, tmp_path, monkeypatch):
     """命中缓存就不再打上游：图床握手不稳，一张图只该成功取一次。"""
-    monkeypatch.setattr(web, "COVERS", str(tmp_path / "covers"))
+    monkeypatch.setenv("COVER_CACHE", str(tmp_path / "covers"))
     url = "https://www.javbus.com/pics/thumb/cached.jpg"
-    web._cover_put(url, b"\xff\xd8JPEG", "image/jpeg")
+    web.imgcache.put(url, b"\xff\xd8JPEG", "image/jpeg")
     real = urllib.request.urlopen
     called = []
 
@@ -432,3 +416,39 @@ def test_proxy_serves_from_cache(server, tmp_path, monkeypatch):
     resp = get(server + "/proxy?u=" + urllib.parse.quote(url, safe=""))
     assert resp.status == 200 and resp.read() == b"\xff\xd8JPEG"
     assert called == []
+
+
+# ---------------------------------------------------------------- 图片缓存接口
+
+def test_api_images_reports_usage(server, tmp_path, monkeypatch):
+    monkeypatch.setenv("COVER_CACHE", str(tmp_path / "covers"))
+    web.imgcache.put("https://www.javbus.com/pics/thumb/a.jpg", b"z" * 2048, "image/jpeg")
+    data = json.loads(get(server + "/api/images").read())
+    assert data["ok"] is True and data["files"] == 1
+    assert data["bytes"] == 2048 and data["dir"].endswith("covers")
+    assert "limit_mb" in data
+
+
+def test_api_images_clear_needs_confirm(server, tmp_path, monkeypatch):
+    monkeypatch.setenv("COVER_CACHE", str(tmp_path / "covers"))
+    web.imgcache.put("https://www.javbus.com/pics/thumb/b.jpg", b"z" * 10, "image/jpeg")
+    status, body = _post_json(server + "/api/images/clear", {})
+    assert status == 200 and "confirm" in body["hint"]
+    assert web.imgcache.stats()["files"] == 1, "没 confirm 不许清"
+
+
+def test_api_images_clear(server, tmp_path, monkeypatch):
+    monkeypatch.setenv("COVER_CACHE", str(tmp_path / "covers"))
+    web.imgcache.put("https://www.javbus.com/pics/thumb/c.jpg", b"z" * 10, "image/jpeg")
+    status, body = _post_json(server + "/api/images/clear", {"confirm": True})
+    assert status == 200 and body["removed"] == 1
+    assert body["after"]["files"] == 0
+
+
+def test_images_endpoints_need_auth(server, monkeypatch):
+    monkeypatch.setattr(web, "AUTH", "u:p")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        get(server + "/api/images")
+    assert exc.value.code == 401
+    status, body = _post_json(server + "/api/images/clear", {"confirm": True})
+    assert status == 401 and body["ok"] is False

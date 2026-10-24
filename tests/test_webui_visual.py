@@ -422,3 +422,12 @@ def test_wall_hidden_when_off_or_empty():
     js = script(html())
     assert "wallState.items.length > 0 && !wallState.off" in js
     assert "if (d && d.off) { wallState.off = true; slot.hidden = true; return; }" in js
+
+
+def test_home_settings_show_image_cache_row():
+    """图片缓存占了多少、在哪、能清空 —— 缓存是派生数据，敢给直连按钮。"""
+    js = script(html())
+    assert "function imageCacheRow()" in js
+    assert 'subsApi("/api/images/clear", {confirm: true})' in js
+    assert 'if (group === "首页") pane.append(imageCacheRow());' in js
+    assert "function mbText(" in js
