@@ -206,14 +206,16 @@ def list_files(parent_id: str = "", limit: int = 100, *, client=None,
                trashed: bool = False) -> list[dict]:
     """列一个目录（不给 parent_id 就是网盘根）。返回 [{id,name,kind,phase,trashed}]。
 
-    trashed=True 时列的是**回收站**（实测 GET /drive/v1/files?trashed=true 返回
-    回收站条目，CD2 视图里看不到这些）。
+    trashed=True 时列的是**回收站**。注意过滤参数是
+    `filters={"trashed":{"eq":true}}` —— 传 `trashed=true` 或 `filter=trash`
+    都会被**静默忽略**（实测四种参数形态里只有 filters 生效），返回的仍是
+    根目录的全量条目：照着它删会误伤活目录。
     """
     params: dict = {"limit": limit}
     if parent_id:
         params["parent_id"] = parent_id
     if trashed:
-        params["trashed"] = "true"
+        params["filters"] = '{"trashed":{"eq":true}}'
     data = _get("/drive/v1/files", params, client=client)
     out = []
     for item in data.get("files") or []:

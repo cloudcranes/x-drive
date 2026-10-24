@@ -235,6 +235,8 @@ def test_sign_captcha_posts_contract(monkeypatch):
 
 
 def test_list_files_trashed_flag(monkeypatch):
+    """回收站过滤必须用 filters（实测 trashed=true / filter=trash 都被静默忽略，
+    照着那种列表删会误伤活目录）。"""
     _env(monkeypatch)
     seen = {}
 
@@ -243,7 +245,8 @@ def test_list_files_trashed_flag(monkeypatch):
         return httpx.Response(200, json={"files": []})
 
     xunleipan.list_files(trashed=True, client=client(handler))
-    assert seen.get("trashed") == "true"
+    assert seen.get("filters") == '{"trashed":{"eq":true}}'
+    assert "trashed" not in seen, "trashed=true 会被服务端忽略，必须用 filters"
 
 
 def test_delete_file_rotates_captcha(monkeypatch):
