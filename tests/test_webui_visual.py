@@ -111,8 +111,28 @@ def test_modal_close_button_has_room_for_text():
 def test_queue_keeps_scroll_position_on_poll():
     js = script(html())
     body = js[js.index("async function loadJobs"):js.index("// ── 任务时间线")]
-    assert "scrollTop" in body, "轮询重建队列时要保留滚动位置"
-    assert body.count("box.scrollTop = keepTop") >= 2, "空队列与有队列两条路径都要还原"
+    assert "scrollTop" in body, "轮询更新队列时要保留滚动位置"
+    assert "box.scrollTop = keepTop" in body
+
+
+def test_queue_poll_is_incremental_not_full_rebuild():
+    """3 秒一次的轮询不能整块重绘：那是「迅雷面板一直在闪」的根因。
+
+    整块清空再重建会先抹掉「迅雷面板」那块、等 /api/xunlei 回来才重现，
+    中间有一帧空白；顺带丢掉 hover、展开的时间线、滚动锚点。
+    """
+    js = script(html())
+    assert "function renderQueueBlock(" in js
+    assert "const QUEUE_NODES = new Map()" in js
+    # 内容没变就复用节点
+    assert "if (old && old.sig === item.sig)" in js
+    # 队列块里不能再出现整块清空
+    body = js[js.index("async function loadJobs"):js.index("// ── 任务时间线")]
+    assert 'box.textContent = ""' not in body, "队列轮询不许整块清空"
+    # 迅雷面板也要增量（它才是闪得最明显的一块）
+    panel = js[js.index("async function appendPanelTasks"):js.index("// 队列增量渲染")]
+    assert "renderQueueBlock(box, panelItems" in panel
+    assert "box.append(" not in panel, "面板任务要按签名复用，不能每次全量 append"
 
 
 # ---------------------------------------------------------------- 8. 视图切换
@@ -450,3 +470,11 @@ def test_wall_badge_falls_back_to_rating():
     """javdb 的第一条标签是评分（★4.29）：没有高清/字幕标记时把评分露出来。"""
     js = script(html())
     assert '|| tags.find(t => t.startsWith("★"))' in js
+
+
+def test_render_queue_block_removes_rebuilt_node():
+    """内容变了要先把旧节点摘掉：否则同一 key 覆盖映射，旧节点留在 DOM 里成残影。"""
+    js = script(html())
+    body = js[js.index("function renderQueueBlock"):js.index("async function loadJobs")]
+    assert "if (old) old.node.remove();" in body
+    assert 'key.startsWith(scope)' in body, "清理必须按区限定，否则两次渲染互相删"

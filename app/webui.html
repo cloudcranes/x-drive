@@ -2588,20 +2588,12 @@ function jobNode(j) {
 
   const bar = el("div", "jbar");
   const fill = el("i");
-  fill.style.width = (j.stage === "done" ? 100 : (j.percent || 0)) + "%";
   bar.append(fill);
   node.append(bar);
 
   const meta = el("div", "jmeta");
-  const bits = [];
-  if (ACTIVE.has(j.stage) && j.downloaded) bits.push(gb(j.downloaded) + " 已落盘");
-  if (ACTIVE.has(j.stage) && j.percent) bits.push((j.percent).toFixed(0) + "%");
-  if (j.speed) bits.push((j.speed / 1048576).toFixed(1) + "MB/s");
-  if (j.stage === "done" && j.link) bits.push("已上传");
-  // 排队中的任务：把位置和还差多少空间说清楚，否则只看到「等空间」不知道在等什么
-  if (j.stage === "queued" && j.queued_position) bits.push(`第 ${j.queued_position} 位`);
-  if (j.error) bits.push(j.error);
-  meta.append(el("span", null, bits.join(" · ") || fmt(j.at)));
+  const text = el("span");
+  meta.append(text);
   meta.append(el("span", "sp"));
   if (j.link) {
     const a = el("a", null, "Drive ↗");
@@ -2627,6 +2619,21 @@ function jobNode(j) {
     showTl();
     tl.classList.add("on");
   }
+  // 进度条与那行字就地刷新：下载中的任务每 3 秒都有新数字，
+  // 但**不该因此重建整张卡**（重建就会闪）
+  const update = () => {
+    fill.style.width = (j.stage === "done" ? 100 : (j.percent || 0)) + "%";
+    const bits = [];
+    if (ACTIVE.has(j.stage) && j.downloaded) bits.push(gb(j.downloaded) + " 已落盘");
+    if (ACTIVE.has(j.stage) && j.percent) bits.push((j.percent).toFixed(0) + "%");
+    if (j.speed) bits.push((j.speed / 1048576).toFixed(1) + "MB/s");
+    if (j.stage === "done" && j.link) bits.push("已上传");
+    if (j.stage === "queued" && j.queued_position) bits.push(`第 ${j.queued_position} 位`);
+    if (j.error) bits.push(j.error);
+    text.textContent = bits.join(" · ") || fmt(j.at);
+  };
+  update();
+  node.updateJob = update;
   return node;
 }
 
@@ -2892,18 +2899,39 @@ async function panelControl(id, action, btn) {
 }
 
 // 迅雷面板里的任务：本程序之外下的东西也能在这里看到，不用另开 2345
-async function appendPanelTasks(box) {
+async function appendPanelTasks(box, tail) {
   let data = null;
   try {
     const r = await fetch(BASE + "/api/xunlei", authInit({cache: "no-store"}));
     if (r.ok) data = await r.json();
   } catch (e) { return; }
   const tasks = (data && data.tasks) || [];
-  if (!tasks.length) return;
-  const head = el("div", "queue-sec" + (data.error ? " err" : ""),
-                  data.error ? `迅雷面板不可用：${data.error}` : "迅雷面板");
-  box.append(head);
+  if (!tasks.length) {
+    // 面板清空了：把上一轮的节点收掉（renderQueueBlock 传空列表即按 scope 清理）
+    renderQueueBlock(box, [], "xl:", tail);
+    return;
+  }
+  const panelItems = [{
+    key: "xl:head",
+    sig: queueSig(["head", data.error || ""]),
+    build: () => el("div", "queue-sec" + (data.error ? " err" : ""),
+                    data.error ? `迅雷面板不可用：${data.error}` : "迅雷面板"),
+  }];
   for (const t of tasks.slice(0, 20)) {
+    panelItems.push({
+      key: "xl:" + t.id,
+      // 同上：phase/name 决定结构（按钮不一样），percent/speed 只改字
+      sig: queueSig(["xl", t.name, t.phase, t.error ? 1 : 0]),
+      build: () => panelTaskNode(t),
+      update: node => node.updatePanel && node.updatePanel(),
+    });
+  }
+  renderQueueBlock(box, panelItems, "xl:", tail);
+}
+
+// 一条迅雷面板任务（从 appendPanelTasks 里提出来，便于按签名复用）
+function panelTaskNode(t) {
+  {
     const node = el("div", "job" + (t.phase === "PHASE_TYPE_ERROR" ? " failed" : ""));
     const top = el("div", "jtop");
     top.append(el("span", "jcode", t.name || t.id));
@@ -2928,16 +2956,73 @@ async function appendPanelTasks(box) {
     node.append(top);
     const bar = el("div", "jbar");
     const fill = el("i");
-    fill.style.width = Math.max(0, Math.min(100, t.percent)) + "%";
     bar.append(fill);
     node.append(bar);
-    const bits = [];
-    if (t.percent) bits.push(t.percent.toFixed(0) + "%");
-    if (t.speed) bits.push((t.speed / 1048576).toFixed(1) + "MB/s");
-    if (t.error) bits.push(t.error);
-    node.append(el("div", "jmeta", bits.join(" · ") || "—"));
-    box.append(node);
+    const meta = el("div", "jmeta");
+    node.append(meta);
+    const update = () => {
+      fill.style.width = Math.max(0, Math.min(100, Number(t.percent) || 0)) + "%";
+      const bits = [];
+      if (t.percent) bits.push(Number(t.percent).toFixed(0) + "%");
+      if (t.speed) bits.push((t.speed / 1048576).toFixed(1) + "MB/s");
+      if (t.error) bits.push(t.error);
+      meta.textContent = bits.join(" · ") || "—";
+    };
+    update();
+    node.updatePanel = update;
+    return node;
   }
+}
+
+// 队列增量渲染：3 秒一次的轮询不能整块重建。
+//
+// 以前是 `box.textContent = ""` 再全量 append，于是每 3 秒——
+//   · 所有卡片被销毁重建（正在看的「时间线」展开状态靠 tlOpen 勉强保住，
+//     但按钮的 :active / hover、图片解码、滚动锚点全丢）；
+//   · 「迅雷面板」那一块要先被清掉、再等 /api/xunlei 回来才重新出现，
+//     中间有一帧空白 —— 看起来就是整块在闪。
+// 现在按 key(=任务 id) 与 sig(=这条数据的内容指纹) 复用节点：
+// 内容没变的卡片原样留着，只重排顺序；内容变了的才重建。
+const QUEUE_NODES = new Map();     // key -> {sig, node}
+
+function queueSig(parts) {
+  return parts.join("~");
+}
+
+// items: [{key, sig, build}]；builder 只在需要时调用
+function renderQueueBlock(box, items, scope, after) {
+  const seen = new Set();
+  let cursor = after || null;        // 已经放好的最后一个节点
+  for (const item of items) {
+    seen.add(item.key);
+    const old = QUEUE_NODES.get(item.key);
+    let entry;
+    if (old && old.sig === item.sig) {
+      // 结构没变：复用节点。进度/速度这类「只改内容」的字段交给 update 原地改，
+      // 不重建 —— 否则下载中的任务每 3 秒换一个新节点，看着就是整块在闪。
+      entry = old;
+      if (item.update) item.update(entry.node);
+    } else {
+      // 结构变了：先把旧节点摘掉，否则新节点插进去后旧的还留在 DOM 里
+      // （同一个 key 覆盖了映射，清理循环再也找不到它 → 残影）
+      if (old) old.node.remove();
+      entry = {sig: item.sig, node: item.build()};
+      if (item.update) item.update(entry.node);
+      QUEUE_NODES.set(item.key, entry);
+    }
+    // insertBefore 会「移动」已存在的节点，不需要先移除 —— 这是不闪的关键
+    const anchor = cursor ? cursor.nextSibling : box.firstChild;
+    if (anchor !== entry.node) box.insertBefore(entry.node, anchor);
+    cursor = entry.node;
+  }
+  // 只清掉本区内这次不再出现的（任务被清掉/删记录）。
+  // 必须按 scope 限定：队列和迅雷面板分两次渲染，否则第二次会把第一次的节点全删了。
+  for (const [key, entry] of [...QUEUE_NODES]) {
+    if (!key.startsWith(scope) || seen.has(key)) continue;
+    entry.node.remove();
+    QUEUE_NODES.delete(key);
+  }
+  return cursor;
 }
 
 async function loadJobs() {
@@ -2962,21 +3047,38 @@ async function loadJobs() {
     if (qhint) qhint.textContent = bad ? `${bad} 个失败，点任务上的「时间线」看原因` : "";
 
     const box = $("jobs");
-    // 队列每 3 秒整块重绘。不记住滚动位置的话，用户刚往下翻一屏就被拉回顶部，
-    // 多任务时根本没法看完一条失败原因。
+    // 轮询是增量的（见 renderQueueBlock）：滚动位置、展开的时间线、hover 都不丢
     const keepTop = box.scrollTop;
-    box.textContent = "";
+
+    const items = [];
     if (!lastJobs.length) {
-      const empty = el("div", "queue-empty");
-      empty.append(el("div", null, "队列是空的"));
-      empty.append(el("div", null, "新建下载后进度会显示在这里"));
-      box.append(empty);
-      await appendPanelTasks(box);
-      box.scrollTop = keepTop;
-      return;
+      items.push({
+        key: "job:__empty__",
+        sig: "empty",
+        build: () => {
+          const empty = el("div", "queue-empty");
+          empty.append(el("div", null, "队列是空的"));
+          empty.append(el("div", null, "新建下载后进度会显示在这里"));
+          return empty;
+        },
+      });
+    } else {
+      for (const j of lastJobs) {
+        items.push({
+          key: "job:" + j.id,
+          // 签名只放「会改变卡片结构」的字段（阶段、番号、有没有链接、有没有错误行）。
+          // percent / speed / downloaded 只改文字与进度条宽度，走 update 原地刷新 ——
+          // 把它们放进签名会让下载中的卡片每 3 秒重建一次，那就是「一直在闪」。
+          sig: queueSig([j.stage, j.code, j.name, j.link, j.error ? 1 : 0,
+                         j.stage === "queued" ? (j.queued_position ? 1 : 0) : 0,
+                         tlOpen.has(j.id) ? 1 : 0]),
+          build: () => jobNode(j),
+          update: node => node.updateJob && node.updateJob(),
+        });
+      }
     }
-    for (const j of lastJobs) box.append(jobNode(j));
-    await appendPanelTasks(box);
+    const tail = renderQueueBlock(box, items, "job:");
+    await appendPanelTasks(box, tail);
     box.scrollTop = keepTop;
 
     // 有任务从进行中变成完成，顺手刷新一次列表
