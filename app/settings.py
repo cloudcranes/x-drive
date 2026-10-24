@@ -159,6 +159,10 @@ SETTINGS_SPEC: dict[str, dict] = {
                             "也可填 `Bearer xxx` 完整串"},
     "XLPAN_DEVICE_ID": {"type": "str", "default": "", "group": "云盘归档",
                         "label": "迅雷 x-device-id", "note": "可选；localStorage 的 deviceid 项"},
+    "XLPAN_CAPTCHA_TOKEN": {"type": "str", "default": "", "group": "云盘归档", "secret": True,
+                            "label": "迅雷 x-captcha-token",
+                            "note": "localStorage 里 captcha 开头那项的 token；"
+                                    "风控要求，缺了 API 回 captcha_invalid"},
     # ── 存储：归档往哪儿放。默认还是 rclone；切到 openlist / clouddrive2 之后
     #    网页改完下一次上传就生效（连接实例会按配置指纹重建）。
     "STORAGE_BACKEND": {"type": "str", "default": "rclone", "group": "存储",

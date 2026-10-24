@@ -83,6 +83,9 @@ def _headers() -> dict:
     device = _device_id()
     if device:
         out["x-device-id"] = device
+    captcha = _setting("XLPAN_CAPTCHA_TOKEN").strip()
+    if captcha:
+        out["x-captcha-token"] = captcha
     return out
 
 
@@ -93,7 +96,13 @@ def _get(path: str, params: dict | None = None, *, client=None) -> dict:
     try:
         res = client.get(url, params=params, headers=_headers())
         if res.status_code != 200:
-            raise PanError(f"迅雷云盘 API {res.status_code}：{res.text[:120]}")
+            text = res.text[:160]
+            if "captcha" in text:
+                raise PanError(
+                    f"迅雷 API 要求验证码 token（captcha_invalid）："
+                    f"把浏览器 localStorage 里 captcha 开头那项的 token 填到"
+                    f"设置「迅雷 x-captcha-token」：{text}")
+            raise PanError(f"迅雷云盘 API {res.status_code}：{text}")
         data = res.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise PanError(f"迅雷云盘 API 请求失败：{exc}") from exc

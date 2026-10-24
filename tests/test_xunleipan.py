@@ -43,6 +43,33 @@ def test_headers_carry_token_clientid_device(monkeypatch):
     assert got["authorization"] == "Bearer abc123", "裸 token 自动补 Bearer"
     assert got["clientid"] == "cid-1"
     assert got["x-device-id"] == "dev-1"
+    assert "x-captcha-token" not in got, "没配就不发这个头"
+
+
+def test_headers_carry_captcha_token_when_set(monkeypatch):
+    """风控头：captcha_invalid 是实测踩到的（API 400 error_code 9）。"""
+    values = {"XLPAN_TOKEN": "t", "XLPAN_CLIENT_ID": "c",
+              "XLPAN_DEVICE_ID": "", "XLPAN_CAPTCHA_TOKEN": "cap-9"}
+    monkeypatch.setattr(xunleipan, "_setting", lambda key: values.get(key, ""))
+    got = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        got.update(dict(request.headers))
+        return httpx.Response(200, json={"files": []})
+
+    xunleipan.list_files(client=client(handler))
+    assert got["x-captcha-token"] == "cap-9"
+
+
+def test_captcha_error_says_what_to_fill(monkeypatch):
+    _env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "captcha_invalid", "error_code": 9})
+
+    with pytest.raises(xunleipan.PanError) as err:
+        xunleipan.list_files(client=client(handler))
+    assert "x-captcha-token" in str(err.value)
 
 
 def test_headers_keep_explicit_bearer(monkeypatch):
