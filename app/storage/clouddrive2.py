@@ -84,12 +84,15 @@ class CloudDrive2(Backend):
         return tuple(clean.rsplit("/", 1))            # type: ignore[return-value]
 
     # ── 目录读取
-    def _entries(self, path: str) -> list:
+    def _entries(self, path: str, *, force: bool = False) -> list:
+        """列目录。force=True 时绕过 CD2 的目录缓存（见 _entries_fresh 的说明）。"""
         p = self._p(path)
         out = []
         try:
-            stream = self.chan.call("GetSubFiles", pb.ListSubFileRequest(path=p),
-                                    pb.SubFilesReply, mode=STREAM_OUT, timeout=120.0)
+            stream = self.chan.call(
+                "GetSubFiles",
+                pb.ListSubFileRequest(path=p, forceRefresh=bool(force)),
+                pb.SubFilesReply, mode=STREAM_OUT, timeout=120.0)
             for reply in stream:
                 out.extend(reply.subFiles)
         except AuthError:
@@ -98,11 +101,34 @@ class CloudDrive2(Backend):
             raise StorageError(f"clouddrive2 列目录失败（{p}）：{exc}") from exc
         return out
 
+    def _entries_fresh(self, path: str) -> list:
+        """列目录；CD2 说「找不到」就用 forceRefresh 重试一次。
+
+        为什么需要（2026-10-24 实测）：CD2 有自己的**目录缓存**。刚
+        CreateFolder 建出来的目录，缓存里还没有 —— 紧接着 GetSubFiles 那个
+        目录，CD2 服务端会回
+            NOT_FOUND: find by path: "/迅雷云盘/我的资源/MAAN1199"
+                       not found under "/迅雷云盘/我的资源"
+        目录明明在（FindFileByPath 能查到），只是缓存没同步。
+
+        forceRefresh=True 让 CD2 绕过缓存重新解析路径。代价是一次远端
+        往返，只有在「普通读报找不到」时才用，正常路径不受影响。
+        """
+        try:
+            return self._entries(path)
+        except StorageError as exc:
+            if "not found" not in str(exc).lower() and "找不到" not in str(exc):
+                raise
+            try:
+                return self._entries(path, force=True)
+            except StorageError:
+                raise exc from None     # 强刷也失败：报原来那条，信息更准
+
     def _find(self, path: str):
         parent, name = self._split(path)
         if not name:
             return None
-        for entry in self._entries(parent):
+        for entry in self._entries_fresh(parent):
             if entry.name == name:
                 return entry
         return None
@@ -138,10 +164,10 @@ class CloudDrive2(Backend):
         return self.ensure_dir(path)
 
     def list_dirs(self, path: str) -> list[str]:
-        return [e.name for e in self._entries(path) if e.isDirectory]
+        return [e.name for e in self._entries_fresh(path) if e.isDirectory]
 
     def list_files(self, path: str) -> list[FileEntry]:
-        return [FileEntry(e.name, int(e.size or 0)) for e in self._entries(path)
+        return [FileEntry(e.name, int(e.size or 0)) for e in self._entries_fresh(path)
                 if not e.isDirectory]
 
     # ── 写入
@@ -249,19 +275,50 @@ class CloudDrive2(Backend):
     #      所以没有进度、没有任务列表、不能暂停/重试；
     #   3. 落地形态是 `toFolder/<种子名>/` 一个目录（实测 15 秒后出现，5 个文件）。
     def offline_add(self, urls: str | list[str], folder: str) -> None:
-        """提交云添加。**返回不代表成功** —— 调用方必须自己轮询目录是否真的出现。"""
+        """提交云添加。**返回不代表成功** —— 调用方必须自己轮询目录是否真的出现。
+
+        目录刚建出来就提交时，CD2 服务端可能因为**自己的目录缓存没同步**
+        而回「not found under …」（2026-10-24 实测：建完 MAAN1199 立刻提交
+        就报这个）。这时先强制刷新一次目录缓存再重试；仍不行才算真失败。
+        """
         text = "\n".join(urls) if isinstance(urls, (list, tuple)) else str(urls or "")
         text = text.strip()
         if not text:
             raise StorageError("clouddrive2 云添加失败：链接为空")
+        last: StorageError | None = None
+        for attempt in (0, 1):
+            try:
+                res = self.chan.call("AddOfflineFiles",
+                                     pb.AddOfflineFileRequest(urls=text,
+                                                             toFolder=self._p(folder)),
+                                     pb.FileOperationResult, timeout=90.0)
+            except StorageError as exc:
+                last = exc
+                msg = str(exc).lower()
+                if attempt == 0 and ("not found" in msg or "找不到" in msg):
+                    # 缓存没同步：把这一层的目录缓存强刷一遍再试
+                    self._refresh_dir_cache(folder)
+                    continue
+                raise StorageError(f"clouddrive2 云添加失败：{exc}") from exc
+            if res is not None and not res.success:
+                reason = res.errorMessage or ""
+                if attempt == 0 and ("not found" in reason.lower() or "找不到" in reason):
+                    self._refresh_dir_cache(folder)
+                    continue
+                raise StorageError(f"clouddrive2 云添加失败：{reason or 'CD2 未给原因'}")
+            return
+        raise StorageError(f"clouddrive2 云添加失败：{last or '未知原因'}")
+
+    def _refresh_dir_cache(self, path: str) -> None:
+        """让 CD2 把这一层的目录缓存作废（下次读重新解析路径）。
+
+        刷新失败不抛 —— 真正的错误由调用方重试后报出来。
+        """
         try:
-            res = self.chan.call("AddOfflineFiles",
-                                 pb.AddOfflineFileRequest(urls=text, toFolder=self._p(folder)),
-                                 pb.FileOperationResult, timeout=90.0)
-        except StorageError as exc:
-            raise StorageError(f"clouddrive2 云添加失败：{exc}") from exc
-        if res is not None and not res.success:
-            raise StorageError(f"clouddrive2 云添加失败：{res.errorMessage or 'CD2 未给原因'}")
+            self.chan.call("ForceExpireDirCache", pb.FileRequest(path=self._p(path)),
+                           Empty(), timeout=30.0)
+        except Exception as exc:                    # noqa: BLE001 刷新只是辅助手段
+            log.info("刷新 CD2 目录缓存失败（%s）：%s", path, exc)
 
     def cloud_roots(self) -> list[dict]:
         """列出「支持离线下载」的云盘（给设置页选 CLOUD_INBOX 用）。"""
