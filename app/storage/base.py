@@ -36,6 +36,14 @@ class AuthError(StorageError):
     """配置/权限问题：重试一万次也一样，直接进 retry 的 config 类。"""
 
 
+class NotFoundError(StorageError):
+    """路径不存在。
+
+    与「读失败」要分开：读一个**还不存在**的目录是正常情况（提交前的
+    快照就是这样），不是故障；读失败（网络/权限/缓存）才是问题。
+    """
+
+
 @dataclass(frozen=True)
 class FileEntry:
     """远端一个文件：名字 + 字节数。校核只比这两项。"""

@@ -24,6 +24,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .storage.base import NotFoundError
+
 log = logging.getLogger("x-drive.cloudingest")
 
 DEFAULT_POLL = 10.0
@@ -78,10 +80,22 @@ def snapshot_strict(backend, inbox: str) -> dict[str, int]:
     曾经的降级在这里出过事：列目录失败 → before={} → 之后 inbox 里既有的目录
     全被当成「新落地」，被搬走、被清掉。提交前拍不到底片就不提交 ——
     宁可这次任务失败，也不能拿着别人的目录开工。
+
+    但「目录**压根不存在**」不是读失败：任务专属收件目录
+    `<inbox>/<键>` 是**提交时才会建**的，拍快照那一刻它就是没有的
+    （MIMK-182 就是这么挂的：CD2 回 "not found under …"，被当成读失败，
+    任务在提交前就失败了）。所以：
+      · NotFoundError → 这个目录还没有，快照就是空的（真的空，不是降级）
+      · 别的读失败     → 照旧抛，不许降级
     """
     out: dict[str, int] = {}
-    for name in backend.list_dirs(inbox):       # 列目录失败：原样抛给调用方
-        out[str(name)] = -1
+    try:
+        for name in backend.list_dirs(inbox):   # 列目录失败：原样抛给调用方
+            out[str(name)] = -1
+    except NotFoundError:
+        # 这个目录还没有建 —— 快照就是空的（等提交时建出来再往里落地）。
+        # 但**只**在「目录不存在」时这么办；别的读失败照旧抛。
+        return out
     for entry in backend.list_files(inbox):
         out[str(entry.name)] = int(entry.size or 0)
     return out

@@ -25,13 +25,23 @@ from urllib.parse import quote, urlsplit
 from google.protobuf.empty_pb2 import Empty
 
 from .. import netalias
-from .base import AuthError, Backend, FileEntry, Progress, StorageError
+from .base import (AuthError, Backend, FileEntry, NotFoundError, Progress,
+                    StorageError)
 from .cd2_grpc import UNARY, STREAM_IN, STREAM_OUT, Cd2Channel
 from .proto import CloudDrive_pb2 as pb
 
 log = logging.getLogger("x-drive.storage.cd2")
 
 FINISHED, ERROR = 5, 2          # pb.Status_*：Finished / Error
+
+# CD2 报「路径不存在」的各种说法（不同版本/不同接口措辞不一样）
+_NOT_FOUND_MARKS = ("not found", "not_found", "找不到", "no such file", "不存在")
+
+
+def _is_not_found(text: str) -> bool:
+    """这段报错是不是「路径不存在」。"""
+    low = (text or "").lower()
+    return any(mark in low for mark in _NOT_FOUND_MARKS)
 
 
 def _human(size: int) -> str:
@@ -98,7 +108,17 @@ class CloudDrive2(Backend):
         except AuthError:
             raise
         except StorageError as exc:
-            raise StorageError(f"clouddrive2 列目录失败（{p}）：{exc}") from exc
+            text = str(exc)
+            # 「路径不存在」跟「读失败」要分开（2026-10-24 实测）：
+            # 提交前给还不存在的收件目录拍快照是**正常**的，CD2 会回
+            #     find by path: "..." not found under "..."
+            # 这不是故障，是那个目录还没建。抛 NotFoundError 让调用方
+            # 区分对待 —— 笼统报「列目录失败」会把正常流程变成失败任务
+            # （MIMK-182 就是这么挂的）。
+            if _is_not_found(text):
+                raise NotFoundError(
+                    f"clouddrive2 路径不存在（{p}）：{text}") from exc
+            raise StorageError(f"clouddrive2 列目录失败（{p}）：{text}") from exc
         return out
 
     def _entries_fresh(self, path: str) -> list:
@@ -115,18 +135,21 @@ class CloudDrive2(Backend):
         再带 forceRefresh 重新解析路径。只带 forceRefresh 不够 ——
         实测它读的是同一份没作废的路径缓存，仍然报找不到。
         代价是两次远端往返，但只在「普通读报找不到」时才付。
+
+        真的不存在（目录压根没建）时，重试也没用 —— 强刷后仍报找不到就
+        按「不存在」抛出去，别让调用方以为还能重试。
         """
         try:
             return self._entries(path)
-        except StorageError as exc:
-            if "not found" not in str(exc).lower() and "找不到" not in str(exc):
-                raise
+        except NotFoundError as exc:
             parent, _name = self._split(path)
             self._refresh_dir_cache(parent or path)
             try:
                 return self._entries(path, force=True)
+            except NotFoundError:
+                raise exc from None      # 强刷后还是不存在：确实没有
             except StorageError:
-                raise exc from None     # 强刷也失败：报原来那条，信息更准
+                raise exc from None
 
     def _find(self, path: str):
         parent, name = self._split(path)
