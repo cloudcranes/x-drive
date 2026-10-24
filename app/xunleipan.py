@@ -202,14 +202,47 @@ def _finish_delete(res) -> str:
     raise PanError(f"删除失败：{res.status_code} {err}")
 
 
+def untrash(file_id: str, *, client=None) -> str:
+    """把回收站里的条目恢复回去。
+
+    契约来自公开 bundle：`PATCH /drive/v1/files/{id}/untrash`，带 captcha
+    （withCaptcha=true）。写操作同样要 captcha 轮换：先打一次被拒 → 回传旧
+    token 签发新的 → 再打一次。
+    """
+    own = client is None
+    client = client or httpx.Client(follow_redirects=True, timeout=_TIMEOUT)
+    fid = str(file_id or "").strip()
+    if not fid:
+        raise PanError("缺少 file_id")
+    url = f"{API}/drive/v1/files/{quote(fid, safe='')}/untrash"
+    try:
+        res = client.patch(url, headers=_headers())
+        if res.status_code != 400 or "captcha" not in (res.text or ""):
+            return _finish_delete(res)
+        old = _setting("XLPAN_CAPTCHA_TOKEN").strip()
+        token, _exp = sign_captcha(f"PATCH:/drive/v1/files/{fid}/untrash",
+                                   previous=old, client=client)
+        res = client.patch(url, headers={**_headers(), "x-captcha-token": token})
+        if res.status_code == 400 and "captcha" in (res.text or ""):
+            raise PanError("captcha 仍被拒：轮换链对不上（浏览器里刷新一次 captcha 再试）")
+        return _finish_delete(res)
+    finally:
+        if own:
+            client.close()
+
+
 def list_files(parent_id: str = "", limit: int = 100, *, client=None,
                trashed: bool = False) -> list[dict]:
     """列一个目录（不给 parent_id 就是网盘根）。返回 [{id,name,kind,phase,trashed}]。
 
-    trashed=True 时列的是**回收站**。注意过滤参数是
-    `filters={"trashed":{"eq":true}}` —— 传 `trashed=true` 或 `filter=trash`
-    都会被**静默忽略**（实测四种参数形态里只有 filters 生效），返回的仍是
-    根目录的全量条目：照着它删会误伤活目录。
+    trashed=True 时只返回**回收站**里的条目。
+
+    注意两处坑（都是实测踩出来的）：
+      · 过滤参数是 `filters={"trashed":{"eq":true}}`；传 `trashed=true` 或
+        `filter=trash` 会被**静默忽略**，返回的仍是根目录全量；
+      · 即便用了 filters，服务端仍会把**活目录**条目一起返回（只是带
+        trashed=false 标志）。所以必须在客户端再按标志过滤一遍 ——
+        照着未过滤的列表删，会把 X-Drive 这种活目录误移进回收站。
     """
     params: dict = {"limit": limit}
     if parent_id:
@@ -219,10 +252,13 @@ def list_files(parent_id: str = "", limit: int = 100, *, client=None,
     data = _get("/drive/v1/files", params, client=client)
     out = []
     for item in data.get("files") or []:
-        out.append({"id": str(item.get("id") or ""), "name": str(item.get("name") or ""),
-                    "kind": item.get("kind") or "",
-                    "phase": str(item.get("phase") or ""),
-                    "trashed": bool(item.get("trashed"))})
+        entry = {"id": str(item.get("id") or ""), "name": str(item.get("name") or ""),
+                 "kind": item.get("kind") or "",
+                 "phase": str(item.get("phase") or ""),
+                 "trashed": bool(item.get("trashed"))}
+        if trashed and not entry["trashed"]:
+            continue                       # 活目录条目：不在回收站，跳过
+        out.append(entry)
     return out
 
 
