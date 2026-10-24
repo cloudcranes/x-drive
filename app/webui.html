@@ -527,6 +527,12 @@
   .maint-tabs button.on{color:var(--cyan); border-color:var(--cyan);
     background:rgba(34,211,238,.08)}
   .maint-pane[hidden]{display:none}
+  /* 迅雷登录的粘贴框：一整段 JSON 粘进来自动拆 */
+  .xlp-paste-row{display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    width:100%; margin-top:8px}
+  .xlp-paste{flex:1; min-width:220px; padding:6px 9px; border-radius:7px;
+    border:1px solid var(--line); background:rgba(0,0,0,.6); color:var(--text);
+    font-family:var(--mono); font-size:11.5px}
   /* 体检条：配置状态、版本、源，一格一句 */
   .kv{display:flex; flex-wrap:wrap; gap:6px 14px; font-family:var(--mono); font-size:11.5px;
     color:var(--muted); align-items:center}
@@ -4700,9 +4706,54 @@ function xlpAuthRow() {
   row.append(btn);
   row.append(renew);
   row.append(hint);
+
+  // 粘贴框：浏览器 localStorage 的 credentials_{clientid} 就是一段 JSON，
+  // 粘进来自动拆成 access_token / refresh_token / clientid（clientid 从
+  // JWT 的 aud 取），不用一个框一个框地抄。
+  const paste = el("input", "xlp-paste");
+  paste.type = "text";
+  paste.autocomplete = "off";
+  paste.spellcheck = false;
+  paste.placeholder = "粘贴 credentials 那一整段 JSON，或 access_token / refresh_token";
+  const applyBtn = el("button", "ghost", "填入");
+  applyBtn.type = "button";
+  applyBtn.title = "认出里面的凭据并写进设置（写完立刻验一次）";
+  const pasteHint = el("span", "hint", "");
+  applyBtn.addEventListener("click", async () => {
+    applyBtn.disabled = true;
+    pasteHint.className = "hint";
+    pasteHint.textContent = "写入中…";
+    try {
+      const d = await subsApi("/api/xlp/credentials", {text: paste.value});
+      if (!d) throw new Error("无响应");
+      if (d.ok) {
+        paste.value = "";
+        pasteHint.textContent = "已填入：" + (d.saved || []).join("、")
+          + (d.expires_in ? " · 凭据剩余约 " + Math.round(d.expires_in / 3600) + " 小时" : "");
+        pasteHint.className = "hint ok";
+        show({configured: true, ok: true, expires_in: d.expires_in,
+              has_refresh: d.has_refresh, detail: d.detail});
+      } else {
+        pasteHint.textContent = d.error || "写入失败";
+        pasteHint.className = "hint err";
+      }
+    } catch (e) {
+      pasteHint.textContent = e.message || String(e);
+      pasteHint.className = "hint err";
+    } finally {
+      applyBtn.disabled = false;
+    }
+  });
+  const pasteRow = el("div", "xlp-paste-row");
+  pasteRow.append(paste);
+  pasteRow.append(applyBtn);
+  pasteRow.append(pasteHint);
+  row.append(pasteRow);
+
   const note = el("div", "why",
     "账号密码直登迅雷不支持（实测 currently not supported），只能靠 refresh_token："
-    + "首次从浏览器 localStorage 的 credentials_{clientid} 抄一次，之后程序自己续。");
+    + "首次从浏览器 localStorage 的 credentials_{clientid} 抄一次，之后程序自己续。"
+    + "access_token 约 12 小时过期，配了 refresh_token 会自动续。");
   row.append(note);
   return row;
 }

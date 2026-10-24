@@ -20,6 +20,7 @@ host.docker.internal:19798）；要拿到浏览器/播放器/IDM 直接能用、
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from urllib.parse import quote
@@ -120,6 +121,94 @@ def _device_id() -> str:
     if not raw:
         return ""
     return raw.split(".", 1)[-1][:32] if "." in raw else raw[:32]
+
+
+def parse_credentials(text: str) -> dict:
+    """从一段文本里认出各种凭据，拆成设置项。
+
+    浏览器 localStorage 的 `credentials_{clientid}` 那一项就是一段 JSON：
+        {"token_type":"Bearer","access_token":"eyJ...","refresh_token":"a1....",
+         "expires_in":43200,"sub":"814926528","user_id":"814926528"}
+    粘一整段进来就能一次填齐，不必逐个框复制。
+
+    也接受只粘其中一两个值（access_token / refresh_token 各自一行）。
+    返回 {设置键: 值}，认不出来的键不出现。
+    """
+    out: dict[str, str] = {}
+    raw = (text or "").strip()
+    if not raw:
+        return out
+    # 1) 整段 JSON
+    data = None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        data = None
+    if isinstance(data, dict):
+        at = str(data.get("access_token") or "").strip()
+        rt = str(data.get("refresh_token") or "").strip()
+        if at:
+            out["XLPAN_TOKEN"] = at
+        if rt:
+            out["XLPAN_REFRESH_TOKEN"] = rt
+        # clientid：JWT 的 aud 字段就是它
+        cid = _client_id_from_jwt(at)
+        if cid:
+            out["XLPAN_CLIENT_ID"] = cid
+        return out
+    # 2) 逐行找 key=value 或裸 token
+    for line in raw.splitlines():
+        line = line.strip().strip(",").strip('"')
+        if not line:
+            continue
+        if line.startswith("access_token"):
+            out["XLPAN_TOKEN"] = line.split(":", 1)[-1].strip().strip('"')
+        elif line.startswith("refresh_token"):
+            out["XLPAN_REFRESH_TOKEN"] = line.split(":", 1)[-1].strip().strip('"')
+        elif line.startswith("clientid"):
+            out["XLPAN_CLIENT_ID"] = line.split(":", 1)[-1].strip().strip('"')
+    # 3) 裸的 JWT / a1.… 也认
+    if "XLPAN_TOKEN" not in out:
+        for token in raw.split():
+            if token.count(".") == 2 and token.startswith("eyJ"):
+                out["XLPAN_TOKEN"] = token.strip('"')
+                cid = _client_id_from_jwt(token)
+                if cid:
+                    out["XLPAN_CLIENT_ID"] = cid
+                break
+    if "XLPAN_REFRESH_TOKEN" not in out:
+        for token in raw.split():
+            if token.startswith("a1."):
+                out["XLPAN_REFRESH_TOKEN"] = token.strip('"')
+                break
+    return out
+
+
+def _client_id_from_jwt(token: str) -> str:
+    """从 JWT 的 aud 取出 clientid（迅雷的 clientid 就是 aud）。"""
+    if not token or "." not in token:
+        return ""
+    import base64
+    try:
+        seg = token.split(".")[1]
+        pad = "=" * (-len(seg) % 4)
+        aud = (json.loads(base64.urlsafe_b64decode(seg + pad)) or {}).get("aud") or ""
+        return str(aud)
+    except Exception:                            # noqa: BLE001
+        return ""
+
+
+def apply_credentials(text: str) -> dict:
+    """解析并写入凭据，返回 {saved: [...], error: str}。"""
+    parsed = parse_credentials(text)
+    if not parsed:
+        return {"saved": [], "error": "没认出任何凭据（要 access_token / refresh_token / 整段 JSON）"}
+    from . import web as web_mod
+    res = web_mod.set_settings(parsed)
+    if not res.get("ok"):
+        return {"saved": [], "error": str(res.get("failed") or "写入失败")[:200]}
+    return {"saved": list(res.get("saved") or []), "error": "",
+            "client_id": parsed.get("XLPAN_CLIENT_ID", "")}
 
 
 def _headers() -> dict:

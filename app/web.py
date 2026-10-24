@@ -795,6 +795,26 @@ def _cloud_submit(backend, job_id: str, source: str, my_inbox: str) -> dict:
     return submitted
 
 
+def xlp_apply_credentials(text: str) -> dict:
+    """把粘来的凭据（一整段 JSON 或裸 token）拆开写进设置。
+
+    浏览器 localStorage 的 `credentials_{clientid}` 就是一段 JSON，粘进来一次填齐：
+    access_token / refresh_token / clientid（clientid 从 JWT 的 aud 自动取）。
+    """
+    try:
+        out = xunleipan.apply_credentials(text or "")
+    except Exception as exc:                    # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:200]}
+    if out.get("error"):
+        return {"ok": False, "error": out["error"]}
+    # 写完立刻验一次：填错了当场就知道，不用等 12 小时后
+    state = xlp_auth_status()
+    return {"ok": bool(state.get("ok")), "saved": out.get("saved") or [],
+            "error": state.get("error") or "", "detail": state.get("detail") or "",
+            "expires_in": state.get("expires_in", 0),
+            "has_refresh": state.get("has_refresh", False)}
+
+
 def xlp_auth_status(refresh: bool = False) -> dict:
     """迅雷云盘登录状态：凭据齐不齐、token 还能用多久，要不要续期。
 
@@ -3645,6 +3665,18 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(parts.query)
             want_refresh = (qs.get("refresh", ["0"]) or ["0"])[0] in ("1", "true", "yes")
             self._json(xlp_auth_status(refresh=want_refresh))
+            return
+        if path == "/api/xlp/credentials":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 65536)) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            self._json(xlp_apply_credentials(str(payload.get("text") or "")))
             return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
