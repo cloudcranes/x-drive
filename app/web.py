@@ -11,6 +11,7 @@ import base64
 import datetime
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
@@ -34,7 +35,7 @@ import httpx
 from . import (backlog, cleanup, cloudingest, cloudorganize, codes, core, diskspace, fetcher,
                imgcache, meta, metadata, metatube, notify, pipeline, preview, retry,
                settings as settings_mod, sources, storage, store, subscribe, wall, workspace,
-               xunlei, xunleipan)
+               xlpauth, xunlei, xunleipan)
 
 log = logging.getLogger("x-drive.web")
 
@@ -3680,6 +3681,24 @@ class Handler(BaseHTTPRequestHandler):
                 payload = {}
             self._json(xlp_apply_credentials(str(payload.get("text") or "")))
             return
+        if path == "/api/xlp/login":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            sess = xlpauth.create_session()
+            base = self.headers.get("Host") or "127.0.0.1"
+            proto = "http"
+            if (self.headers.get("X-Forwarded-Proto") or "").lower() == "https":
+                proto = "https"
+            self._json({"ok": True,
+                        "url": xlpauth.auth_url(f"{proto}://{base}", sess["state"],
+                                               sess["challenge"])})
+            return
+        if path == "/xlp/callback":
+            # 授权回调页：浏览器带 code 跳回来。页面不显示任何 token。
+            self._xlp_callback(parse_qs(parts.query))
+            return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
             limit = int((parse_qs(parts.query).get("limit", ["50"]) or ["50"])[0] or 50)
@@ -3778,6 +3797,57 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, payload: dict, code: int = 200, extra: dict | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()
         self._send(code, body, "application/json; charset=utf-8", extra)
+
+    def _xlp_callback(self, qs: dict) -> None:
+        """授权回调页：拿 code 换 token，写进设置，页面只说成功/失败。
+
+        回显里**不含任何 token**：页面是给用户看的，别把凭据摆在屏幕上。
+        """
+        code = (qs.get("code", [""]) or [""])[0]
+        state = (qs.get("state", [""]) or [""])[0]
+        err = (qs.get("error", [""]) or [""])[0]
+        ok, detail = False, ""
+        if err:
+            detail = f"授权未完成：{err}"
+        elif not code:
+            detail = "回调里没有授权码"
+        else:
+            verifier = xlpauth.take_session(state)
+            if not verifier:
+                detail = "授权会话已过期或已被用过，请重新点「一键登录」"
+            else:
+                base = self.headers.get("Host") or "127.0.0.1"
+                proto = "http"
+                if (self.headers.get("X-Forwarded-Proto") or "").lower() == "https":
+                    proto = "https"
+                redirect_uri = f"{proto}://{base}/xlp/callback"
+                try:
+                    got = xunleipan.grant_authorization_code(code, redirect_uri, verifier)
+                    saved = {}
+                    if got.get("access_token"):
+                        saved["XLPAN_TOKEN"] = got["access_token"]
+                    if got.get("refresh_token"):
+                        saved["XLPAN_REFRESH_TOKEN"] = got["refresh_token"]
+                    if saved:
+                        set_settings(saved)
+                    ok = True
+                    detail = ("已登录 · access_token 与 refresh_token 都拿到了，"
+                              "之后到期会自动续")
+                except Exception as exc:        # noqa: BLE001
+                    detail = f"换 token 失败：{str(exc)[:200]}"
+        page = ("<!doctype html><html lang=zh-CN><head><meta charset=utf-8>"
+                "<title>迅雷云盘登录</title>"
+                "<style>body{background:#0b0d10;color:#e6e6e6;font:15px/1.8 system-ui;"
+                "display:grid;place-items:center;height:100vh;margin:0}"
+                ".box{max-width:520px;padding:28px 32px;border:1px solid #26313d;"
+                "border-radius:12px;background:#12161b}"
+                "h1{font-size:17px;margin:0 0 10px}"
+                ".ok{color:#22d3ee}.err{color:#f87171}p{color:#9aa4b0}"
+                "a{color:#22d3ee}</style></head><body><div class=box>"
+                f"<h1 class='{'ok' if ok else 'err'}'>{'登录成功' if ok else '登录失败'}</h1>"
+                f"<p>{html.escape(detail)}</p>"
+                "<p>可以关掉这个页面了。</p></div></body></html>")
+        self._send(200, page.encode(), "text/html; charset=utf-8")
 
     def log_message(self, fmt: str, *args) -> None:
         log.info("%s %s", self.address_string(), fmt % args)

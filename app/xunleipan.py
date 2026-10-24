@@ -37,6 +37,11 @@ API = "https://api-pan.xunlei.com"
 SHIELD_API = "https://xluser-ssl.xunlei.com"
 # token 续期端点：refresh_token → 新 access_token（实测 200，不需要 client_secret）
 AUTH_API = "https://xluser-ssl.xunlei.com/v1/auth/token"
+# 账号中心授权页：用户在这里登录，授权后带 code 跳回我们的回调地址
+OAUTH_PAGE = "https://i.xunlei.com/center/account/personal/oauth/"
+# 公开前端里硬编码的 client_secret（bundles 里明文可见）。授权码换 token 要用。
+OAUTH_CLIENT_SECRET = "Xqp0kC5LIQcyGSdKPYSzshgLKHxo"
+OAUTH_CLIENT_ID = "Xqp0kJBXWhwaTpB6"
 _TIMEOUT = 15.0
 
 
@@ -366,6 +371,53 @@ def auto_refresh(*, client=None) -> dict:
         pass
     return {"ok": True, "skipped": False, "expires_in": out.get("expires_in", 0),
             "rotated": bool(out.get("refresh_token"))}
+
+
+def grant_authorization_code(code: str, redirect_uri: str, code_verifier: str = "",
+                             *, client=None) -> dict:
+    """用授权码换 token（access_token + refresh_token 一对）。
+
+    端点与续期同一个：POST {AUTH_API}，body
+    {grant_type: "authorization_code", code, client_id, client_secret,
+     redirect_uri, code_verifier?}。
+
+    **这是唯一能一次拿到「一对」token 的通道** —— 授权码流程会同时返回
+    access_token 与 refresh_token，而 refresh_token 是**一次性**的
+    （续期即轮换），所以只在续期时用它必然断链。
+
+    授权码本身是短时效的一次性凭证：拿到就要用，过期作废。
+    """
+    if not (code or "").strip():
+        raise PanError("缺少授权码")
+    body = {"grant_type": "authorization_code",
+            "code": code.strip(),
+            "client_id": OAUTH_CLIENT_ID,
+            "client_secret": OAUTH_CLIENT_SECRET,
+            "redirect_uri": redirect_uri}
+    if code_verifier:
+        body["code_verifier"] = code_verifier
+    own = client is None
+    client = client or httpx.Client(follow_redirects=True, timeout=_TIMEOUT)
+    try:
+        res = client.post(AUTH_API, json=body,
+                          headers={"content-type": "application/json",
+                                   "clientid": OAUTH_CLIENT_ID})
+    except httpx.HTTPError as exc:
+        raise PanError(f"授权码换 token 失败：{exc}") from exc
+    finally:
+        if own:
+            client.close()
+    if res.status_code != 200:
+        raise PanError(f"授权码换 token 失败：{res.status_code} {(res.text or '')[:160]}")
+    data = res.json() or {}
+    token = str(data.get("access_token") or "")
+    if not token:
+        raise PanError("授权码换 token：响应里没有 access_token")
+    out = {"access_token": token, "expires_in": int(data.get("expires_in") or 0)}
+    rt = str(data.get("refresh_token") or "")
+    if rt:
+        out["refresh_token"] = rt
+    return out
 
 
 def sign_captcha(action: str, *, previous: str = "", meta: dict | None = None,

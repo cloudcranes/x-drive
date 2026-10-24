@@ -4659,6 +4659,9 @@ function xlpAuthRow() {
   const renew = el("button", "ghost", "立即续期");
   renew.type = "button";
   renew.title = "用 refresh_token 换新的 access_token（并把轮换后的 refresh_token 写回）";
+  const login = el("button", "ghost", "一键登录");
+  login.type = "button";
+  login.title = "打开迅雷账号中心登录，授权后自动带凭据回来（会一次给到 access + refresh）";
   const hint = el("span", "hint", "");
   const fmtLeft = sec => {
     if (!sec || sec <= 0) return "已过期";
@@ -4703,8 +4706,33 @@ function xlpAuthRow() {
   };
   btn.addEventListener("click", () => call("/api/xlp/auth", btn));
   renew.addEventListener("click", () => call("/api/xlp/auth?refresh=1", renew));
+  login.addEventListener("click", async () => {
+    login.disabled = true;
+    hint.className = "hint";
+    hint.textContent = "准备授权页…";
+    try {
+      const d = await subsApi("/api/xlp/login");
+      if (!d || !d.ok) throw new Error((d && d.error) || "没拿到授权链接");
+      hint.textContent = "已打开新窗口，登录后会自动回来";
+      hint.className = "hint";
+      const w = window.open(d.url, "_blank", "noopener");
+      if (!w) {
+        hint.textContent = "浏览器拦了弹窗，请允许后重试";
+        hint.className = "hint err";
+      } else {
+        // 授权页回来后自动刷新一次状态
+        setTimeout(() => call("/api/xlp/auth", btn), 12000);
+      }
+    } catch (e) {
+      hint.textContent = e.message || String(e);
+      hint.className = "hint err";
+    } finally {
+      login.disabled = false;
+    }
+  });
   row.append(btn);
   row.append(renew);
+  row.append(login);
   row.append(hint);
 
   // 粘贴框：浏览器 localStorage 的 credentials_{clientid} 就是一段 JSON，
@@ -4755,10 +4783,10 @@ function xlpAuthRow() {
   row.append(pasteRow);
 
   const note = el("div", "why",
-    "账号密码直登迅雷不支持（实测 currently not supported），只能靠 refresh_token："
-    + "首次从浏览器 localStorage 抄一次，之后程序自己续。"
-    + "需要两项：credentials_{clientid}（access_token + refresh_token）"
-    + "与 deviceid（形如 wdi10.…，读接口必需）—— 粘在一起也能认。");
+    "推荐「一键登录」：程序打开迅雷账号中心，登录授权后自动带一对 token 回来"
+    + "（access + refresh），之后 access_token 过期会自己续。"
+    + "也可以手动粘：localStorage 的 credentials_{clientid}（access + refresh）"
+    + "与 deviceid（形如 wdi10.…，读接口必需）。");
   row.append(note);
   return row;
 }
