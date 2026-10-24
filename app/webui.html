@@ -427,6 +427,8 @@
   .queue-empty{margin:28px 8px; text-align:center; font-size:12.5px; color:var(--dim); line-height:1.8}
   /* 「迅雷面板」那一段的标题。以前借用 .queue-empty（居中 + 28px 留白），
      在列表里像一条居中错误提示，还把上下任务撑出大段空白。 */
+  #queue-flash{color:var(--cyan); flex:none}
+  #queue-flash.err{color:var(--red)}
   .queue-sec{display:flex; align-items:center; gap:8px; margin:14px 2px 3px;
     font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
     color:var(--faint)}
@@ -998,17 +1000,21 @@
       <h3>下载队列</h3>
       <span class="badge" id="queue-stat"></span>
       <span class="hint" id="queue-hint"></span>
+      <span class="hint" id="queue-flash"></span>
       <div class="r">
-        <button class="ghostbtn" id="queue-clear" type="button" title="只清掉已完成的任务记录">
+        <button class="ghostbtn" id="queue-clear" type="button" title="清掉已完成 / 已停止的任务记录（不动文件）">
           清空已完成
+        </button>
+        <button class="ghostbtn" id="queue-clear-failed" type="button" title="清掉所有失败的任务记录（不动下载目录）">
+          清空失败
         </button>
         <button class="ghost" id="queue-close" type="button" title="回到归档列表">返回归档</button>
       </div>
     </div>
     <div class="queue-list" id="jobs"></div>
     <div class="queue-foot">
-      <button class="ghostbtn" id="panel-clean" type="button" title="清理迅雷面板里多天前的失败任务记录">
-        清理失败任务
+      <button class="ghostbtn" id="panel-clean" type="button" title="清掉迅雷面板里所有失败任务记录（含今天，不动已下载文件）">
+        清理面板失败
       </button>
     </div>
   </section>
@@ -2446,6 +2452,8 @@ const STAGE_TEXT = {queued: "等空间", downloading: "下载中", organizing: "
   uploading: "上传中", deferred: "额度等待", done: "完成", cancelled: "已停止",
   failed: "失败"};
 const ACTIVE = new Set(["queued", "downloading", "organizing", "uploading"]);
+// 已结束：这些可以删记录（后端也按同一份集合校验）
+const DONE_STAGES = new Set(["done", "failed", "cancelled"]);
 let lastJobs = [];
 
 function jobNode(j) {
@@ -2469,6 +2477,32 @@ function jobNode(j) {
       loadJobs();
     });
     acts.append(stop);
+  }
+  // 结束的任务可以单独删记录：以前只有「清空已完成」一个入口，而它 bug 时
+  // 连失败的记录都清不掉，界面上没有任何别的办法
+  if (DONE_STAGES.has(j.stage)) {
+    const rm = el("button", "jstop", "删记录");
+    rm.type = "button";
+    rm.title = "删掉这条任务记录（不动下载目录与已归档文件）";
+    rm.addEventListener("click", async () => {
+      if (!confirm(`删除任务记录？\n\n${j.code || j.id}\n\n只删记录，不动文件。`)) return;
+      rm.disabled = true;
+      try {
+        const r = await fetch(BASE + "/api/job/delete", authInit({
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({id: j.id, confirm: true}),
+        }));
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) queueFlash(`删除失败：${d.error || ("HTTP " + r.status)}`, true);
+        else queueFlash("已删掉 1 条任务记录");
+      } catch (e) {
+        queueFlash("删除失败：" + (e.message || e), true);
+      } finally {
+        rm.disabled = false;
+        loadJobs();
+      }
+    });
+    acts.append(rm);
   }
   const tl = el("button", "jtl", "时间线");
   tl.type = "button";
@@ -3797,39 +3831,71 @@ $("norm-rename-run").addEventListener("click", () => runNorm("rename", $("norm-r
 $("panel-clean").addEventListener("click", async () => {
   let plan = null;
   try {
+    // days=0：连今天失败的也一起清。以前默认 7 天，刚失败的那些永远留在界面上
     const r = await fetch(BASE + "/api/xunlei/cleanup", authInit({
-      method: "POST", headers: {"Content-Type": "application/json"}, body: "{}",
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({days: 0}),
     }));
     plan = await r.json();
   } catch (e) {
-    flash("取清理清单失败：" + e.message, true);
+    queueFlash("取清理清单失败：" + e.message, true);
     return;
   }
   const list = (plan && plan.delete) || [];
   if (!list.length) {
-    flash("没有超过 7 天的失败任务");
+    queueFlash("迅雷面板里没有失败任务");
     return;
   }
   const names = list.slice(0, 10).map(i => i.name).join("\n");
-  if (!confirm(`删除 ${list.length} 条失败任务记录？\n\n${names}\n\n只删任务条目，已下载的文件留在下载目录里。`)) return;
+  if (!confirm(`删除迅雷面板里 ${list.length} 条失败任务记录？\n\n${names}\n\n只删任务条目，已下载的文件留在下载目录里。`)) return;
   try {
     const r2 = await fetch(BASE + "/api/xunlei/cleanup", authInit({
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({confirm: true, days: 7}),
+      body: JSON.stringify({confirm: true, days: 0}),
     }));
     const res = await r2.json().catch(() => ({}));
-    flash(`已清理 ${(res.deleted || []).length} 条` + ((res.failed || []).length ? `，失败 ${res.failed.length} 条` : ""),
-          (res.failed || []).length > 0);
+    const failed = (res.failed || []).length;
+    queueFlash(`已清理 ${(res.deleted || []).length} 条` + (failed ? `，失败 ${failed} 条` : ""),
+               failed > 0);
     loadJobs();
   } catch (e) {
-    flash("清理失败：" + (e.message || e), true);
+    queueFlash("清理失败：" + (e.message || e), true);
   }
 });
 
-$("queue-clear").addEventListener("click", async () => {
-  try { await fetch(BASE + "/api/jobs/clear", authInit({method: "POST"})); } catch (e) {}
+// 队列自己的提示：不借用全局状态行（那行每 30 秒会被 load() 覆盖）
+let queueFlashTimer = null;
+function queueFlash(msg, isError) {
+  const box = $("queue-flash");
+  if (!box) { flash(msg, isError); return; }
+  box.textContent = msg;
+  box.className = "hint" + (isError ? " err" : "");
+  clearTimeout(queueFlashTimer);
+  queueFlashTimer = setTimeout(() => { box.textContent = ""; }, 6000);
+}
+
+// 清空已结束的任务记录。真实删除发生在库里（列表读的就是库），
+// 并且要报出清了几条 —— 以前静默失败，看起来像按钮没接上。
+async function clearJobs(stage, label) {
+  const n = lastJobs.filter(j => (stage ? j.stage === stage : DONE_STAGES.has(j.stage))).length;
+  if (!n) { queueFlash(`没有可清的${label}任务`); return; }
+  if (!confirm(`清掉 ${n} 条${label}任务记录？\n\n只删记录，不动下载目录与已归档文件。`)) return;
+  try {
+    const r = await fetch(BASE + "/api/jobs/clear", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(stage ? {stage} : {}),
+    }));
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) queueFlash(`清理失败：${d.error || ("HTTP " + r.status)}`, true);
+    else queueFlash(`已清理 ${d.count ?? (d.deleted || []).length} 条记录`);
+  } catch (e) {
+    queueFlash("清理失败：" + (e.message || e), true);
+  }
   loadJobs();
-});
+}
+
+$("queue-clear").addEventListener("click", () => clearJobs("", "已结束的"));
+$("queue-clear-failed").addEventListener("click", () => clearJobs("failed", "失败"));
 
 showView("archive");   // 初始首页 = 归档列表
 

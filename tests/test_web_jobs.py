@@ -1264,3 +1264,104 @@ def test_cancelling_a_queued_job_removes_it_from_queue(tmp_path, monkeypatch):
     assert jid not in web.WAITING
     assert web.STORE.get(jid)["stage"] == "cancelled"
     assert web.stop_job(jid) is False, "重复停止不再算成功"
+
+
+# ---------------------------------------------------------------- 清理任务记录
+
+def test_clear_really_deletes_from_db(server):
+    """列表读的是库：只清内存镜像等于没清（曾经的 bug，失败的记录永远清不掉）。"""
+    base, _ = server
+    web.job_update("j-done", stage="done")
+    web.job_update("j-bad", stage="failed", error="boom")
+    web.job_update("j-run", stage="downloading", percent=10.0)
+
+    status, data = post(base, "/api/jobs/clear", {})
+    assert status == 200 and data["ok"] is True
+    assert set(data["deleted"]) == {"j-done", "j-bad"}
+    left = {j["id"] for j in web.jobs_snapshot()}
+    assert left == {"j-run"}, "进行中的任务不能一起清掉"
+
+
+def test_clear_failed_only(server):
+    base, _ = server
+    web.job_update("j-done", stage="done")
+    web.job_update("j-bad", stage="failed", error="boom")
+    status, data = post(base, "/api/jobs/clear", {"stage": "failed"})
+    assert status == 200 and data["deleted"] == ["j-bad"]
+    assert {j["id"] for j in web.jobs_snapshot()} == {"j-done"}
+
+
+def test_clear_rejects_running_stage(server):
+    base, _ = server
+    web.job_update("j-run", stage="downloading")
+    status, data = post(base, "/api/jobs/clear", {"stage": "downloading"})
+    assert status == 200 and data["ok"] is False
+    assert "downloading" in data["allowed"] or data["allowed"]
+
+
+def test_clear_removes_events_too(server, tmp_path):
+    """记录删了，它的事件也别留着，否则时间线表只增不减。"""
+    base, _ = server
+    web.job_update("j-bad", stage="failed", error="boom")
+    web.job_event("j-bad", "failed", "boom")
+    assert web._store().events("j-bad")
+    post(base, "/api/jobs/clear", {})
+    assert web._store().events("j-bad") == []
+
+
+def test_delete_single_job_needs_confirm(server):
+    base, _ = server
+    web.job_update("j-bad", stage="failed", error="boom")
+    status, data = post(base, "/api/job/delete", {"id": "j-bad"})
+    assert status == 200 and "confirm" in data["hint"]
+    assert web._store().get("j-bad"), "没 confirm 不许删"
+
+
+def test_delete_single_job(server):
+    base, _ = server
+    web.job_update("j-bad", stage="failed", error="boom")
+    status, data = post(base, "/api/job/delete", {"id": "j-bad", "confirm": True})
+    assert status == 200 and data["deleted"] is True
+    assert not web._store().get("j-bad")
+
+
+def test_delete_refuses_running_job(server):
+    """还在跑的任务删记录 = 让调度器失去追踪，下载器里那条还在跑。"""
+    base, _ = server
+    web.job_update("j-run", stage="downloading", percent=30.0)
+    status, data = post(base, "/api/job/delete", {"id": "j-run", "confirm": True})
+    assert status == 200 and data["ok"] is False
+    assert "进行中" in data["error"]
+    assert web._store().get("j-run")
+
+
+def test_delete_unknown_job(server):
+    base, _ = server
+    status, data = post(base, "/api/job/delete", {"id": "ghost", "confirm": True})
+    assert status == 200 and data["ok"] is False and "没有" in data["error"]
+
+
+def test_panel_cleanup_days_zero_means_today_too(tmp_path, monkeypatch):
+    """days=0 必须真的按 0 天算：以前 `or` 把它当没填，刚失败的永远清不掉。"""
+    calls = []
+    monkeypatch.setattr(web, "clean_panel_errors",
+                        lambda days, confirm: calls.append((days, confirm)) or {"ok": True})
+    state_file = tmp_path / "state.json"
+    core.save_state(str(state_file), {})
+    monkeypatch.setattr(web, "STATE", str(state_file))
+    monkeypatch.setattr(web, "AUTH", "")
+    httpd = web.serve("127.0.0.1", 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        host, port = "127.0.0.1", httpd.server_address[1]
+        c = http.client.HTTPConnection(host, port, timeout=10)
+        c.request("POST", "/api/xunlei/cleanup",
+                  body=json.dumps({"days": 0, "confirm": True}),
+                  headers={"Content-Type": "application/json"})
+        r = c.getresponse(); r.read()
+        assert r.status == 200
+        c.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert calls == [(0.0, True)], f"days 被吃掉了：{calls}"

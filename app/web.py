@@ -349,6 +349,58 @@ def jobs_snapshot() -> list[dict]:
     return out
 
 
+def clear_jobs(stage: str = "") -> dict:
+    """清掉「已结束」的任务记录，返回删了哪些。
+
+    这里必须删库，不能只清内存镜像：队列列表读的是 `store.recent()`，
+    以前只 pop 了 JOBS 字典，页面上一条都不会少 —— 用户点了「清空已完成」
+    看起来毫无反应，失败的记录更是永远清不掉。
+
+    stage 可指定只清某一类（`failed` / `done` / `cancelled`），留空清全部已结束的。
+    只删记录：已下载的文件、归档记录都不动。
+    """
+    st = _store()
+    only = (stage or "").strip()
+    removed: list[str] = []
+    if only:
+        if only not in st.FINISHED:
+            return {"ok": False, "error": f"只能清理已结束的任务（{only} 不算）",
+                    "allowed": list(st.FINISHED)}
+        for job in st.recent(500):
+            if job.get("stage") == only and st.delete(job["id"]):
+                removed.append(job["id"])
+    else:
+        removed = st.clear_finished()
+    with _jobs_lock:
+        for job_id in removed:
+            JOBS.pop(job_id, None)
+    log.info("清空任务记录 %d 条%s", len(removed), f"（stage={only}）" if only else "")
+    return {"ok": True, "deleted": removed, "count": len(removed)}
+
+
+def delete_job(job_id: str, confirm: bool = False) -> dict:
+    """删一条任务记录。每条都要单独确认：这是记录删除，不是停止任务。"""
+    job_id = (job_id or "").strip()
+    if not job_id:
+        return {"ok": False, "error": "缺少任务 id"}
+    st = _store()
+    job = st.get(job_id)
+    if not job:
+        return {"ok": False, "error": "没有这条任务记录", "id": job_id}
+    if job.get("stage") not in st.FINISHED:
+        return {"ok": False, "id": job_id,
+                "error": f"任务还在进行中（{job.get('stage')}），先停止再删记录"}
+    if not confirm:
+        return {"ok": True, "id": job_id, "stage": job.get("stage"),
+                "code": job.get("code") or "", "hint": "需要 confirm=true 才会删除记录",
+                "note": "只删任务记录，不动下载目录与已归档的文件"}
+    ok = st.delete(job_id)
+    with _jobs_lock:
+        JOBS.pop(job_id, None)
+    return {"ok": ok, "id": job_id, "deleted": ok,
+            "error": "" if ok else "删除失败（记录可能已被清掉）"}
+
+
 def _jobs_mirror(job_id: str) -> dict:
     """内存镜像：只放瞬时展示状态（排队位置、提示语），不落库。"""
     with _jobs_lock:
@@ -2709,7 +2761,11 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
             except (ValueError, json.JSONDecodeError):
                 payload = {}
-            days = float(payload.get("days") or get_setting("PANEL_CLEAN_DAYS") or 7)
+            # days=0 表示「连今天的也算」：以前 `or` 会把 0 当成没填而退回 7 天，
+            # 于是刚失败的线段永远清不掉（面板上全是失败任务却一条也清不了）
+            raw_days = payload.get("days")
+            days = float(raw_days if raw_days is not None
+                         else (get_setting("PANEL_CLEAN_DAYS") or 7))
             self._json(clean_panel_errors(days, bool(payload.get("confirm"))))
             return
         if path == "/api/xunlei/control":
@@ -2749,11 +2805,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._drain()
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
-            self._drain()
-            with _jobs_lock:
-                for job_id in [k for k, v in JOBS.items() if v.get("stage") in ("done", "failed")]:
-                    JOBS.pop(job_id, None)
-            self._json({"ok": True})
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            self._json(clear_jobs(payload.get("stage") or ""))
+            return
+        if path == "/api/job/delete":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            self._json(delete_job(str(payload.get("id") or ""), bool(payload.get("confirm"))))
             return
         if path == "/api/cleanup/run":
             if not self._authorized():

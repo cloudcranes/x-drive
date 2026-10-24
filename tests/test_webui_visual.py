@@ -379,3 +379,19 @@ def test_storage_panel_explains_host_address_rewrite():
     assert "storageInfo.net.container" in js
     assert "storageInfo.net.alias" in js, "要写出别名具体是什么"
     assert 'if (chosen === "rclone") return "";' in js, "rclone 走挂载配置，不该提改写"
+
+
+def test_failed_jobs_can_be_removed_from_ui():
+    """下载界面的失败任务以前没有任何删除入口（「清空已完成」还清不掉库里的记录）。"""
+    page = html()
+    js = script(page)
+    # 每张已结束的卡片自带「删记录」，并走 /api/job/delete
+    assert 'const DONE_STAGES = new Set(["done", "failed", "cancelled"])' in js
+    assert 'el("button", "jstop", "删记录")' in js
+    assert '"/api/job/delete"' in js
+    # 队列头部多一个「清空失败」，且清理结果要说出来（以前静默）
+    assert 'id="queue-clear-failed"' in page
+    assert "async function clearJobs(" in js
+    assert "已清理 ${d.count" in js
+    # 提示落在队列自己那行：全局状态行每 30 秒会被覆盖，结果会一闪就没
+    assert 'id="queue-flash"' in page and "function queueFlash(" in js

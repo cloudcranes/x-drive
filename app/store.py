@@ -607,6 +607,40 @@ class Store:
                 conn.rollback()
                 raise
 
+    # 已结束的状态：可以被「清空」删掉记录的那几种
+    FINISHED = ("done", "failed", "cancelled")
+
+    def delete(self, job_id: str) -> bool:
+        """删一条任务记录（连带它的事件）。**只删记录，不动文件。**
+
+        只允许删已结束的任务：还在跑的任务删掉记录 = 让调度器失去对它的追踪，
+        下载器里那条任务还在跑、本地目录也还在，之后谁也认不出来。
+        """
+        if not job_id:
+            return False
+        marks = ",".join("?" * len(self.FINISHED))
+        with self._lock, self._conn() as conn:
+            row = conn.execute("SELECT stage FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row or row["stage"] not in self.FINISHED:
+                return False
+            conn.execute("DELETE FROM job_events WHERE job_id=?", (job_id,))
+            cur = conn.execute(f"DELETE FROM jobs WHERE id=? AND stage IN ({marks})",
+                               (job_id, *self.FINISHED))
+            return bool(cur.rowcount)
+
+    def clear_finished(self) -> list[str]:
+        """清掉所有已结束的任务记录，返回被删的 id（前端要报「清了几条」）。"""
+        marks = ",".join("?" * len(self.FINISHED))
+        with self._lock, self._conn() as conn:
+            rows = conn.execute(f"SELECT id FROM jobs WHERE stage IN ({marks})",
+                                self.FINISHED).fetchall()
+            ids = [r["id"] for r in rows]
+            if ids:
+                holes = ",".join("?" * len(ids))
+                conn.execute(f"DELETE FROM job_events WHERE job_id IN ({holes})", ids)
+                conn.execute(f"DELETE FROM jobs WHERE id IN ({holes})", ids)
+            return ids
+
     def prune(self, days: float = 30.0) -> int:
         """删掉很久以前已结束的记录，别让表无限增长。"""
         cutoff = time.time() - max(1.0, days) * 86400
