@@ -533,6 +533,8 @@
   .xlp-paste{flex:1; min-width:220px; padding:6px 9px; border-radius:7px;
     border:1px solid var(--line); background:rgba(0,0,0,.6); color:var(--text);
     font-family:var(--mono); font-size:11.5px}
+  .xlp-lbl{flex:none; font-family:var(--mono); font-size:10.5px; color:var(--faint);
+    letter-spacing:.08em; min-width:32px}
   /* 体检条：配置状态、版本、源，一格一句 */
   .kv{display:flex; flex-wrap:wrap; gap:6px 14px; font-family:var(--mono); font-size:11.5px;
     color:var(--muted); align-items:center}
@@ -4663,11 +4665,17 @@ function xlpAuthRow() {
   const renew = el("button", "ghost", "立即续期");
   renew.type = "button";
   renew.title = "用 refresh_token 换新的 access_token（并把轮换后的 refresh_token 写回）";
+  const partHint = el("span", "hint", "");
   const hint = el("span", "hint", "");
   const fmtLeft = sec => {
     if (!sec || sec <= 0) return "已过期";
     const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
     return h ? `${h} 小时 ${m} 分` : `${m} 分`;
+  };
+  const PART_LABEL = {
+    XLPAN_CLIENT_ID: "clientid", XLPAN_TOKEN: "access_token",
+    XLPAN_REFRESH_TOKEN: "refresh_token", XLPAN_DEVICE_ID: "deviceid",
+    XLPAN_CAPTCHA_TOKEN: "captcha",
   };
   const show = d => {
     if (!d) return;
@@ -4688,6 +4696,16 @@ function xlpAuthRow() {
     else h = "⚠ 没有 refresh_token：access_token 过期后要手工重填";
     hint.textContent = h + (d.detail ? " · " + d.detail : "");
     hint.className = "hint" + (d.ok ? (d.has_refresh ? " ok" : " err") : " err");
+    // 各项配没配：一眼看出还缺哪个（两个粘贴框分开填，得知道哪个没生效）
+    if (d.parts) {
+      const marks = Object.keys(PART_LABEL).map(k => {
+        const on = !!d.parts[k];
+        const need = k === "XLPAN_CAPTCHA_TOKEN" ? "" : (on ? " ✓" : " ✗");
+        return `${PART_LABEL[k]}${need}`;
+      });
+      partHint.textContent = marks.join("  ·  ");
+      partHint.className = "hint";
+    }
   };
   const call = async (url, btnEl) => {
     btnEl.disabled = true;
@@ -4710,55 +4728,81 @@ function xlpAuthRow() {
   row.append(btn);
   row.append(renew);
   row.append(hint);
+  row.append(partHint);
 
-  // 粘贴框：浏览器 localStorage 的 credentials_{clientid} 就是一段 JSON，
-  // 粘进来自动拆成 access_token / refresh_token / clientid（clientid 从
-  // JWT 的 aud 取），不用一个框一个框地抄。也可以粘授权码（地址栏里
-  // code=… 那段），程序会拿它换出 access + refresh 一对。
-  const paste = el("input", "xlp-paste");
-  paste.type = "text";
-  paste.autocomplete = "off";
-  paste.spellcheck = false;
-  paste.placeholder = "粘贴 credentials 整段 JSON（含 access + refresh）、或 deviceid、或授权码";
-  const applyBtn = el("button", "ghost", "填入");
-  applyBtn.type = "button";
-  applyBtn.title = "认出里面的凭据并写进设置（写完立刻验一次）";
-  const pasteHint = el("span", "hint", "");
-  applyBtn.addEventListener("click", async () => {
-    applyBtn.disabled = true;
-    pasteHint.className = "hint";
-    pasteHint.textContent = "写入中…";
+  // 两个粘贴框，分开存分开显示状态 —— 之前一个框装所有东西，
+  // 粘完不知道哪几项已经配好了（还缺 deviceid 也看不出来）。
+  //   ① 凭据：credentials_{clientid} 整段 JSON（含 access + refresh），
+  //      clientid 从 JWT 的 aud 自动取；也可以粘授权码（地址栏 code=… 那段），
+  //      程序会拿它换出 access + refresh 一对。
+  //   ② deviceid：localStorage 的 deviceid 项（形如 wdi10.…），
+  //      读接口必需（不带 x-device-id 直接 400 invalid_argument）。
+  const pasteCred = el("input", "xlp-paste");
+  pasteCred.type = "text";
+  pasteCred.autocomplete = "off";
+  pasteCred.spellcheck = false;
+  pasteCred.placeholder = "① 凭据：粘贴 credentials_{clientid} 整段 JSON，或授权码 code=…";
+  const pasteDev = el("input", "xlp-paste");
+  pasteDev.type = "text";
+  pasteDev.autocomplete = "off";
+  pasteDev.spellcheck = false;
+  pasteDev.placeholder = "② deviceid：粘贴 wdi10.… 那串";
+  const applyCred = el("button", "ghost", "填入凭据");
+  applyCred.type = "button";
+  applyCred.title = "认出 access/refresh/clientid 并写进设置（写完立刻验一次）";
+  const applyDev = el("button", "ghost", "填入 deviceid");
+  applyDev.type = "button";
+  applyDev.title = "写进设置（读接口必需）";
+  const credHint = el("span", "hint", "");
+  const devHint = el("span", "hint", "");
+
+  // 两框分别提交：后端按「只处理这一类」来分，别让 deviceid 混进凭据里
+  const submit = async (btn, input, hint, kind) => {
+    btn.disabled = true;
+    hint.className = "hint";
+    hint.textContent = "写入中…";
     try {
-      const d = await subsApi("/api/xlp/credentials", {text: paste.value});
+      const d = await subsApi("/api/xlp/credentials", {text: input.value, kind});
       if (!d) throw new Error("无响应");
       if (d.ok) {
-        paste.value = "";
+        input.value = "";
         let msg = "已填入：" + (d.saved || []).join("、")
           + (d.expires_in ? " · 凭据剩余约 " + Math.round(d.expires_in / 3600) + " 小时" : "");
         if (d.exchanged) msg = d.exchanged + " · " + msg;
         if (d.missing && d.missing.length) {
           msg += " · ⚠ 还缺：" + d.missing.join("、") + "（填了才能用）";
         }
-        pasteHint.textContent = msg;
-        pasteHint.className = "hint" + (d.missing && d.missing.length ? " err" : " ok");
+        hint.textContent = msg;
+        hint.className = "hint" + (d.missing && d.missing.length ? " err" : " ok");
         show({configured: true, ok: true, expires_in: d.expires_in,
               has_refresh: d.has_refresh, detail: d.detail});
       } else {
-        pasteHint.textContent = d.error || "写入失败";
-        pasteHint.className = "hint err";
+        hint.textContent = d.error || "写入失败";
+        hint.className = "hint err";
       }
     } catch (e) {
-      pasteHint.textContent = e.message || String(e);
-      pasteHint.className = "hint err";
+      hint.textContent = e.message || String(e);
+      hint.className = "hint err";
     } finally {
-      applyBtn.disabled = false;
+      btn.disabled = false;
     }
-  });
+  };
+  applyCred.addEventListener("click", () => submit(applyCred, pasteCred, credHint, "cred"));
+  applyDev.addEventListener("click", () => submit(applyDev, pasteDev, devHint, "device"));
+
   const pasteRow = el("div", "xlp-paste-row");
-  pasteRow.append(paste);
-  pasteRow.append(applyBtn);
-  pasteRow.append(pasteHint);
+  pasteRow.append(el("span", "xlp-lbl", "凭据"));
+  pasteRow.append(pasteCred);
+  pasteRow.append(applyCred);
+  pasteRow.append(credHint);
   row.append(pasteRow);
+
+  const devRow = el("div", "xlp-paste-row");
+  devRow.append(el("span", "xlp-lbl", "设备"));
+  devRow.append(pasteDev);
+  devRow.append(applyDev);
+  devRow.append(devHint);
+  row.append(devRow);
 
   const note = el("div", "why",
     "迅雷的账号密码直登不支持（实测 currently not supported），"

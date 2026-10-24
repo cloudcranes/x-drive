@@ -227,13 +227,16 @@ def _client_id_from_jwt(token: str) -> str:
         return ""
 
 
-def apply_credentials(text: str) -> dict:
+def apply_credentials(text: str, kind: str = "") -> dict:
     """解析并写入凭据，返回 {saved: [...], error: str, missing: [...]}。
 
     两种输入：
       1. 凭据（整段 JSON / 逐行 / 裸 token）—— 拆成设置项直接写；
       2. **授权码**（地址栏里 code=xxx）—— 先用 code 换出 access+refresh 一对，
          再写。授权码是一次性的，用掉即废（换出来的那对里 refresh 可续期）。
+
+    kind 限定只处理哪一类（"cred" / "device"）—— 两个粘贴框分开提交，
+    免得 deviceid 混进凭据里、或者凭据被当成 deviceid。
 
     missing 列出**还缺什么**：device_id 是必需的（实测读接口不带
     x-device-id 回 400 invalid_argument），而它不在 credentials 那一项里，
@@ -244,6 +247,14 @@ def apply_credentials(text: str) -> dict:
         return {"saved": [], "missing": [], "error": "没认出任何凭据（要 access_token / refresh_token / 整段 JSON / 授权码）"}
     from . import web as web_mod
     code = parsed.pop("XLPAN_AUTH_CODE", "")
+    if kind == "device":
+        # 只处理 deviceid：别把误粘进来的 token 也写了
+        dev = parsed.pop("XLPAN_DEVICE_ID", "")
+        if not dev:
+            return {"saved": [], "missing": [], "error": "没认出 deviceid（形如 wdi10.…）"}
+        parsed = {"XLPAN_DEVICE_ID": dev} if dev else {}
+    elif kind == "cred":
+        parsed.pop("XLPAN_DEVICE_ID", None)      # 凭据框不碰 deviceid
     saved = dict(parsed)
     exchanged = ""
     if code:
@@ -257,6 +268,8 @@ def apply_credentials(text: str) -> dict:
         if got.get("refresh_token"):
             saved["XLPAN_REFRESH_TOKEN"] = got["refresh_token"]
         exchanged = "已用授权码换出 access_token 与 refresh_token"
+    if not saved:
+        return {"saved": [], "missing": [], "error": "没认出可填的内容"}
     res = web_mod.set_settings(saved)
     if not res.get("ok"):
         return {"saved": [], "missing": [], "error": str(res.get("failed") or "写入失败")[:200]}

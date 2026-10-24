@@ -795,14 +795,16 @@ def _cloud_submit(backend, job_id: str, source: str, my_inbox: str) -> dict:
     return submitted
 
 
-def xlp_apply_credentials(text: str) -> dict:
+def xlp_apply_credentials(text: str, kind: str = "") -> dict:
     """把粘来的凭据（一整段 JSON 或裸 token）拆开写进设置。
 
     浏览器 localStorage 的 `credentials_{clientid}` 就是一段 JSON，粘进来一次填齐：
     access_token / refresh_token / clientid（clientid 从 JWT 的 aud 自动取）。
+
+    kind="cred" / "device" 时只处理那一类（前端是两个独立输入框）。
     """
     try:
-        out = xunleipan.apply_credentials(text or "")
+        out = xunleipan.apply_credentials(text or "", kind=kind)
     except Exception as exc:                    # noqa: BLE001
         return {"ok": False, "error": str(exc)[:200]}
     if out.get("error"):
@@ -819,14 +821,19 @@ def xlp_apply_credentials(text: str) -> dict:
 
 
 def xlp_auth_status(refresh: bool = False) -> dict:
-    """迅雷云盘登录状态：凭据齐不齐、token 还能用多久，要不要续期。
+    """迅雷云盘登录状态：凭据齐不齐、各项配没配、token 还能用多久。
 
     refresh=True 时立刻用 refresh_token 续一次（写回设置）。
     账号密码直登**不支持**（迅雷端点回 currently not supported），
     所以首次凭据要从浏览器抄一次，之后靠 refresh_token 自己续。
     """
+    parts = {}
+    for key in ("XLPAN_CLIENT_ID", "XLPAN_TOKEN", "XLPAN_REFRESH_TOKEN",
+                "XLPAN_DEVICE_ID", "XLPAN_CAPTCHA_TOKEN"):
+        parts[key] = bool(str(get_setting(key) or "").strip())
     out = {"ok": False, "configured": xunleipan.configured(),
-           "has_refresh": bool(str(get_setting("XLPAN_REFRESH_TOKEN") or "").strip()),
+           "has_refresh": parts["XLPAN_REFRESH_TOKEN"],
+           "parts": parts,
            "expires_in": 0, "detail": "", "error": ""}
     if not out["configured"]:
         out["detail"] = "缺 clientid 或 access_token"
@@ -3679,7 +3686,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(min(length, 65536)) or b"{}")
             except (ValueError, json.JSONDecodeError):
                 payload = {}
-            self._json(xlp_apply_credentials(str(payload.get("text") or "")))
+            self._json(xlp_apply_credentials(str(payload.get("text") or ""),
+                                           kind=str(payload.get("kind") or "")))
             return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑

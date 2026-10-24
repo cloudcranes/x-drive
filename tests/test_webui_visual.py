@@ -343,6 +343,22 @@ def test_xunlei_credentials_are_not_shown_as_settings_rows():
     assert "it.hidden" in script(page), "分区计数也要按可见项算"
 
 
+def test_xunlei_login_has_two_paste_boxes():
+    """「迅雷登录」有两个独立输入框（凭据 / deviceid），并显示各项是否已配。
+
+    之前只有一个框装所有东西，粘完不知道哪几项已经配好、还缺哪个。
+    """
+    page = html()
+    assert page.count('el("input", "xlp-paste")') == 2, "应有两个粘贴框"
+    js = script(page)
+    assert 'data-mtab' in js
+    assert "XLPAN_CLIENT_ID" in js and "XLPAN_DEVICE_ID" in js, "要显示各项是否已配"
+    assert "parts" in js, "状态行要带各项的配置情况"
+    # 两个框分别提交，kind 区分
+    assert 'kind: "cred"' in js or '"cred"' in js
+    assert '"device"' in js
+
+
 def test_sidebar_has_four_entries():
     """侧栏 7 → 5 → 4：归档 / 下载队列 / 订阅 / 设置。"""
     page = html()

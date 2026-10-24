@@ -134,6 +134,43 @@ def test_apply_reports_unrecognizable(monkeypatch):
     assert out["saved"] == [] and "没认出" in out["error"]
 
 
+# ---------------------------------------------------------------- 两个框分开
+
+def test_apply_kind_device_only_writes_device(monkeypatch):
+    """device 框只写 deviceid：误粘进来的 token 不该被一起写进去。"""
+    saved = {}
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings",
+                        lambda u: saved.update(u) or {"ok": True, "saved": list(u)})
+    monkeypatch.setattr(web_mod, "get_setting",
+                        lambda k, d=None: saved.get(k, d if d is not None else ""))
+    out = xunleipan.apply_credentials(
+        "deviceid: wdi10.abc\naccess_token: eyJ.should-not-be-written",
+        kind="device")
+    assert saved == {"XLPAN_DEVICE_ID": "wdi10.abc"}, saved
+    assert "XLPAN_TOKEN" not in saved
+
+
+def test_apply_kind_cred_does_not_write_device(monkeypatch):
+    """凭据框不碰 deviceid：两个框各管各的。"""
+    saved = {}
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings",
+                        lambda u: saved.update(u) or {"ok": True, "saved": list(u)})
+    monkeypatch.setattr(web_mod, "get_setting",
+                        lambda k, d=None: saved.get(k, d if d is not None else ""))
+    mixed = json.loads(CRED)
+    mixed["deviceid"] = "wdi10.zzz"
+    xunleipan.apply_credentials(json.dumps(mixed), kind="cred")
+    assert "XLPAN_DEVICE_ID" not in saved
+    assert saved.get("XLPAN_TOKEN") and saved.get("XLPAN_REFRESH_TOKEN")
+
+
+def test_apply_kind_device_rejects_non_device_text(monkeypatch):
+    out = xunleipan.apply_credentials("access_token: eyJ.abc", kind="device")
+    assert out["saved"] == [] and "deviceid" in out["error"]
+
+
 # ---------------------------------------------------------------- 授权码
 
 def test_parse_picks_up_auth_code():
