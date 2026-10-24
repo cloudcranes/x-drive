@@ -31,26 +31,26 @@ import time
 # 类型用字符串标记，读写时据此转换，避免每个值手写一段 if。
 SETTINGS_SPEC: dict[str, dict] = {
     # ── 配额
-    "DAILY_UPLOAD_GB": {"type": "int", "default": 0, "group": "配额",
+    "DAILY_UPLOAD_GB": {"type": "int", "default": 0, "group": "下载",
                         "label": "每日上传上限 (GB)", "note": "0 = 不限"},
     # ── 重试
-    "RETRY_BASE_DELAY": {"type": "float", "default": 3.0, "group": "重试",
+    "RETRY_BASE_DELAY": {"type": "float", "default": 3.0, "group": "下载",
                          "label": "重试基础退避 (秒)", "note": "指数增长，封顶 60s"},
-    "RETRIES": {"type": "int", "default": 2, "group": "重试",
+    "RETRIES": {"type": "int", "default": 2, "group": "下载",
                 "label": "失败重试次数", "note": "网络给满、死种只给一次"},
-    "STALL_TIMEOUT": {"type": "float", "default": 900.0, "group": "重试",
+    "STALL_TIMEOUT": {"type": "float", "default": 900.0, "group": "下载",
                       "label": "死种判定 (秒)", "note": "连续多久无新字节判死种，0=不检测"},
-    "MAGNET_TIMEOUT": {"type": "float", "default": 7200.0, "group": "重试",
+    "MAGNET_TIMEOUT": {"type": "float", "default": 7200.0, "group": "下载",
                        "label": "单任务总超时 (秒)", "note": "默认 2 小时"},
     # ── 上传
-    "UPLOAD_CHUNK": {"type": "str", "default": "64M", "group": "上传",
+    "UPLOAD_CHUNK": {"type": "str", "default": "64M", "group": "下载",
                      "label": "上传分片", "note": "实测 64M 最优"},
-    "UPLOAD_TRANSFERS": {"type": "int", "default": 4, "group": "上传",
+    "UPLOAD_TRANSFERS": {"type": "int", "default": 4, "group": "下载",
                          "label": "上传并发数", "note": "实测 4 最优"},
     # ── 磁盘
-    "DISK_RESERVE_GB": {"type": "float", "default": 5.0, "group": "磁盘",
+    "DISK_RESERVE_GB": {"type": "float", "default": 5.0, "group": "下载",
                         "label": "磁盘预留 (GB)", "note": "永远不参与分配的空间"},
-    "DISK_QUEUE_TIMEOUT": {"type": "float", "default": 0.0, "group": "磁盘",
+    "DISK_QUEUE_TIMEOUT": {"type": "float", "default": 0.0, "group": "下载",
                            "label": "排队最久等待 (秒)", "note": "0 = 一直等"},
     # ── 刮削
     "SCRAPE": {"type": "bool", "default": True, "group": "刮削",
@@ -60,17 +60,17 @@ SETTINGS_SPEC: dict[str, dict] = {
     "SCRAPE_POSTER": {"type": "bool", "default": True, "group": "刮削",
                       "label": "取封面", "note": "poster.jpg"},
     # ── 归档回收
-    "CLEANUP_MAX_GB": {"type": "float", "default": 0.0, "group": "归档回收",
+    "CLEANUP_MAX_GB": {"type": "float", "default": 0.0, "group": "归档",
                        "label": "回收容量上限 (GB)", "note": "0 = 关闭"},
-    "CLEANUP_KEEP_RECENT": {"type": "int", "default": 10, "group": "归档回收",
+    "CLEANUP_KEEP_RECENT": {"type": "int", "default": 10, "group": "归档",
                             "label": "回收保留最近几个", "note": "永远保留最近 N 个"},
-    "CLEANUP_OLDER_DAYS": {"type": "float", "default": 0.0, "group": "归档回收",
+    "CLEANUP_OLDER_DAYS": {"type": "float", "default": 0.0, "group": "归档",
                            "label": "回收只考虑多久前的", "note": "0 = 关闭"},
     # ── 面板
-    "PANEL_CLEAN_DAYS": {"type": "float", "default": 0.0, "group": "面板",
+    "PANEL_CLEAN_DAYS": {"type": "float", "default": 0.0, "group": "界面",
                          "label": "面板失败记录保留天数", "note": "0 = 不自动清"},
     # ── 其它
-    "DEFAULT_SIZE_GB": {"type": "float", "default": 4.0, "group": "其它",
+    "DEFAULT_SIZE_GB": {"type": "float", "default": 4.0, "group": "界面",
                         "label": "默认体积估算 (GB)", "note": "体积查不到时的兜底"},
     # ── 数据源：MetaTube（刮削后端）。地址/代理/超时改完下一次请求就生效。
     "METATUBE_URL": {"type": "str", "default": "", "group": "数据源",
@@ -100,66 +100,66 @@ SETTINGS_SPEC: dict[str, dict] = {
                         "label": "优先用 JavBus",
                         "note": "关掉就只走 javdb 页面解析"},
     # ── 首页媒体墙：把「最近上架」的封面流摆出来，看着顺眼、点了能搜
-    "WALL_ON": {"type": "bool", "default": True, "group": "首页",
+    "WALL_ON": {"type": "bool", "default": True, "group": "数据源",
                 "label": "显示媒体墙", "note": "关掉就只留归档列表（首页更快）"},
-    "WALL_SOURCE": {"type": "str", "default": "javbus", "group": "首页",
+    "WALL_SOURCE": {"type": "str", "default": "javbus", "group": "数据源",
                     "label": "媒体墙来源",
                     "choices": ["javbus", "javdb", "custom"],
                     "note": "javbus = 数据源里那个 JavBus 实例（JSON，快）；"
                             "javdb = javdb.com 首页最新（HTML 解析，字段更全带评分）；"
                             "custom = 下面那个地址"},
-    "WALL_URL": {"type": "str", "default": "", "group": "首页",
+    "WALL_URL": {"type": "str", "default": "", "group": "数据源",
                  "label": "自定义接口地址",
                  "note": "返回 JSON 即可，`{page}` 会被替换成页码；字段名自动按常见别名认"
                          "（movies/items/data、id/code、img/cover、title/name …）"},
-    "WALL_TTL": {"type": "float", "default": 120.0, "group": "首页",
+    "WALL_TTL": {"type": "float", "default": 120.0, "group": "数据源",
                  "label": "媒体墙缓存 (秒)",
                  "note": "同一页这么久内只打一次上游，翻页不会把对方打疼"},
-    "WALL_ROWS": {"type": "int", "default": 2, "group": "首页",
+    "WALL_ROWS": {"type": "int", "default": 2, "group": "数据源",
                   "label": "首屏显示几行", "note": "一行约 6 张，按窗口宽度自动增减"},
     # ── 图片本地缓存：封面 / 截图取到过就落盘，之后不再请求外网
     #    图床握手不稳（同一张图连打 5 次会有 2 次超时），不缓存就是一半「无封面」。
-    "IMG_CACHE_MB": {"type": "float", "default": 200.0, "group": "首页",
+    "IMG_CACHE_MB": {"type": "float", "default": 200.0, "group": "数据源",
                      "label": "图片缓存上限 (MB)",
                      "note": "0 = 不限；超了从最久没用的开始删。缓存目录见下面一行"},
-    "IMG_CACHE_DIR": {"type": "str", "default": "", "group": "首页",
+    "IMG_CACHE_DIR": {"type": "str", "default": "", "group": "数据源",
                       "label": "图片缓存目录",
                       "note": "留空 = <data>/covers（随 ./data 一起备份）"},
     # ── 云盘归档：磁力直接扔进云盘的离线下载，落地后远端整理，不占本地磁盘
     #    实测（CD2 1.0.18 + 迅雷云盘）：AddOfflineFiles 对假磁力也回 success，
     #    且没有离线任务列表/进度接口，所以「完成」只能靠看云盘目录稳不稳。
-    "CLOUD_INGEST": {"type": "bool", "default": False, "group": "云盘归档",
+    "CLOUD_INGEST": {"type": "bool", "default": False, "group": "存储",
                      "label": "启用云添加",
                      "note": "开：磁力直接进云盘离线下载，落地后远端整理（不占本地盘）。"
                              "关：还是本地下载 → 整理 → 上传"},
-    "CLOUD_INBOX": {"type": "str", "default": "", "group": "云盘归档",
+    "CLOUD_INBOX": {"type": "str", "default": "", "group": "存储",
                     "label": "离线落地目录",
                     "note": "云盘里的目录，例如 迅雷云盘/我的资源；留空则不允许启用云添加"},
-    "CLOUD_DEST": {"type": "str", "default": "", "group": "云盘归档",
+    "CLOUD_DEST": {"type": "str", "default": "", "group": "存储",
                    "label": "归档根目录",
                    "note": "整理后的位置，例如 迅雷云盘/X-Drive；留空 = 用「存储」里的归档根"},
-    "CLOUD_LAND_TIMEOUT": {"type": "float", "default": 7200.0, "group": "云盘归档",
+    "CLOUD_LAND_TIMEOUT": {"type": "float", "default": 7200.0, "group": "存储",
                            "label": "等落地上限 (秒)",
                            "note": "超过还没落地就判失败（迅雷侧可能没接收）"},
-    "CLOUD_LAND_STABLE": {"type": "int", "default": 3, "group": "云盘归档",
+    "CLOUD_LAND_STABLE": {"type": "int", "default": 3, "group": "存储",
                           "label": "连续几次不变算落地",
                           "note": "云盘没有进度接口，只能看大小稳不稳；默认 3 次"},
-    "CLOUD_POLL": {"type": "float", "default": 10.0, "group": "云盘归档",
+    "CLOUD_POLL": {"type": "float", "default": 10.0, "group": "存储",
                    "label": "落地轮询间隔 (秒)", "note": "太密会打疼云盘 API"},
     # ── 迅雷官方直链（api-pan.xunlei.com）：CD2 的 static/GetDownloadUrlPath 只给
     #    内网直链；要外网可播、播放器/IDM 直接能用的链接，走官方 Web API（greasyfork
     #    脚本「迅雷云盘」同款）。凭据从浏览器 localStorage 的 credentials_{clientid} 抄。
     #    直链有有效期，过期要重新取（不做缓存）。
-    "XLPAN_CLIENT_ID": {"type": "str", "default": "", "group": "云盘归档",
+    "XLPAN_CLIENT_ID": {"type": "str", "default": "", "group": "存储",
                         "label": "迅雷 clientid",
                         "note": "浏览器 localStorage 里 credentials_ 后面那串"},
-    "XLPAN_TOKEN": {"type": "str", "default": "", "group": "云盘归档", "secret": True,
+    "XLPAN_TOKEN": {"type": "str", "default": "", "group": "存储", "secret": True,
                     "label": "迅雷 access_token",
                     "note": "localStorage credentials_{clientid} 里的 access_token；"
                             "也可填 `Bearer xxx` 完整串"},
-    "XLPAN_DEVICE_ID": {"type": "str", "default": "", "group": "云盘归档",
+    "XLPAN_DEVICE_ID": {"type": "str", "default": "", "group": "存储",
                         "label": "迅雷 x-device-id", "note": "可选；localStorage 的 deviceid 项"},
-    "XLPAN_CAPTCHA_TOKEN": {"type": "str", "default": "", "group": "云盘归档", "secret": True,
+    "XLPAN_CAPTCHA_TOKEN": {"type": "str", "default": "", "group": "存储", "secret": True,
                             "label": "迅雷 x-captcha-token",
                             "note": "localStorage 里 captcha 开头那项的 token；"
                                     "风控要求，缺了 API 回 captcha_invalid"},

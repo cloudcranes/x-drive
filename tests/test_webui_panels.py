@@ -31,7 +31,7 @@ def html() -> str:
 # ─────────────────────────────────────────── C1 元数据维护台
 
 def test_meta_panel_dom_exists(html):
-    for hook in ('id="metatool-open"', 'id="metapanel"', 'id="meta-close"',
+    for hook in ('id="maint-open"', 'id="metapanel"', 'id="meta-close"',
                  'id="meta-state"', 'id="meta-conn"', 'id="meta-pending"',
                  'id="meta-code"', 'id="meta-preview"', 'id="meta-resync"',
                  'id="meta-applyall"', 'id="meta-unlock"', 'id="meta-diff"',
@@ -138,12 +138,12 @@ def test_meta_failed_row_retries_single_attachment(js):
 # ─────────────────────────────────────────── C2 归档健康
 
 def test_health_panel_dom_exists(html):
-    for hook in ('id="health-open"', 'id="healthpanel"', 'id="health-close"',
-                 'id="verify-sum"', 'id="verify-limit"', 'id="verify-run"',
-                 'id="verify-cancel"', 'id="verify-dups"', 'id="verify-prog"',
-                 'id="verify-list"', 'id="dups-list"'):
+    """完整性检查那块现在是「归档维护」的一个子块，不再是独立面板。"""
+    for hook in ('id="maint-check"', 'id="verify-sum"', 'id="verify-limit"',
+                 'id="verify-run"', 'id="verify-cancel"', 'id="verify-dups"',
+                 'id="verify-prog"', 'id="verify-list"', 'id="dups-list"'):
         assert hook in html, f"缺少 {hook}"
-    assert re.search(r'<section class="panel[^"]*" id="healthpanel" hidden', html)
+    assert 'id="healthpanel"' not in html, "归档校验不再是独立面板"
 
 
 def test_health_functions_defined_once(js):
@@ -215,14 +215,13 @@ def test_health_error_does_not_fake_completion(js):
 
 
 def test_health_is_report_only(html):
-    """项目纪律：健康面板只报告，不补传、不删除。"""
+    """项目纪律：完整性检查只报告，不补传、不删除。"""
     assert "只报告，不自动补传或删除" in html
-    start = html.index('id="healthpanel"')
-    end = html.index('id="activefilters"') if 'id="activefilters"' in html[start:] else len(html)
-    panel = html[start:start + 4000]
+    start = html.index('id="maint-check"')
+    panel = html[start:start + 3000]
     for bad in ("删除远端", "补传", "自动修复", "清理远端"):
         # 「不自动补传」这类否定说明是允许的，按钮文案不允许
-        assert not re.search(r'<button[^>]*>[^<]*' + bad, panel), f"健康面板出现危险按钮：{bad}"
+        assert not re.search(r'<button[^>]*>[^<]*' + bad, panel), f"检查面板出现危险按钮：{bad}"
 
 
 # ─────────────────────────────────────────── C3 任务时间线
@@ -284,7 +283,11 @@ def test_no_dangerous_remote_actions_anywhere(js):
 
 
 def test_new_handlers_are_bound(html):
-    for hook in ("metatool-open", "meta-close", "meta-preview", "meta-applyall",
-                 "meta-sync", "meta-unlock", "health-open", "health-close",
-                 "verify-run", "verify-cancel", "verify-dups"):
+    for hook in ("maint-open", "meta-close", "meta-preview", "meta-applyall",
+                 "meta-sync", "meta-unlock", "verify-run", "verify-cancel",
+                 "verify-dups", "norm-adopt-run", "norm-rename-run",
+                 "norm-refresh"):
         assert f'$("{hook}").addEventListener' in html, f"{hook} 没绑定事件"
+    # 三个旧入口已并入「归档维护」：不再单独绑事件
+    for gone in ("metatool-open", "health-open", "norm-btn"):
+        assert f'$("{gone}").addEventListener' not in html, f"{gone} 还在单独绑事件"

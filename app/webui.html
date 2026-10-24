@@ -477,6 +477,10 @@
     font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
     color:var(--faint)}
   .queue-sec::after{content:""; flex:1; height:1px; background:var(--line-soft)}
+  /* 迅雷面板那一段可点开/收起：默认收起（那是外部下载器的任务，不是本程序的任务） */
+  .queue-sec.xl-head{cursor:pointer; user-select:none; margin:10px 2px 3px}
+  .queue-sec.xl-head:hover{color:var(--muted)}
+  .queue-sec .xl-caret{font-size:11px; color:var(--dim); letter-spacing:0}
   .queue-sec.err{color:#ff9b9b}
   .job{padding:9px 10px; border:1px solid var(--line); border-radius:9px; background:rgba(17,17,17,.85);
     display:flex; flex-direction:column; gap:6px}
@@ -514,6 +518,15 @@
   .meta-h{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
     color:var(--faint); margin:12px 0 6px}
   .meta-h:first-child{margin-top:0}
+  /* 归档维护台的四块：横向子标签 + 面板。和设置页那套同构，但更轻 */
+  .maint-tabs{display:flex; gap:4px; flex-wrap:wrap; margin:0 0 12px;
+    border-bottom:1px solid var(--line); padding-bottom:8px}
+  .maint-tabs button{background:transparent; border:1px solid transparent; color:var(--muted);
+    font-family:var(--mono); font-size:11.5px; padding:5px 11px; border-radius:7px; cursor:pointer}
+  .maint-tabs button:hover{color:var(--text); background:rgba(255,255,255,.04)}
+  .maint-tabs button.on{color:var(--cyan); border-color:var(--cyan);
+    background:rgba(34,211,238,.08)}
+  .maint-pane[hidden]{display:none}
   /* 体检条：配置状态、版本、源，一格一句 */
   .kv{display:flex; flex-wrap:wrap; gap:6px 14px; font-family:var(--mono); font-size:11.5px;
     color:var(--muted); align-items:center}
@@ -678,7 +691,7 @@
     /* 窄屏队列头部塞不下「标题 + 计数 + 说明 + 两个按钮」：说明挪走、按钮换行 */
     #queue-hint{display:none}
     /* 智能整理头部同理：说明挪走，标题与按钮不被挤断 */
-    #norm-hint, #norm-foot-hint{display:none}
+    #norm-foot-hint{display:none}
     .queue-head .r{margin-left:0; width:100%; justify-content:flex-end}
   }
   @media(max-width:620px){
@@ -761,21 +774,11 @@
              stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
         <span class="t">订阅</span></button>
-      <button class="it" id="norm-btn" type="button" title="智能整理：收编未分类 + 按规范改名">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 7h9M4 12h6M4 17h9"/><path d="m17 9 3 3-3 3"/></svg>
-        <span class="t">智能整理</span></button>
-      <button class="it" id="health-open" type="button" title="归档校验：核对本地清单与远端，只报告不删">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 13h4l2.5 5 5-11L17 13h4"/></svg>
-        <span class="t">归档校验</span></button>
-      <button class="it" id="metatool-open" type="button" title="元数据维护：补刮、对照、手工纠正">
+      <button class="it" id="maint-open" type="button" title="归档维护：补刮与字段纠正、完整性检查、目录命名">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
           <path d="M4 6h16M4 12h16M4 18h10"/><path d="m16.5 16.5 1.5 1.5 3-3"/></svg>
-        <span class="t">元数据维护</span></button>
+        <span class="t">归档维护</span></button>
       <button class="it" id="settings-open" type="button" title="设置：配额、重试、并发、刮削开关等，改了立即生效">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
@@ -883,106 +886,107 @@
     <div id="backlog-list"><span class="hint">打开订阅面板后自动列出</span></div>
   </section>
 
-  <section class="panel wide" id="metapanel" hidden aria-label="元数据维护台">
+  <section class="panel wide" id="metapanel" hidden aria-label="归档维护">
     <div class="panel-actrow">
-      <b style="font-size:13px">元数据维护台</b>
+      <b style="font-size:13px">归档维护</b>
       <span class="badge" id="meta-state">未检查</span>
       <span class="hint" id="meta-hint"></span>
       <button class="ghost" id="meta-close" type="button">关闭</button>
     </div>
 
+    <!-- 四个子块：都是对「同一条归档记录」的不同侧面做体检/纠正。
+         以前是三个独立视图（元数据维护 / 归档校验 / 智能整理），侧栏占三格，
+         说的其实是同一件事：这条归档哪里不对、怎么改、远端对不对得上。 -->
     <div class="panel-body">
-      <div class="meta-h">配置体检</div>
-      <div class="kv" id="meta-conn"></div>
-      <div class="meta-h">待补刮番号 · 点一个填进输入框</div>
-      <div class="chips" id="meta-pending"></div>
-
-      <div class="meta-h">番号 · 对照与纠正</div>
-      <input id="meta-code" type="text" autocomplete="off" spellcheck="false"
-             placeholder="例如 SSIS-123；预览只读不写，点开先看清楚再决定">
-      <div class="panel-actions">
-        <button class="primary" id="meta-preview" type="button">预览差异</button>
-        <button class="ghost" id="meta-resync" type="button" title="重新刮一次：只补缺失字段，尊重锁定">
-          重新刮削
-        </button>
-        <button class="ghost warnful" id="meta-applyall" type="button" disabled
-                title="把下面所有未锁定的差异一次写进站内记录">全部应用</button>
-        <button class="ghost" id="meta-unlock" type="button"
-                title="把输入框里这个番号的锁定字段全部解开">解除本番号全部锁定</button>
+      <div class="maint-tabs" id="maint-tabs">
+        <button type="button" data-mtab="field" class="on">字段与补刮</button>
+        <button type="button" data-mtab="check">完整性检查</button>
+        <button type="button" data-mtab="name">目录命名</button>
+        <button type="button" data-mtab="attach">附件同步</button>
       </div>
-      <div class="notice quiet" id="meta-note-rule">
-        预览绝不改数据；「应用」只改站内记录，要动云端附件得在下面显式同步。
+      <!-- 子块 1：字段与补刮 -->
+      <div class="maint-pane" id="maint-field">
+        <div class="meta-h">配置体检</div>
+        <div class="kv" id="meta-conn"></div>
+        <div class="meta-h">待补刮番号 · 点一个填进输入框</div>
+        <div class="chips" id="meta-pending"></div>
+
+        <div class="meta-h">番号 · 对照与纠正</div>
+        <input id="meta-code" type="text" autocomplete="off" spellcheck="false"
+               placeholder="例如 SSIS-123；预览只读不写，点开先看清楚再决定">
+        <div class="panel-actions">
+          <button class="primary" id="meta-preview" type="button">预览差异</button>
+          <button class="ghost" id="meta-resync" type="button" title="重新刮一次：只补缺失字段，尊重锁定">
+            重新刮削
+          </button>
+          <button class="ghost warnful" id="meta-applyall" type="button" disabled
+                  title="把下面所有未锁定的差异一次写进站内记录">全部应用</button>
+          <button class="ghost" id="meta-unlock" type="button"
+                  title="把输入框里这个番号的锁定字段全部解开">解除本番号全部锁定</button>
+        </div>
+        <div class="notice quiet" id="meta-note-rule">
+          预览绝不改数据；「应用」只改站内记录，要动云端附件得在「附件同步」里显式同步。
+        </div>
+        <div id="meta-report"></div>
+        <div id="meta-diff"></div>
       </div>
-      <div id="meta-report"></div>
-      <div id="meta-diff"></div>
 
-      <div class="meta-h">附件同步到 Drive</div>
-      <div class="panel-actions">
-        <button class="ghost warnful" id="meta-sync" type="button" title="重新生成 NFO / JSON / 封面并逐文件推到 Drive">
-          同步附件到 Drive
-        </button>
-        <span class="hint" id="meta-synchint">会改动云端附件：确认后才去碰 Drive，不重传视频</span>
+      <!-- 子块 2：完整性检查（原「归档校验」视图） -->
+      <div class="maint-pane" id="maint-check" hidden>
+        <div class="meta-h">完整性检查 <span class="badge" id="maint-check-state">未检查</span></div>
+        <div class="notice">只报告，不自动补传或删除：缺文件可能是历史上传没传完，也可能有人手工动过，
+          程序不自作主张，结论交给你判断。</div>
+
+        <div class="meta-h">核对清单（只读）</div>
+        <div class="vsum" id="verify-sum"></div>
+        <div class="panel-actions">
+          <label class="chk">每批
+            <input id="verify-limit" type="number" min="1" max="200" value="20"
+                   style="width:56px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);
+                          background:rgba(0,0,0,.6);color:var(--text);font-family:var(--mono);font-size:11.5px">
+          </label>
+          <button class="primary" id="verify-run" type="button">开始检查</button>
+          <button class="ghost" id="verify-cancel" type="button" disabled>取消</button>
+          <button class="ghost" id="verify-dups" type="button">查重复归档</button>
+          <span class="hint" id="verify-prog"></span>
+        </div>
+        <div class="progress" id="verify-bar" hidden><i></i></div>
+        <div id="verify-list"></div>
+
+        <div class="meta-h">重复归档</div>
+        <div id="dups-list"><span class="hint">点「查重复归档」列出同番号多条记录 / 同 infohash 多份</span></div>
       </div>
-      <div id="meta-syncout"></div>
-    </div>
-  </section>
 
-  <section class="panel wide" id="healthpanel" hidden aria-label="归档健康">
-    <div class="panel-actrow">
-      <b style="font-size:13px">归档健康</b>
-      <span class="badge" id="health-state">未检查</span>
-      <span class="hint" id="health-hint"></span>
-      <button class="ghost" id="health-close" type="button">关闭</button>
-    </div>
+      <!-- 子块 3：目录命名（原「智能整理」视图） -->
+      <div class="maint-pane" id="maint-name" hidden>
+        <div class="meta-h">目录命名 <span class="badge" id="maint-name-state">未检查</span></div>
+        <div class="notice quiet">只做两件事：把未分类归档按文件名认回番号、把不合规的目录名改成规范名。
+          两步都先出清单，点按钮并确认后才动 Drive；文件不重传。</div>
 
-    <div class="panel-body">
-      <div class="notice">只报告，不自动补传或删除：缺文件可能是历史上传没传完，也可能有人手工动过，
-        程序不自作主张，结论交给你判断。</div>
+        <div class="meta-h">未分类可收编 <span class="chip plain" id="norm-adopt-n">0</span></div>
+        <div class="norm-list" id="norm-adopt"><span class="hint">展开时自动检查</span></div>
 
-      <div class="meta-h">核对清单（只读）</div>
-      <div class="vsum" id="verify-sum"></div>
-      <div class="panel-actions">
-        <label class="chk">每批
-          <input id="verify-limit" type="number" min="1" max="200" value="20"
-                 style="width:56px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);
-                        background:rgba(0,0,0,.6);color:var(--text);font-family:var(--mono);font-size:11.5px">
-        </label>
-        <button class="primary" id="verify-run" type="button">开始检查</button>
-        <button class="ghost" id="verify-cancel" type="button" disabled>取消</button>
-        <button class="ghost" id="verify-dups" type="button">查重复归档</button>
-        <span class="hint" id="verify-prog"></span>
+        <div class="meta-h">按规范改名 <span class="chip plain" id="norm-rename-n">0</span></div>
+        <div class="norm-list" id="norm-rename"><span class="hint">展开时自动检查</span></div>
+
+        <div id="norm-out"></div>
       </div>
-      <div class="progress" id="verify-bar" hidden><i></i></div>
-      <div id="verify-list"></div>
 
-      <div class="meta-h">重复归档</div>
-      <div id="dups-list"><span class="hint">点「查重复归档」列出同番号多条记录 / 同 infohash 多份</span></div>
-    </div>
-  </section>
-
-  <section class="panel wide" id="normpanel" hidden aria-label="智能整理">
-    <div class="panel-actrow">
-      <b style="font-size:13px">智能整理</b>
-      <span class="badge" id="norm-state">未检查</span>
-      <span class="hint" id="norm-hint"></span>
-      <button class="ghost" id="norm-close" type="button">返回归档</button>
+      <!-- 子块 4：附件同步 -->
+      <div class="maint-pane" id="maint-attach" hidden>
+        <div class="meta-h">附件同步到 Drive</div>
+        <div class="panel-actions">
+          <button class="ghost warnful" id="meta-sync" type="button" title="重新生成 NFO / JSON / 封面并逐文件推到 Drive">
+            同步附件到 Drive
+          </button>
+          <span class="hint" id="meta-synchint">会改动云端附件：确认后才去碰 Drive，不重传视频</span>
+        </div>
+        <div id="meta-syncout"></div>
+      </div>
     </div>
 
-    <div class="panel-body">
-      <div class="notice quiet">只做两件事：把未分类归档按文件名认回番号、把不合规的目录名改成规范名。
-        两步都先出清单，点按钮并确认后才动 Drive；文件不重传。</div>
-
-      <div class="meta-h">未分类可收编 <span class="chip plain" id="norm-adopt-n">0</span></div>
-      <div class="norm-list" id="norm-adopt"><span class="hint">展开时自动检查</span></div>
-
-      <div class="meta-h">按规范改名 <span class="chip plain" id="norm-rename-n">0</span></div>
-      <div class="norm-list" id="norm-rename"><span class="hint">展开时自动检查</span></div>
-
-      <div id="norm-out"></div>
-    </div>
-
-    <!-- 两个执行入口钉在面板底部：清单再长也不用滚到底才点得到 -->
-    <div class="panel-actrow" style="margin-top:10px">
+    <!-- 目录命名的两个执行入口钉在面板底部：清单再长也不用滚到底才点得到 -->
+    <div class="panel-actrow" id="maint-name-foot" hidden>
       <button class="primary" id="norm-adopt-run" type="button" disabled>收编未分类</button>
       <button class="primary" id="norm-rename-run" type="button" disabled>按规范改名</button>
       <button class="ghost" id="norm-refresh" type="button">重新检查</button>
@@ -1406,14 +1410,16 @@ function card(t) {
 const normState = {adopt: [], adoptSkip: [], rename: [], renameSkip: [], total: 0};
 
 function setNormHint(text, kind) {
-  const h = $("norm-hint");
+  // 提示语并到子块里（原来在独立视图的标题栏）
+  const h = $("norm-foot-hint");
   if (!h) return;
   h.textContent = text || "";
   h.className = "hint" + (kind ? " " + kind : "");
 }
 
 function setNormState(text, kind) {
-  const b = $("norm-state");
+  // 同上：目录命名子块自己的徽章
+  const b = $("maint-name-state");
   if (!b) return;
   b.textContent = text;
   b.className = "badge" + (kind ? " " + kind : "");
@@ -1545,7 +1551,8 @@ async function runNorm(kind, btn) {
 }
 
 function openNorm() {
-  showView("norm");
+  showView("maint");
+  switchMaintTab("name");
   loadNormPlan();
 }
 function closeNorm() {
@@ -2322,7 +2329,7 @@ $("sub-run").addEventListener("click", async () => {
 // ───────────────────────────────── 视图切换
 // 主内容区整块切换：点侧栏某项，中间区域整个换成那个界面，归档列表暂时隐藏。
 // 以前各功能是弹层（section.panel 浮在归档列表上），多个可以叠在一起；
-// 同一时刻只显示一个视图（归档 / 下载队列 / 订阅 / 智能整理 / 元数据 / 归档校验 / 设置）。
+// 同一时刻只显示一个视图（归档 / 下载队列 / 订阅 / 归档维护 / 设置）。
 function showView(name) {
   const isArchive = name === "archive";
   const resBox = $("resource-slot");
@@ -2337,8 +2344,7 @@ function showView(name) {
     // 提交区同理：只有输入里真的粘着磁力/直链时才显示
     ["submit-slot", isArchive && !!($("submit-slot") || {}).childElementCount],
     ["subpanel", name === "subs"],
-    ["metapanel", name === "meta"], ["healthpanel", name === "health"],
-    ["normpanel", name === "norm"],
+    ["metapanel", name === "maint"],
     ["settingspanel", name === "settings"], ["queue", name === "queue"],
   ];
   currentView = name;
@@ -2350,8 +2356,7 @@ function showView(name) {
   // queuebtn（下载队列抽屉）单独维护 on，切视图时一并清掉，避免双高亮
   const navOn = [
     ["archive-open", isArchive],
-    ["subs-open", name === "subs"], ["metatool-open", name === "meta"],
-    ["health-open", name === "health"], ["norm-btn", name === "norm"],
+    ["subs-open", name === "subs"], ["maint-open", name === "maint"],
     ["settings-open", name === "settings"],
     // 队列也是视图：在这一页时侧栏同样高亮，切走就清掉（别双高亮）
     ["queuebtn", name === "queue"],
@@ -2899,6 +2904,10 @@ async function panelControl(id, action, btn) {
 }
 
 // 迅雷面板里的任务：本程序之外下的东西也能在这里看到，不用另开 2345
+//
+// 减法：这一段是**外部下载器**的任务，不是 x-drive 的任务，默认收起。
+// 队列面板的主体只放自己的任务；要看迅雷那边再点开。
+const XL_PANEL_OPEN = "xlp";          // 展开状态记在 localStorage：刷新后还在
 async function appendPanelTasks(box, tail) {
   let data = null;
   try {
@@ -2911,20 +2920,34 @@ async function appendPanelTasks(box, tail) {
     renderQueueBlock(box, [], "xl:", tail);
     return;
   }
+  const open = localStorage.getItem(XL_PANEL_OPEN) === "1";
   const panelItems = [{
     key: "xl:head",
     sig: queueSig(["head", data.error || ""]),
-    build: () => el("div", "queue-sec" + (data.error ? " err" : ""),
-                    data.error ? `迅雷面板不可用：${data.error}` : "迅雷面板"),
+    build: () => {
+      const head = el("div", "queue-sec xl-head" + (data.error ? " err" : ""),
+                      data.error ? `迅雷面板不可用：${data.error}` : "迅雷面板");
+      const caret = el("span", "xl-caret", open ? "▾" : "▸");
+      head.insertBefore(caret, head.firstChild);
+      head.title = open ? "点一下收起" : "点一下展开（外部下载器的任务，不是本程序的任务）";
+      head.addEventListener("click", () => {
+        const next = localStorage.getItem(XL_PANEL_OPEN) === "1" ? "0" : "1";
+        localStorage.setItem(XL_PANEL_OPEN, next);
+        loadJobs();                       // 重画：头部文字与任务可见性跟着变
+      });
+      return head;
+    },
   }];
-  for (const t of tasks.slice(0, 20)) {
-    panelItems.push({
-      key: "xl:" + t.id,
-      // 同上：phase/name 决定结构（按钮不一样），percent/speed 只改字
-      sig: queueSig(["xl", t.name, t.phase, t.error ? 1 : 0]),
-      build: () => panelTaskNode(t),
-      update: node => node.updatePanel && node.updatePanel(),
-    });
+  if (open) {
+    for (const t of tasks.slice(0, 20)) {
+      panelItems.push({
+        key: "xl:" + t.id,
+        // 同上：phase/name 决定结构（按钮不一样），percent/speed 只改字
+        sig: queueSig(["xl", t.name, t.phase, t.error ? 1 : 0]),
+        build: () => panelTaskNode(t),
+        update: node => node.updatePanel && node.updatePanel(),
+      });
+    }
   }
   renderQueueBlock(box, panelItems, "xl:", tail);
 }
@@ -3924,7 +3947,8 @@ function metaFailedRow(code, name, why) {
 }
 
 function openMeta() {
-  showView("meta");
+  showView("maint");
+  switchMaintTab("field");
   loadMetaStatus();
   if ($("meta-code").value.trim() || metaState.code) renderMetaDiff();
 }
@@ -3933,9 +3957,38 @@ function closeMeta() {
   setMetaHint("");
 }
 
-$("metatool-open").addEventListener("click",
+// 归档维护台的四个子块：字段与补刮 / 完整性检查 / 目录命名 / 附件同步。
+// 以前是三个独立视图，各自一份标题栏与导航项；合到一起后侧栏少两格，
+// 而且「这条归档到底哪里不对」不用在三个页面之间来回跳。
+const MAINT_TABS = ["field", "check", "name", "attach"];
+function switchMaintTab(tab) {
+  const want = MAINT_TABS.includes(tab) ? tab : "field";
+  for (const t of MAINT_TABS) {
+    const pane = $("maint-" + t);
+    if (pane) pane.hidden = (t !== want);
+    const btn = document.querySelector('#maint-tabs button[data-mtab="' + t + '"]');
+    if (btn) btn.classList.toggle("on", t === want);
+  }
+  // 目录命名那块的执行按钮钉在面板底部，只在那一块显示
+  const foot = $("maint-name-foot");
+  if (foot) foot.hidden = (want !== "name");
+  // 子块自己带数据：切过去就顺手把该拉的拉了（原来在各自视图里手动触发）
+  if (want === "check") { renderVerifySummary(); renderVerifyList(); }
+  if (want === "name") loadNormPlan();
+  if (want === "attach") renderMetaSyncHint();
+}
+function renderMetaSyncHint() {
+  const h = $("meta-synchint");
+  if (h) h.textContent = "会改动云端附件：确认后才去碰 Drive，不重传视频";
+}
+
+$("maint-open").addEventListener("click",
   () => $("metapanel").hidden ? openMeta() : closeMeta());
 $("meta-close").addEventListener("click", closeMeta);
+$("maint-tabs").addEventListener("click", e => {
+  const btn = e.target.closest("button[data-mtab]");
+  if (btn) switchMaintTab(btn.dataset.mtab);
+});
 $("meta-preview").addEventListener("click", metaPreview);
 $("meta-applyall").addEventListener("click", metaApplyAll);
 $("meta-sync").addEventListener("click", metaSync);
@@ -3988,7 +4041,9 @@ function setVerifyHint(text, kind) {
 }
 
 function setVerifyState(text, kind) {
-  const b = $("health-state");
+  // 状态徽章：每个子块自己一个（原来在各自独立视图的标题栏）
+  const b = $("maint-check-state");
+  if (!b) return;
   b.textContent = text;
   b.className = "badge" + (kind ? " " + kind : "");
 }
@@ -4204,7 +4259,8 @@ async function loadDups() {
 }
 
 function openHealth() {
-  showView("health");
+  showView("maint");
+  switchMaintTab("check");
   renderVerifySummary();
   renderVerifyList();
 }
@@ -4214,15 +4270,10 @@ function closeHealth() {
   cancelVerify();
 }
 
-$("health-open").addEventListener("click",
-  () => $("healthpanel").hidden ? openHealth() : closeHealth());
-$("health-close").addEventListener("click", closeHealth);
 $("verify-run").addEventListener("click", verifyBatch);
 $("verify-cancel").addEventListener("click", cancelVerify);
 $("verify-dups").addEventListener("click", loadDups);
 
-$("norm-btn").addEventListener("click", () => (currentView === "norm" ? closeNorm() : openNorm()));
-$("norm-close").addEventListener("click", closeNorm);
 $("norm-refresh").addEventListener("click", loadNormPlan);
 $("norm-adopt-run").addEventListener("click", () => runNorm("adopt", $("norm-adopt-run")));
 $("norm-rename-run").addEventListener("click", () => runNorm("rename", $("norm-rename-run")));
@@ -4396,10 +4447,33 @@ async function loadSettings() {
     for (const [key, it] of Object.entries(items)) settingsSaved[key] = it.value;
     const groups = {};
     for (const [key, it] of Object.entries(items)) {
-      const group = it.group || "其它";
+      const group = it.group || "界面";
       (groups[group] = groups[group] || []).push([key, it]);
     }
     const names = Object.keys(groups);
+    // 分区内按「用途」排一下：存储 33 项挤在一起，迅雷凭据这种一次性的
+    // 该排在常用项后面（现在全按字母序，CD2_ 与 XLPAN_ 混着不好找）
+    const GROUP_ORDER = {
+      "存储": ["STORAGE_BACKEND", "STORAGE_ROOT", "CD2_URL", "CD2_USER", "CD2_PASSWORD",
+               "CD2_TLS", "CD2_CA_FILE", "CD2_CHUNK_MB", "CD2_CALL_TIMEOUT",
+               "CD2_TASK_TIMEOUT", "CD2_LINK_MODE", "SHARE_LINK_TEMPLATE",
+               "OPENLIST_URL", "OPENLIST_USER", "OPENLIST_PASSWORD", "OPENLIST_OTP",
+               "OPENLIST_TIMEOUT", "OPENLIST_UPLOAD_TIMEOUT", "OPENLIST_MULTIPART",
+               "OPENLIST_MULTIPART_MB", "OPENLIST_SHARE", "OPENLIST_SHARE_DAYS",
+               "OPENLIST_SHARE_PWD", "CLOUD_INGEST", "CLOUD_INBOX", "CLOUD_DEST",
+               "CLOUD_LAND_TIMEOUT", "CLOUD_LAND_STABLE", "CLOUD_POLL",
+               "XLPAN_CLIENT_ID", "XLPAN_TOKEN", "XLPAN_CAPTCHA_TOKEN", "XLPAN_DEVICE_ID"],
+    };
+    for (const group of names) {
+      const order = GROUP_ORDER[group];
+      if (order) {
+        const rank = k => {
+          const i = order.indexOf(k);
+          return i < 0 ? order.length : i;
+        };
+        groups[group].sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]));
+      }
+    }
     for (const group of names) settingsGroups[group] = groups[group].map(([key]) => key);
     // 保存后会重载一次：不要因为重载把用户弹回第一个分区
     if (!names.includes(settingsTab)) settingsTab = names[0] || "";
@@ -4423,10 +4497,10 @@ async function loadSettings() {
       // 存储分区最上面一行：当前后端 + 根目录 + 「测试连接」。
       // 以前改了地址要等到下一次上传才知道通不通，现在点点就能验。
       if (group === "存储") pane.append(storageStatusRow());
-      // 首页分区最上面一行：图片缓存占了多少 + 「清空缓存」
-      if (group === "首页") pane.append(imageCacheRow());
-      // 云盘归档分区最上面一行：这条链路当前能不能用（云添加要求很硬）
-      if (group === "云盘归档") pane.append(cloudStatusRow());
+      // 存储分区第二行：图片缓存占了多少 + 「清空缓存」
+      if (group === "数据源") pane.append(imageCacheRow());
+      // 存储分区第三行：云添加这条链路当前能不能用（要求很硬）
+      if (group === "存储") pane.append(cloudStatusRow());
       for (const [key, it] of groups[group]) pane.append(settingsRow(key, it));
       list.append(pane);
     });

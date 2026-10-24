@@ -264,29 +264,77 @@ def test_magnet_is_not_a_local_filter():
     assert 'qk.kind !== "magnet"' in filters
 
 
-# ---------------------------------------------------------------- 13. 智能整理是视图
+# ---------------------------------------------------------------- 13. 归档维护台（四块合一）
 
-def test_normalize_is_a_view_with_plan_lists():
-    """智能整理不再是「点一下弹两个 confirm」的动作：点得进去、先列清单。"""
+def test_maintenance_merges_three_views_into_four_tabs():
+    """归档校验 / 智能整理 / 元数据维护 合到「归档维护」一个面板，四个子块。
+
+    侧栏从 7 项减到 5 项：归档 / 下载队列 / 订阅 / 归档维护 / 设置。
+    """
     page = html()
-    assert 'id="normpanel"' in page and 'id="norm-adopt"' in page and 'id="norm-rename"' in page
+    assert 'id="metapanel"' in page, "维护台面板"
+    assert 'id="maint-tabs"' in page
+    for tab in ("field", "check", "name", "attach"):
+        assert f'id="maint-{tab}"' in page, f"缺子块 {tab}"
+        assert f'data-mtab="{tab}"' in page, f"缺子块标签 {tab}"
+    # 三块内容都在维护台里
+    assert 'id="norm-adopt"' in page and 'id="norm-rename"' in page
+    assert 'id="verify-sum"' in page and 'id="verify-list"' in page
+    assert 'id="meta-diff"' in page and 'id="meta-syncout"' in page
+    # 旧的两个独立面板与侧栏项要删干净
+    assert 'id="normpanel"' not in page, "智能整理不再是独立视图"
+    assert 'id="healthpanel"' not in page, "归档校验不再是独立视图"
+    assert 'id="norm-btn"' not in page and 'id="health-open"' not in page
+    assert 'id="metatool-open"' not in page, "旧入口名应换成 maint-open"
+    assert 'id="maint-open"' in page
+    js = script(page)
+    assert "function switchMaintTab" in js
+    body = js[js.index("function showView"):js.index("function showArchive")]
+    assert '["metapanel", name === "maint"]' in body, "showView 要管维护台视图"
+    assert '["maint-open", name === "maint"]' in body, "进维护台时侧栏要高亮"
+    assert '"normpanel"' not in body and '"healthpanel"' not in body
+
+
+def test_maintenance_tabs_keep_their_actions():
+    """三块各自的动作入口都得还在（合并不是删功能）。"""
+    page = html()
     js = script(page)
     assert "function loadNormPlan" in js and "function runNorm" in js
+    assert "function verifyBatch" in js and "function loadDups" in js
+    assert "function metaPreview" in js and "function metaSync" in js
     assert "askNormalize" not in js, "旧的一键动作应已移除"
+
+
+def test_settings_has_six_tabs():
+    """设置页子标签 12 → 6：合并成 存储/下载/刮削/归档/数据源/界面。
+
+    以前 12 个标签，每个只放两三项，翻起来比设置本身还费劲。
+    """
+    from app import settings as settings_mod
+    groups = {spec.get("group", "其它") for spec in settings_mod.SETTINGS_SPEC.values()}
+    assert groups == {"存储", "下载", "刮削", "归档", "数据源", "界面"}, groups
+
+
+def test_sidebar_has_five_entries():
+    """侧栏 7 → 5：归档 / 下载队列 / 订阅 / 归档维护 / 设置。"""
+    page = html()
+    for i in ("archive-open", "queuebtn", "subs-open", "maint-open", "settings-open"):
+        assert f'id="{i}"' in page, f"缺侧栏入口 {i}"
+    for gone in ("norm-btn", "health-open", "metatool-open"):
+        assert f'id="{gone}"' not in page, f"旧侧栏入口 {gone} 还在"
+    js = script(page)
     body = js[js.index("function showView"):js.index("function showArchive")]
-    assert '["normpanel", name === "norm"]' in body, "showView 要管智能整理视图"
-    assert '["norm-btn", name === "norm"]' in body, "进智能整理时侧栏要高亮"
-    nav = js[js.index('$("norm-btn").addEventListener'):]
-    assert "openNorm" in nav and "closeNorm" in nav
+    assert '"maint-open"' in body
 
 
 def test_normalize_actions_live_outside_scroll_area():
     """两份清单可以很长：执行按钮要钉在面板底部，不能滚到底才点得到。"""
     page = html()
-    body_start = page.index('<div class="panel-body">', page.index('id="normpanel"'))
-    body_end = page.index('</div>', page.index('id="norm-out"'))
+    # 动作行在 panel-body 之外（panel-body 以 </div> 收尾，脚注行在其后）
+    body_start = page.index('<div class="panel-body">', page.index('id="metapanel"'))
+    body_end = page.index('</div>\n    </div>', body_start)      # panel-body 的收尾
     foot = page[body_end:page.index('</section>', body_end)]
-    assert 'id="norm-rename-run"' in foot, "改名按钮应在 panel-body 之外"
+    assert 'id="norm-rename-run"' in foot, "改名按钮应在清单之外"
     assert 'id="norm-adopt-run"' in foot
 
 
@@ -449,7 +497,7 @@ def test_home_settings_show_image_cache_row():
     js = script(html())
     assert "function imageCacheRow()" in js
     assert 'subsApi("/api/images/clear", {confirm: true})' in js
-    assert 'if (group === "首页") pane.append(imageCacheRow());' in js
+    assert 'if (group === "数据源") pane.append(imageCacheRow());' in js
     assert "function mbText(" in js
 
 
@@ -486,7 +534,7 @@ def test_cloud_ingest_has_status_row_and_stage():
     """云添加依赖很硬（CD2 的离线能力），面板要先把「能不能用」摆出来。"""
     page = html()
     js = script(page)
-    assert 'if (group === "云盘归档") pane.append(cloudStatusRow());' in js
+    assert 'if (group === "存储") pane.append(cloudStatusRow());' in js
     assert "function cloudStatusRow()" in js
     # 必须是 GET（subsApi 传 body 会变成 POST，而 capability 只挂在 GET 上）
     assert 'subsApi("/api/cloud/capability")' in js

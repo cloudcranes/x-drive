@@ -736,7 +736,7 @@ def _resume_stage(job: dict, work: Path, key: str) -> tuple[str, list[Path], int
 def cloud_ready() -> tuple[bool, str]:
     """云添加链路能不能用。返回 (可用, 说明)。**不抛异常**：面板要能直接显示原因。"""
     if not get_setting("CLOUD_INGEST"):
-        return False, "未启用「云添加」（设置 → 云盘归档）"
+        return False, "未启用「云添加」（设置 → 存储）"
     inbox = str(get_setting("CLOUD_INBOX") or "").strip()
     if not inbox:
         return False, "没配「离线落地目录」"
@@ -799,7 +799,7 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
     """取云盘文件的直链：优先迅雷官方 API（外网可播 + 转码档），退回 CD2（内网）。
 
     官方 API 就是 greasyfork 脚本「迅雷云盘」用的那套（web_content_link +
-    medias 各档画质），凭据在设置 → 云盘归档；没配就用 CD2 的
+    medias 各档画质），凭据在设置 → 存储；没配就用 CD2 的
     GetDownloadUrlPath（实测可用，但只在内网有意义）。直链有有效期，不缓存。
     """
     if code and not path:
