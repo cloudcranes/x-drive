@@ -104,8 +104,10 @@ SETTINGS_SPEC: dict[str, dict] = {
                 "label": "显示媒体墙", "note": "关掉就只留归档列表（首页更快）"},
     "WALL_SOURCE": {"type": "str", "default": "javbus", "group": "首页",
                     "label": "媒体墙来源",
-                    "choices": ["javbus", "custom"],
-                    "note": "javbus = 数据源里那个 JavBus 实例的最新列表；custom = 下面那个地址"},
+                    "choices": ["javbus", "javdb", "custom"],
+                    "note": "javbus = 数据源里那个 JavBus 实例（JSON，快）；"
+                            "javdb = javdb.com 首页最新（HTML 解析，字段更全带评分）；"
+                            "custom = 下面那个地址"},
     "WALL_URL": {"type": "str", "default": "", "group": "首页",
                  "label": "自定义接口地址",
                  "note": "返回 JSON 即可，`{page}` 会被替换成页码；字段名自动按常见别名认"

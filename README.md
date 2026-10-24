@@ -187,8 +187,13 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
 归档列表上方是「最近上架」的封面流：点一张卡 = 把这个番号填进搜索框并搜资源，
 后面仍然走「选一条磁力 → 确认 → 下载」，媒体墙本身不发任何下载请求。
 
-- 默认来源是「数据源」里那个 JavBus 实例的最新列表（`/api/movies?page=N`）；
-- **不只限于它**：设置 → 首页 → 媒体墙来源选 `custom`，填一个返回 JSON 的地址即可，
+- 三个内置来源，设置里下拉切换：
+  - `javbus`（默认）：数据源里那个 JavBus 实例的 `/api/movies?page=N`，JSON、快；
+  - `javdb`：`javdb.com` 首页「最新」，**HTML 解析**（它没有公开 JSON 接口），
+    字段更全（带评分、磁链标记），每页 40 条，「还有下一页」看页面上的
+    `rel="next"` 而不是数条数；
+  - `custom`：见下；
+- **不只限于这些**：设置 → 首页 → 媒体墙来源选 `custom`，填一个返回 JSON 的地址即可，
   `{page}` 会替换成页码。字段名按常见别名认：
   列表 `movies` / `items` / `data` / `results` / `list` / `records`，
   番号 `id` / `code` / `number`，封面 `img` / `cover` / `thumb` / `poster`，

@@ -190,3 +190,38 @@ def test_find_is_cached(monkeypatch):
     wall.find("MIMK")
     second = wall.find("MIMK")
     assert second["cached"] is True and calls == ["MIMK"]
+
+
+# ─────────────────────────────────────────── javdb 源
+
+def test_javdb_source_is_registered():
+    assert "javdb" in wall.SOURCES
+    assert "javdb" in wall._FETCHERS
+
+
+def test_feed_from_javdb(monkeypatch):
+    async def fake_latest(page):
+        assert page == 1
+        return [{"code": "SIMM-912", "cover": "https://c0.jdbstatic.com/covers/aq/Aq2VRO.jpg",
+                 "title": "ひより", "date": "2026-10-03", "tags": ["★4.29", "含磁鏈"]}], True
+
+    monkeypatch.setattr(wall.javdbwall, "latest", fake_latest)
+    result = wall.feed(1, "javdb")
+    assert result["ok"] and result["source"] == "javdb"
+    assert result["items"][0]["code"] == "SIMM-912"
+    assert "★4.29" in result["items"][0]["tags"]
+
+
+def test_keyword_search_falls_back_to_javdb(monkeypatch):
+    """javbus 没结果时才问 javdb：两个源覆盖面不一样，多试一次不算浪费。"""
+    async def empty_bus(_keyword):
+        return []
+
+    async def db_hit(_keyword):
+        return [{"code": "MIMK-295", "img": "u"}]
+
+    monkeypatch.setattr(wall.javbus, "search", empty_bus)
+    monkeypatch.setattr(wall.javdbwall, "search", db_hit)
+    wall.clear_cache()
+    result = wall.find("MIMK")
+    assert result["ok"] and result["items"][0]["code"] == "MIMK-295"

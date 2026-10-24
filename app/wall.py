@@ -20,7 +20,7 @@ import time
 
 import httpx
 
-from . import javbus, settings as settings_mod
+from . import javbus, javdbwall, settings as settings_mod
 
 log = logging.getLogger("x-drive.wall")
 
@@ -33,6 +33,7 @@ TIMEOUT = 20.0
 # 然后登记到这里，前端下拉框是照着这份表渲染的。
 SOURCES = {
     "javbus": "JavBus 最新",
+    "javdb": "JavDB 最新",
     "custom": "自定义接口",
 }
 
@@ -137,6 +138,13 @@ async def _fetch_javbus(page: int) -> tuple[list[dict], bool]:
     return out, more
 
 
+async def _fetch_javdb(page: int) -> tuple[list[dict], bool]:
+    """javdb 首页「最新」：HTML 解析（它没有公开 JSON 接口）。"""
+    rows, more = await javdbwall.latest(page)
+    out = [item for item in (normalize_item(r) for r in rows) if item]
+    return out, more
+
+
 async def _fetch_custom(page: int) -> tuple[list[dict], bool]:
     template = _url_template()
     if not template:
@@ -158,7 +166,7 @@ async def _fetch_custom(page: int) -> tuple[list[dict], bool]:
     return normalize_payload(payload, page)
 
 
-_FETCHERS = {"javbus": _fetch_javbus, "custom": _fetch_custom}
+_FETCHERS = {"javbus": _fetch_javbus, "javdb": _fetch_javdb, "custom": _fetch_custom}
 
 # (source, page) -> (取数时间, 结果)。失败不缓存，下次还会重试。
 _CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
@@ -192,7 +200,11 @@ async def find_async(keyword: str, limit: int = 60) -> dict:
     if hit and time.monotonic() - hit[0] < SEARCH_TTL:
         return {**hit[1], "cached": True}
     try:
+        # 两个源的结果不一样（javbus 按番号前缀，javdb 也看标题），
+        # 所以搜索不跟着媒体墙的来源走，而是先问 javbus、空了再问 javdb。
         rows = await javbus.search(text)
+        if not rows:
+            rows = await javdbwall.search(text)
     except Exception as exc:                    # 上游挂了只回错误，不抛
         log.warning("关键词搜索失败（%s）：%s", text, exc)
         return {"ok": False, "query": text, "items": [], "error": str(exc)[:200]}
