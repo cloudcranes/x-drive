@@ -122,7 +122,7 @@ class Rclone(Backend):
             raise StorageError("移动完成，但清空原目录失败（不影响归档，可稍后重试）")
 
     # ── 自检
-    def check(self) -> tuple[bool, str]:
+    def check(self, probe_path: str = "") -> tuple[bool, str]:
         """探一次：能不能连上、能不能写。
 
         以前第一探是 `lsd <根目录>`，那会把根下所有番号目录列一遍 —— 归档上千条

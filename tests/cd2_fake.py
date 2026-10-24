@@ -29,6 +29,10 @@ def normalize(name: str) -> str:
     return name.translate(FULLWIDTH).rstrip(" \r\n\t\v\f\xa0.")
 
 
+def _default_space(_req, _ctx):
+    return pb.SpaceInfo(totalSpace=100 << 30, usedSpace=40 << 30, freeSpace=60 << 30)
+
+
 @dataclass
 class FakeCd2:
     """一个够用的内存实现。测试里直接读它的 files/dirs 断言副作用。"""
@@ -48,6 +52,7 @@ class FakeCd2:
     token_serial: int = 1
     server: object = None
     port: int = 0
+    get_space: object = None
 
     # ── 生命周期
     def start(self) -> "FakeCd2":
@@ -85,9 +90,7 @@ class FakeCd2:
             "DeleteFilePermanently": (pb.FileRequest, pb.FileOperationResult,
                                       lambda r, c: self.delete_one(r, c, permanent=True)),
             "GetSpaceInfo": (pb.FileRequest, pb.SpaceInfo,
-                             lambda r, c: pb.SpaceInfo(totalSpace=100 << 30,
-                                                       usedSpace=40 << 30,
-                                                       freeSpace=60 << 30)),
+                             lambda r, c: (self.get_space or _default_space)(r, c)),
             "GetUploadFileCount": (Empty, pb.GetUploadFileCountResult,
                                    lambda r, c: pb.GetUploadFileCountResult(
                                        fileCount=len(self.uploads))),

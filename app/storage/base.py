@@ -84,5 +84,9 @@ class Backend(Protocol):
         """同父目录改名（归档改名只用这一种）。"""
 
     # ── 自检
-    def check(self) -> tuple[bool, str]:
-        """(可用, 说明)。说明里带上版本/配额之类有用信息。"""
+    def check(self, probe_path: str = "") -> tuple[bool, str]:
+        """(可用, 说明)。说明里带上版本/配额之类有用信息。
+
+        probe_path 是「在归档根目录下探测写权限」——有些后端（CloudDrive2）
+        的 "/" 是聚合根，不允许建目录，只能在某个云盘目录里试。
+        """

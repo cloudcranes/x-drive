@@ -139,7 +139,7 @@ def test_check_handles_unknown_exception(tmp_path, monkeypatch):
     class Boom:
         kind = "rclone"
 
-        def check(self):
+        def check(self, probe_path=""):
             raise RuntimeError("炸了")
 
     monkeypatch.setattr(storage, "get", lambda which=None: Boom())

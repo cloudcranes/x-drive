@@ -232,7 +232,7 @@ def check() -> dict:
            "configured": snap["configured"], "latency_ms": 0, "detail": "", "error": ""}
     try:
         backend = get()
-        ok, detail = backend.check()
+        ok, detail = backend.check(root())
         out.update(ok=bool(ok), detail=detail)
         if not ok:
             out["error"] = detail

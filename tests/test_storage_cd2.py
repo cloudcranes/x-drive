@@ -200,3 +200,43 @@ def test_auth_error_is_distinct_from_storage_error(fake):
     cd2 = cd2mod.CloudDrive2(fake.url, "u", "wrong", chunk_mb=1, call_timeout=5)
     with pytest.raises(AuthError):
         cd2.ensure_dir("X-Drive/A")
+
+
+def test_check_probes_inside_archive_root(fake, tmp_path):
+    """CD2 的 "/" 是聚合根，建不了目录：探针必须落在归档根目录下。"""
+    cd2 = backend(fake)
+    cd2.ensure_dir("X-Drive")
+    ok, detail = cd2.check(probe_path="X-Drive")
+    assert ok and "/X-Drive" in detail
+    assert not [d for d in fake.dirs if d.endswith("_xdrive_healthcheck")], "探针要自己清掉"
+
+
+def test_check_says_why_root_is_not_writable(fake):
+    """根目录建不了就明说「能登录但建不了目录」，别报成连不上。"""
+    cd2 = backend(fake)
+    real = cd2.ensure_dir
+
+    def refuse(path):
+        if path.strip("/") == "_xdrive_healthcheck":
+            raise StorageError("clouddrive2 建目录失败（_xdrive_healthcheck）：create_folder is not supported")
+        return real(path)
+
+    cd2.ensure_dir = refuse
+    ok, detail = cd2.check(probe_path="")
+    assert not ok and "建不了目录" in detail and "create_folder" in detail
+
+
+def test_space_is_asked_at_archive_root(fake):
+    """配额要问归档根那一层：问 "/" 拿到的是聚合根，会给出上千万 GB 的假数字。"""
+    asked = []
+    real = backend(fake)
+
+    def space(req, _ctx):
+        from app.storage.proto import CloudDrive_pb2 as pb
+        asked.append(req.path)
+        return pb.SpaceInfo(totalSpace=2 << 40, usedSpace=1 << 40, freeSpace=1 << 40)
+
+    fake.get_space = space
+    ok, detail = real.check(probe_path="X-Drive")
+    assert ok and "1.0TB" in detail, detail
+    assert "/X-Drive" in asked and "/" not in asked

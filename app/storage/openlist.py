@@ -289,7 +289,7 @@ class OpenList(Backend):
         self._api("POST", "/api/fs/rename", {"path": self._p(src), "name": new_name})
 
     # ── 自检
-    def check(self) -> tuple[bool, str]:
+    def check(self, probe_path: str = "") -> tuple[bool, str]:
         try:
             if not self._token:
                 self.login()
@@ -301,7 +301,7 @@ class OpenList(Backend):
                                else {}).get("version") or "")
             except httpx.HTTPError:
                 pass
-            probe = "/_xdrive_healthcheck"
+            probe = f"{self._p(probe_path) if probe_path else ''}/_xdrive_healthcheck"
             self.ensure_dir(probe)
             listing = self._api("POST", "/api/fs/list", {
                 "path": self._p(""), "password": "", "page": 1,

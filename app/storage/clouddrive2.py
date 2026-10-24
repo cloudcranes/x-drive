@@ -28,6 +28,16 @@ from .cd2_grpc import UNARY, STREAM_IN, STREAM_OUT, Cd2Channel
 from .proto import CloudDrive_pb2 as pb
 
 FINISHED, ERROR = 5, 2          # pb.Status_*：Finished / Error
+
+
+def _human(size: int) -> str:
+    """字节数说成人话（自检那一行用，别写成 10553213.2GB）。"""
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if value < 1024 or unit == "PB":
+            return f"{value:.1f}{unit}" if unit != "B" else f"{int(value)}B"
+        value /= 1024
+    return f"{value:.1f}PB"
 # CD2 的文件名归一化规则（把 Windows 非法字符换成全角），用来匹配上传任务里的
 # destPath —— 否则带 `:` 的文件名会被它改名，我们按原名轮询就永远等不到。
 _FULLWIDTH = {ord(c): ord(c) + 65248 for c in '*?:/\\<>|"'}
@@ -265,7 +275,7 @@ class CloudDrive2(Backend):
             raise StorageError(f"clouddrive2 改名失败：{res.errorMessage or '未知原因'}")
 
     # ── 自检
-    def check(self) -> tuple[bool, str]:
+    def check(self, probe_path: str = "") -> tuple[bool, str]:
         try:
             self.chan.login()
             info = self.chan.call("GetSystemInfo", Empty(), pb.CloudDriveSystemInfo)
@@ -273,16 +283,27 @@ class CloudDrive2(Backend):
                 return False, f"clouddrive2 {self.chan.target}: {info.SystemMessage or '服务报错'}"
             if not getattr(info, "SystemReady", False):
                 return False, f"clouddrive2 {self.chan.target}: 服务还没就绪"
+            # 配额要问「归档根目录」那一层：问 "/" 拿到的是聚合根，
+            # 数字离谱到 10553213.2GB（各家云盘容量简单相加，还含未挂载的占位）
             try:
-                space = self.chan.call("GetSpaceInfo", pb.FileRequest(path="/"),
-                                       pb.SpaceInfo)
-                free = f" · 剩余 {space.freeSpace / 1024 ** 3:.1f}GB"
+                space = self.chan.call(
+                    "GetSpaceInfo", pb.FileRequest(path=self._p(probe_path)),
+                    pb.SpaceInfo)
+                free = f" · 剩余 {_human(space.freeSpace)}" if space.freeSpace > 0 else ""
             except StorageError:
                 free = ""
-            probe = "_xdrive_healthcheck"
-            self.ensure_dir(probe)
-            self.purge(probe)
-            return True, f"clouddrive2 {self.chan.target}: 可读写{free}"
+            # 在归档根目录下试写：CD2 的 "/" 是聚合根，不允许建目录（会报
+            # create_folder is not supported），拿它当探针等于自欺欺人
+            base = probe_path.strip("/")
+            probe = f"{base}/_xdrive_healthcheck" if base else "_xdrive_healthcheck"
+            try:
+                self.ensure_dir(probe)
+                self.purge(probe)
+            except StorageError as exc:
+                return False, (f"clouddrive2 {self.chan.target}: 能登录，但"
+                               f"{'/' + base if base else '根目录'} 下建不了目录：{exc}")
+            where = f" · 归档根 /{base}" if base else ""
+            return True, f"clouddrive2 {self.chan.target}: 可读写{free}{where}"
         except AuthError as exc:
             return False, str(exc)
         except StorageError as exc:
