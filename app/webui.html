@@ -4482,7 +4482,7 @@ async function loadSettings() {
       tab.id = `stabs-${index}`;
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-controls", `spane-${index}`);
-      tab.append(el("span", "n", String(groups[group].length)));
+      tab.append(el("span", "n", String(groups[group].filter(([, it]) => !it.hidden).length)));
       tab.addEventListener("click", () => switchSettingsTab(group));
       tabs.append(tab);
 
@@ -4500,9 +4500,13 @@ async function loadSettings() {
       if (group === "存储") pane.append(cloudStatusRow());
       // 存储分区第四行：迅雷云盘登录凭据（直链/回收站/云端操作用）
       if (group === "存储") pane.append(xlpAuthRow());
-      for (const [key, it] of groups[group]) pane.append(settingsRow(key, it));
-      list.append(pane);
-    });
+      // hidden 的项不在面板里出现（如迅雷那几个凭据：只能从浏览器复制，
+      // 散成四个输入框反而让人填错 —— 有专门的粘贴框统一处理）
+      for (const [key, it] of groups[group]) {
+        if (it.hidden) continue;
+        pane.append(settingsRow(key, it));
+      }
+      list.append(pane);    });
     switchSettingsTab(settingsTab);
     applyStorageScope();
     st.textContent = "已加载";

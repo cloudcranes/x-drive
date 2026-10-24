@@ -330,6 +330,19 @@ def test_settings_has_four_tabs():
     assert groups == {"存储", "下载", "刮削", "内容"}, groups
 
 
+def test_xunlei_credentials_are_not_shown_as_settings_rows():
+    """迅雷那几项凭据不在面板里出现：只能从浏览器复制，散成几个输入框
+    反而容易填错 —— 有专门的粘贴框统一处理（设置 → 存储 → 迅雷登录）。"""
+    from app import settings as settings_mod
+    for key in ("XLPAN_CLIENT_ID", "XLPAN_TOKEN", "XLPAN_REFRESH_TOKEN",
+                "XLPAN_DEVICE_ID", "XLPAN_CAPTCHA_TOKEN"):
+        spec = settings_mod.SETTINGS_SPEC[key]
+        assert spec.get("hidden") is True, f"{key} 应该在面板里隐藏"
+    page = html()
+    assert 'if (it.hidden) continue;' in page, "渲染时要跳过 hidden 的项"
+    assert "it.hidden" in script(page), "分区计数也要按可见项算"
+
+
 def test_sidebar_has_four_entries():
     """侧栏 7 → 5 → 4：归档 / 下载队列 / 订阅 / 设置。"""
     page = html()

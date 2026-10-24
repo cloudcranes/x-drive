@@ -150,23 +150,27 @@ SETTINGS_SPEC: dict[str, dict] = {
     #    内网直链；要外网可播、播放器/IDM 直接能用的链接，走官方 Web API（greasyfork
     #    脚本「迅雷云盘」同款）。凭据从浏览器 localStorage 的 credentials_{clientid} 抄。
     #    直链有有效期，过期要重新取（不做缓存）。
-    "XLPAN_CLIENT_ID": {"type": "str", "default": "", "group": "存储",
+    "XLPAN_CLIENT_ID": {"type": "str", "default": "", "group": "存储", "hidden": True,
+                        "secret": True,
                         "label": "迅雷 clientid",
                         "note": "浏览器 localStorage 里 credentials_ 后面那串"},
     "XLPAN_TOKEN": {"type": "str", "default": "", "group": "存储", "secret": True,
+                    "hidden": True,
                     "label": "迅雷 access_token",
                     "note": "localStorage credentials_{clientid} 里的 access_token；"
                             "也可填 `Bearer xxx` 完整串"},
     "XLPAN_REFRESH_TOKEN": {"type": "str", "default": "", "group": "存储", "secret": True,
+                            "hidden": True,
                             "label": "迅雷 refresh_token",
                             "note": "同一项里的 refresh_token：access_token 到期自动续，"
                                     "配了它就不用再手工抄 access_token"},
-    "XLPAN_DEVICE_ID": {"type": "str", "default": "", "group": "存储",
+    "XLPAN_DEVICE_ID": {"type": "str", "default": "", "group": "存储", "hidden": True,
                         "label": "迅雷 x-device-id", "note": "可选；localStorage 的 deviceid 项"},
     "XLPAN_CAPTCHA_TOKEN": {"type": "str", "default": "", "group": "存储", "secret": True,
+                            "hidden": True,
                             "label": "迅雷 x-captcha-token",
-                            "note": "localStorage 里 captcha 开头那项的 token；"
-                                    "风控要求，缺了 API 回 captcha_invalid"},
+                            "note": "写操作的风控凭据：程序自动签发（/v1/shield/captcha/init），"
+                                    "一般不用手填"},
     # ── 存储：归档往哪儿放。默认还是 rclone；切到 openlist / clouddrive2 之后
     #    网页改完下一次上传就生效（连接实例会按配置指纹重建）。
     "STORAGE_BACKEND": {"type": "str", "default": "rclone", "group": "存储",
