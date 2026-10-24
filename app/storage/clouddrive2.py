@@ -102,7 +102,7 @@ class CloudDrive2(Backend):
         return out
 
     def _entries_fresh(self, path: str) -> list:
-        """列目录；CD2 说「找不到」就用 forceRefresh 重试一次。
+        """列目录；CD2 说「找不到」就作废缓存重读一次。
 
         为什么需要（2026-10-24 实测）：CD2 有自己的**目录缓存**。刚
         CreateFolder 建出来的目录，缓存里还没有 —— 紧接着 GetSubFiles 那个
@@ -111,14 +111,18 @@ class CloudDrive2(Backend):
                        not found under "/迅雷云盘/我的资源"
         目录明明在（FindFileByPath 能查到），只是缓存没同步。
 
-        forceRefresh=True 让 CD2 绕过缓存重新解析路径。代价是一次远端
-        往返，只有在「普通读报找不到」时才用，正常路径不受影响。
+        重试要两步：先 ForceExpireDirCache 作废**父目录**那层缓存，
+        再带 forceRefresh 重新解析路径。只带 forceRefresh 不够 ——
+        实测它读的是同一份没作废的路径缓存，仍然报找不到。
+        代价是两次远端往返，但只在「普通读报找不到」时才付。
         """
         try:
             return self._entries(path)
         except StorageError as exc:
             if "not found" not in str(exc).lower() and "找不到" not in str(exc):
                 raise
+            parent, _name = self._split(path)
+            self._refresh_dir_cache(parent or path)
             try:
                 return self._entries(path, force=True)
             except StorageError:
@@ -296,14 +300,14 @@ class CloudDrive2(Backend):
                 last = exc
                 msg = str(exc).lower()
                 if attempt == 0 and ("not found" in msg or "找不到" in msg):
-                    # 缓存没同步：把这一层的目录缓存强刷一遍再试
-                    self._refresh_dir_cache(folder)
+                    # 缓存没同步：作废父目录那层缓存再试
+                    self._expire_parent_cache(folder)
                     continue
                 raise StorageError(f"clouddrive2 云添加失败：{exc}") from exc
             if res is not None and not res.success:
                 reason = res.errorMessage or ""
                 if attempt == 0 and ("not found" in reason.lower() or "找不到" in reason):
-                    self._refresh_dir_cache(folder)
+                    self._expire_parent_cache(folder)
                     continue
                 raise StorageError(f"clouddrive2 云添加失败：{reason or 'CD2 未给原因'}")
             return
@@ -319,6 +323,15 @@ class CloudDrive2(Backend):
                            Empty(), timeout=30.0)
         except Exception as exc:                    # noqa: BLE001 刷新只是辅助手段
             log.info("刷新 CD2 目录缓存失败（%s）：%s", path, exc)
+
+    def _expire_parent_cache(self, path: str) -> None:
+        """作废 path 的**父目录**那层缓存。
+
+        「找不到某个子目录」这件事，坏掉的是父目录的路径解析缓存 ——
+        实测作废父目录才有用，作废子目录自己没用。
+        """
+        parent, _name = self._split(path)
+        self._refresh_dir_cache(parent or path)
 
     def cloud_roots(self) -> list[dict]:
         """列出「支持离线下载」的云盘（给设置页选 CLOUD_INBOX 用）。"""

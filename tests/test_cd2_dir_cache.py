@@ -83,7 +83,7 @@ def test_entries_plain_has_no_force_refresh():
 
 
 def test_entries_fresh_retries_with_force_on_not_found():
-    """普通读报「找不到」→ 用 forceRefresh 重读一次并成功。"""
+    """普通读报「找不到」→ 作废父目录缓存 + forceRefresh 重读一次并成功。"""
 
     class Reply:
         subFiles = [_Entry("MAAN1199", is_dir=True)]
@@ -96,10 +96,14 @@ def test_entries_fresh_retries_with_force_on_not_found():
         'not found under "/迅雷云盘/我的资源"')
     chan = _Chan([not_found, Reply()])
     b = _backend(chan)
+    expired = []
+    b._refresh_dir_cache = lambda path: expired.append(path)
     out = b._entries_fresh("/迅雷云盘/我的资源/MAAN1199")
     assert [e.name for e in out] == ["MAAN1199"]
     assert chan.calls[0][1].forceRefresh is False
     assert chan.calls[1][1].forceRefresh is True
+    # 坏掉的是**父目录**那层路径缓存 —— 要作废父目录，不是子目录自己
+    assert expired == ["迅雷云盘/我的资源"], expired
 
 
 def test_entries_fresh_does_not_retry_on_other_errors():
@@ -118,6 +122,7 @@ def test_entries_fresh_reraises_original_when_force_also_fails():
     not_found = cd2.StorageError("not found under /x")
     chan = _Chan([not_found, cd2.StorageError("not found under /x (forced)")])
     b = _backend(chan)
+    b._refresh_dir_cache = lambda path: None
     with pytest.raises(cd2.StorageError) as ei:
         b._entries_fresh("/x")
     assert "forced" not in str(ei.value)
@@ -137,11 +142,13 @@ def test_offline_add_refreshes_cache_and_retries_on_not_found():
         Result(),
     ])
     b = _backend(chan)
-    b._refresh_dir_cache = lambda path: chan.calls.append(("REFRESH", path))
+    expired = []
+    b._refresh_dir_cache = lambda path: expired.append(path)
     b.offline_add("magnet:?xt=urn:btih:abc", "/迅雷云盘/我的资源/MAAN1199")
     methods = [m for m, _ in chan.calls]
     assert methods.count("AddOfflineFiles") == 2, "应该重试一次"
-    assert "REFRESH" in methods, "重试前要先作废目录缓存"
+    # 作废的是**父目录**那层缓存
+    assert expired == ["迅雷云盘/我的资源"], expired
 
 
 def test_offline_add_gives_up_after_one_retry():
