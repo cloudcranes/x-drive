@@ -3480,6 +3480,18 @@ class Handler(BaseHTTPRequestHandler):
             updates = payload.get("updates") or payload.get("settings") or {}
             self._json(set_settings(updates))
             return
+        if path == "/api/xlp/credentials":
+            # 写凭据要 POST（带请求体）。之前误挂在 do_GET 上：前端 POST 过来
+            # 落到 GET 分支找不到路由 → 404 text/plain → 浏览器 r.json() 抛
+            # 「JSON.parse: unexpected keyword」，看不出真正原因。
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            payload = self._payload(limit=65536)
+            self._json(xlp_apply_credentials(str(payload.get("text") or ""),
+                                           kind=str(payload.get("kind") or "")))
+            return
         if path == "/api/images/clear":
             if not self._authorized():
                 self._drain()
@@ -3675,19 +3687,6 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(parts.query)
             want_refresh = (qs.get("refresh", ["0"]) or ["0"])[0] in ("1", "true", "yes")
             self._json(xlp_auth_status(refresh=want_refresh))
-            return
-        if path == "/api/xlp/credentials":
-            if not self._authorized():
-                self._drain()
-                self._json({"ok": False, "error": "unauthorized"}, 401)
-                return
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                payload = json.loads(self.rfile.read(min(length, 65536)) or b"{}")
-            except (ValueError, json.JSONDecodeError):
-                payload = {}
-            self._json(xlp_apply_credentials(str(payload.get("text") or ""),
-                                           kind=str(payload.get("kind") or "")))
             return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
