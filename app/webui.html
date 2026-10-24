@@ -4728,9 +4728,13 @@ function xlpAuthRow() {
       if (!d) throw new Error("无响应");
       if (d.ok) {
         paste.value = "";
-        pasteHint.textContent = "已填入：" + (d.saved || []).join("、")
+        let msg = "已填入：" + (d.saved || []).join("、")
           + (d.expires_in ? " · 凭据剩余约 " + Math.round(d.expires_in / 3600) + " 小时" : "");
-        pasteHint.className = "hint ok";
+        if (d.missing && d.missing.length) {
+          msg += " · ⚠ 还缺：" + d.missing.join("、") + "（填了才能用）";
+        }
+        pasteHint.textContent = msg;
+        pasteHint.className = "hint" + (d.missing && d.missing.length ? " err" : " ok");
         show({configured: true, ok: true, expires_in: d.expires_in,
               has_refresh: d.has_refresh, detail: d.detail});
       } else {
@@ -4752,8 +4756,9 @@ function xlpAuthRow() {
 
   const note = el("div", "why",
     "账号密码直登迅雷不支持（实测 currently not supported），只能靠 refresh_token："
-    + "首次从浏览器 localStorage 的 credentials_{clientid} 抄一次，之后程序自己续。"
-    + "access_token 约 12 小时过期，配了 refresh_token 会自动续。");
+    + "首次从浏览器 localStorage 抄一次，之后程序自己续。"
+    + "需要两项：credentials_{clientid}（access_token + refresh_token）"
+    + "与 deviceid（形如 wdi10.…，读接口必需）—— 粘在一起也能认。");
   row.append(note);
   return row;
 }

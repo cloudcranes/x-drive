@@ -809,10 +809,12 @@ def xlp_apply_credentials(text: str) -> dict:
         return {"ok": False, "error": out["error"]}
     # 写完立刻验一次：填错了当场就知道，不用等 12 小时后
     state = xlp_auth_status()
+    missing = out.get("missing") or []
     return {"ok": bool(state.get("ok")), "saved": out.get("saved") or [],
             "error": state.get("error") or "", "detail": state.get("detail") or "",
             "expires_in": state.get("expires_in", 0),
-            "has_refresh": state.get("has_refresh", False)}
+            "has_refresh": state.get("has_refresh", False),
+            "missing": missing}
 
 
 def xlp_auth_status(refresh: bool = False) -> dict:

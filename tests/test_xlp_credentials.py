@@ -10,6 +10,8 @@ from __future__ import annotations
 import base64
 import json
 
+import pytest
+
 from app import xunleipan
 
 
@@ -47,6 +49,52 @@ def test_parse_key_value_lines():
     assert out["XLPAN_TOKEN"] == "eyJ.a.b"
     assert out["XLPAN_REFRESH_TOKEN"] == "a1.zzz"
     assert out["XLPAN_CLIENT_ID"] == "CID-9"
+
+
+def test_parse_picks_up_device_id():
+    """deviceid 是另一个 localStorage 键（形如 wdi10.…），但读接口必需它。"""
+    text = "deviceid: wdi10." + "a" * 64
+    out = xunleipan.parse_credentials(text)
+    assert out["XLPAN_DEVICE_ID"] == "wdi10." + "a" * 64
+
+    # 裸的 wdi10.… 也认
+    out2 = xunleipan.parse_credentials("wdi10." + "b" * 64)
+    assert out2["XLPAN_DEVICE_ID"] == "wdi10." + "b" * 64
+
+    # 混在同一个 JSON 里也认（有的导出工具会合并）
+    out3 = xunleipan.parse_credentials(json.dumps({
+        "access_token": _jwt(), "refresh_token": "a1.x", "deviceid": "wdi10.ccc"}))
+    assert out3["XLPAN_DEVICE_ID"] == "wdi10.ccc"
+
+
+def test_device_id_is_required_by_the_api():
+    """实测：读接口不带 x-device-id 回 400 invalid_argument —— 所以它是必需的。"""
+    import httpx
+    from app import xunleipan as xl
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["has"] = "x-device-id" in request.headers
+        if "x-device-id" not in request.headers:
+            return httpx.Response(400, json={"error": "invalid_argument"})
+        return httpx.Response(200, json={"files": []})
+
+    c = httpx.Client(transport=httpx.MockTransport(handler), base_url=xl.API)
+    with pytest.raises(xl.PanError):
+        xl.list_files(client=c)
+    assert seen["has"] is False, "本次刻意不带 device-id"
+
+    seen.clear()
+    xl._headers_orig = xl._headers
+    try:
+        xl._headers = lambda: {k: v for k, v in xl._headers_orig().items()
+                               if k != "x-device-id"}
+        with pytest.raises(xl.PanError):
+            xl.list_files(client=c)
+        assert seen["has"] is False
+    finally:
+        xl._headers = xl._headers_orig
 
 
 def test_parse_garbage_returns_empty():

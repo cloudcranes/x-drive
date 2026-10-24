@@ -132,6 +132,12 @@ def parse_credentials(text: str) -> dict:
     粘一整段进来就能一次填齐，不必逐个框复制。
 
     也接受只粘其中一两个值（access_token / refresh_token 各自一行）。
+
+    **device_id 是必需的**（实测：不带 x-device-id 的读接口回
+    400 invalid_argument），但它**不在** credentials 那一项里 —— 在
+    localStorage 的另一个键 `deviceid`，值形如 `wdi10.<64位hex>`。所以这段
+    文本里也要能认出来（`deviceid: wdi10.…` 或裸的 `wdi10.…`）。
+
     返回 {设置键: 值}，认不出来的键不出现。
     """
     out: dict[str, str] = {}
@@ -155,19 +161,26 @@ def parse_credentials(text: str) -> dict:
         cid = _client_id_from_jwt(at)
         if cid:
             out["XLPAN_CLIENT_ID"] = cid
+        # deviceid：可能混在同一个 JSON 里（有的导出工具会合并）
+        dev = str(data.get("deviceid") or data.get("device_id") or "").strip()
+        if dev:
+            out["XLPAN_DEVICE_ID"] = dev
         return out
     # 2) 逐行找 key=value 或裸 token
     for line in raw.splitlines():
         line = line.strip().strip(",").strip('"')
         if not line:
             continue
-        if line.startswith("access_token"):
+        low = line.lower()
+        if low.startswith("access_token"):
             out["XLPAN_TOKEN"] = line.split(":", 1)[-1].strip().strip('"')
-        elif line.startswith("refresh_token"):
+        elif low.startswith("refresh_token"):
             out["XLPAN_REFRESH_TOKEN"] = line.split(":", 1)[-1].strip().strip('"')
-        elif line.startswith("clientid"):
+        elif low.startswith("clientid"):
             out["XLPAN_CLIENT_ID"] = line.split(":", 1)[-1].strip().strip('"')
-    # 3) 裸的 JWT / a1.… 也认
+        elif low.startswith("deviceid") or low.startswith("device_id"):
+            out["XLPAN_DEVICE_ID"] = line.split(":", 1)[-1].strip().strip('"')
+    # 3) 裸的 JWT / a1.… / wdi10.… 也认
     if "XLPAN_TOKEN" not in out:
         for token in raw.split():
             if token.count(".") == 2 and token.startswith("eyJ"):
@@ -180,6 +193,11 @@ def parse_credentials(text: str) -> dict:
         for token in raw.split():
             if token.startswith("a1."):
                 out["XLPAN_REFRESH_TOKEN"] = token.strip('"')
+                break
+    if "XLPAN_DEVICE_ID" not in out:
+        for token in raw.split():
+            if token.startswith("wdi10."):
+                out["XLPAN_DEVICE_ID"] = token.strip('"')
                 break
     return out
 
@@ -199,15 +217,26 @@ def _client_id_from_jwt(token: str) -> str:
 
 
 def apply_credentials(text: str) -> dict:
-    """解析并写入凭据，返回 {saved: [...], error: str}。"""
+    """解析并写入凭据，返回 {saved: [...], error: str, missing: [...]}。
+
+    missing 列出**还缺什么**：device_id 是必需的（实测读接口不带
+    x-device-id 回 400 invalid_argument），而它不在 credentials 那一项里，
+    只粘那一项的话程序会用不了 —— 必须明说，不能让人以为填好了。
+    """
     parsed = parse_credentials(text)
     if not parsed:
-        return {"saved": [], "error": "没认出任何凭据（要 access_token / refresh_token / 整段 JSON）"}
+        return {"saved": [], "missing": [], "error": "没认出任何凭据（要 access_token / refresh_token / 整段 JSON）"}
     from . import web as web_mod
     res = web_mod.set_settings(parsed)
     if not res.get("ok"):
-        return {"saved": [], "error": str(res.get("failed") or "写入失败")[:200]}
-    return {"saved": list(res.get("saved") or []), "error": "",
+        return {"saved": [], "missing": [], "error": str(res.get("failed") or "写入失败")[:200]}
+    missing = []
+    for key, label in (("XLPAN_CLIENT_ID", "clientid"),
+                       ("XLPAN_TOKEN", "access_token"),
+                       ("XLPAN_DEVICE_ID", "deviceid")):
+        if not str(web_mod.get_setting(key) or "").strip():
+            missing.append(label)
+    return {"saved": list(res.get("saved") or []), "error": "", "missing": missing,
             "client_id": parsed.get("XLPAN_CLIENT_ID", "")}
 
 
