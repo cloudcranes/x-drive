@@ -444,3 +444,9 @@ def test_search_box_keyword_enter_searches():
     assert "searchResources(q.code)" in js and "searchKeyword(text)" in js
     # 点结果卡 = 切到精确番号
     assert "closeFind();" in js
+
+
+def test_wall_badge_falls_back_to_rating():
+    """javdb 的第一条标签是评分（★4.29）：没有高清/字幕标记时把评分露出来。"""
+    js = script(html())
+    assert '|| tags.find(t => t.startsWith("★"))' in js

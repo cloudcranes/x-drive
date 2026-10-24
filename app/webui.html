@@ -3034,8 +3034,12 @@ function wallCard(item, onClick) {
   if (wallOwned(item.code)) pic.append(el("span", "wall-owned", "已归档"));
   const tags = (item.tags || []).filter(Boolean);
   if (tags.length) {
-    const hd = tags.find(t => /高清|HD/i.test(t)) || tags.find(t => /字幕|sub/i.test(t));
-    if (hd) pic.append(el("span", "wall-tag", hd));
+    // 角标优先显示「高清 / 字幕」这类对选片有用的标记；javdb 的第一条是评分（★4.29），
+    // 没有前者时把评分露出来 —— 它比「含磁鏈」有用。
+    const badge = tags.find(t => /高清|HD/i.test(t))
+      || tags.find(t => /字幕|sub/i.test(t))
+      || tags.find(t => t.startsWith("★"));
+    if (badge) pic.append(el("span", "wall-tag", badge));
   }
   node.append(pic);
   const metaBits = [item.date, item.title].filter(Boolean).join(" · ");
