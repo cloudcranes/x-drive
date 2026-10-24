@@ -146,6 +146,19 @@ SETTINGS_SPEC: dict[str, dict] = {
                           "note": "云盘没有进度接口，只能看大小稳不稳；默认 3 次"},
     "CLOUD_POLL": {"type": "float", "default": 10.0, "group": "云盘归档",
                    "label": "落地轮询间隔 (秒)", "note": "太密会打疼云盘 API"},
+    # ── 迅雷官方直链（api-pan.xunlei.com）：CD2 的 static/GetDownloadUrlPath 只给
+    #    内网直链；要外网可播、播放器/IDM 直接能用的链接，走官方 Web API（greasyfork
+    #    脚本「迅雷云盘」同款）。凭据从浏览器 localStorage 的 credentials_{clientid} 抄。
+    #    直链有有效期，过期要重新取（不做缓存）。
+    "XLPAN_CLIENT_ID": {"type": "str", "default": "", "group": "云盘归档",
+                        "label": "迅雷 clientid",
+                        "note": "浏览器 localStorage 里 credentials_ 后面那串"},
+    "XLPAN_TOKEN": {"type": "str", "default": "", "group": "云盘归档", "secret": True,
+                    "label": "迅雷 access_token",
+                    "note": "localStorage credentials_{clientid} 里的 access_token；"
+                            "也可填 `Bearer xxx` 完整串"},
+    "XLPAN_DEVICE_ID": {"type": "str", "default": "", "group": "云盘归档",
+                        "label": "迅雷 x-device-id", "note": "可选；localStorage 的 deviceid 项"},
     # ── 存储：归档往哪儿放。默认还是 rclone；切到 openlist / clouddrive2 之后
     #    网页改完下一次上传就生效（连接实例会按配置指纹重建）。
     "STORAGE_BACKEND": {"type": "str", "default": "rclone", "group": "存储",
@@ -204,8 +217,9 @@ SETTINGS_SPEC: dict[str, dict] = {
                          "note": "等 CD2 把文件真正传上云的上限"},
     "CD2_LINK_MODE": {"type": "str", "default": "none", "group": "存储", "only": "clouddrive2",
                       "label": "CloudDrive2 链接形态",
-                      "choices": ["none", "static", "template"],
-                      "note": "CD2 没有「创建分享」接口：none=显示路径，static=单文件直链，template=按模板拼"},
+                      "choices": ["none", "static", "download-url", "template"],
+                      "note": "CD2 没有「创建分享」接口：none=显示路径，static=单文件直链，"
+                              "download-url=CD2 官方下载路径（带 cloudname），template=按模板拼"},
     "SHARE_LINK_TEMPLATE": {"type": "str", "default": "", "group": "存储", "only": "clouddrive2",
                             "label": "链接模板",
                             "note": "配合 static 之外的自建浏览页，{path} 会被替换成 URL 编码后的路径"},

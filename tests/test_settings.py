@@ -201,7 +201,7 @@ def test_storage_group_present(tmp_path, monkeypatch):
     snap = _s(tmp_path).snapshot()
     assert snap["STORAGE_BACKEND"]["value"] == "rclone"
     assert snap["STORAGE_BACKEND"]["choices"] == ["rclone", "openlist", "clouddrive2"]
-    assert snap["CD2_LINK_MODE"]["choices"] == ["none", "static", "template"]
+    assert snap["CD2_LINK_MODE"]["choices"] == ["none", "static", "download-url", "template"]
 
 
 def test_storage_secrets_are_never_echoed(tmp_path, monkeypatch):

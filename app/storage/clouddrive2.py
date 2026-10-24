@@ -291,10 +291,42 @@ class CloudDrive2(Backend):
         return False, f"{folder} 所在云盘不支持离线下载"
 
     # ── 分享 / 变更
+    def download_url(self, path: str) -> str | None:
+        """任意文件/目录的下载直链（GetDownloadUrlPath）。实测 expiresIn=0 不过期，
+        返回 `/static/{SCHEME}/{HOST}/false/…?cloudname=…`，占位符换成 CD2 自身地址。"""
+        try:
+            info = self.chan.call(
+                "GetDownloadUrlPath",
+                pb.GetDownloadUrlPathRequest(path=self._p(path), preview=False),
+                pb.DownloadUrlPathInfo, timeout=30.0)
+        except StorageError as exc:
+            log.warning("取 %s 的下载路径失败：%s", path, exc)
+            return None
+        raw = str(getattr(info, "downloadUrlPath", "") or "")
+        if not raw:
+            return None
+        scheme = self.base.split("://", 1)[0]
+        host = self.base.split("//", 1)[-1]
+        raw = raw.replace("{SCHEME}", scheme, 1).replace("{HOST}", host, 1)
+        return self.base + raw if raw.startswith("/") else raw
+
     def link(self, dest: str) -> str | None:
-        """CD2 没有「创建分享」的接口（AddSharedLink 是「把别人的分享加进来」）。"""
+        """CD2 没有「创建分享」的接口（AddSharedLink 是「把别人的分享加进来」）。
+
+        download-url 档走 CD2 的 GetDownloadUrlPath（实测返回
+        `/static/{SCHEME}/{HOST}/false/…?cloudname=…`，expiresIn=0 不过期）：
+        比手拼 static 多了 cloudname，多云盘混挂时定位正确。
+        """
         if self.link_mode == "template" and self.link_template:
             return self.link_template.replace("{path}", quote(dest.strip("/"), safe="/"))
+        if self.link_mode == "download-url":
+            files = self.list_files(dest)
+            media = [f for f in files if Path(f.name).suffix.lower() in
+                     (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".mov", ".rmvb", ".iso")]
+            target = dest
+            if len(files) == 1 or len(media) == 1:
+                target = f"{dest.strip('/')}/{(media or files)[0].name}"
+            return self.download_url(target)
         if self.link_mode == "static":
             files = self.list_files(dest)
             media = [f for f in files if Path(f.name).suffix.lower() in

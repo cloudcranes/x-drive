@@ -34,7 +34,7 @@ import httpx
 from . import (backlog, cleanup, cloudingest, cloudorganize, codes, core, diskspace, fetcher,
                imgcache, meta, metadata, metatube, notify, pipeline, preview, retry,
                settings as settings_mod, sources, storage, store, subscribe, wall, workspace,
-               xunlei)
+               xunlei, xunleipan)
 
 log = logging.getLogger("x-drive.web")
 
@@ -793,6 +793,55 @@ def _cloud_submit(backend, job_id: str, source: str, my_inbox: str) -> dict:
                                                "before": submitted["before"],
                                                "at": time.time()}})
     return submitted
+
+
+def cloud_direct_link(path: str = "", code: str = "") -> dict:
+    """取云盘文件的直链：优先迅雷官方 API（外网可播 + 转码档），退回 CD2（内网）。
+
+    官方 API 就是 greasyfork 脚本「迅雷云盘」用的那套（web_content_link +
+    medias 各档画质），凭据在设置 → 云盘归档；没配就用 CD2 的
+    GetDownloadUrlPath（实测可用，但只在内网有意义）。直链有有效期，不缓存。
+    """
+    if code and not path:
+        state = core.load_state(STATE)
+        key = codes.canonical(code) or (code or "").strip().upper()
+        record = state.get(key) or {}
+        if not record:
+            return {"ok": False, "error": f"没有 {key} 的归档记录"}
+        rel = archive_locator(record)
+        try:
+            entries = storage_backend().list_files(rel)
+        except Exception as exc:                # noqa: BLE001
+            return {"ok": False, "error": f"列归档目录失败：{str(exc)[:120]}"}
+        if not entries:
+            return {"ok": False, "error": f"{key} 归档目录是空的"}
+        media_ext = (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".mov", ".rmvb", ".iso")
+        media = [e for e in entries if Path(e.name).suffix.lower() in media_ext]
+        path = f"{rel}/{(media or entries)[0].name}"
+    path = (path or "").strip("/")
+    if not path or ".." in path or "\\" in path:
+        return {"ok": False, "error": "缺少合法的文件路径"}
+
+    # 1) 迅雷官方 API：外网可播的 web_content_link + 云播转码档
+    if xunleipan.configured():
+        try:
+            info = xunleipan.direct_link(path)
+            return {"ok": True, "via": "xunleipan", "path": path,
+                    "name": info.get("name") or "", "link": info.get("link") or "",
+                    "medias": info.get("medias") or []}
+        except Exception as exc:                # noqa: BLE001 退回 CD2
+            log.warning("官方 API 取直链失败，退回 CD2：%s", exc)
+    # 2) CD2：内网直链（下载路径）
+    try:
+        backend = storage_backend()
+        probe = getattr(backend, "download_url", None)
+        link = probe(path) if probe else backend.link(path)
+    except Exception as exc:                    # noqa: BLE001
+        return {"ok": False, "error": f"取直链失败：{str(exc)[:120]}"}
+    if not link:
+        return {"ok": False, "error": "这个后端取不到直链（可配迅雷官方 API 或 CD2_LINK_MODE）"}
+    return {"ok": True, "via": "clouddrive2", "path": path,
+            "name": path.rsplit("/", 1)[-1], "link": link, "medias": []}
 
 
 def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
@@ -3537,6 +3586,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "unauthorized"}, 401)
                 return
             self._json(cloud_capability())
+            return
+        if path == "/api/cloud/directlink":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            qs = parse_qs(parts.query)
+            want_path = (qs.get("path", [""]) or [""])[0]
+            want_code = (qs.get("code", [""]) or [""])[0]
+            self._json(cloud_direct_link(path=want_path, code=want_code))
             return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
