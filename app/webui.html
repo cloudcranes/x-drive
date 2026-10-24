@@ -3953,6 +3953,14 @@ const STORAGE_SCOPE_HINT = {
   clouddrive2: "CloudDrive2：填地址与账号（注册邮箱）。上传是异步任务，程序会等它传完再记账。",
 };
 
+// 容器里填宿主机 LAN 地址会连不上：后端会自动改写成 host.docker.internal。
+// 面板上提一句，免得用户以为「我明明填的是 192.168.1.170，怎么报错的又是别名」。
+function storageNetNote() {
+  if (!storageInfo || !storageInfo.net || !storageInfo.net.container) return "";
+  return `（当前在容器内：填 ${storageInfo.net.gateway || "宿主机"} 这类地址会自动按 `
+    + `${storageInfo.net.alias} 连，连不上时才会改写）`;
+}
+
 function storageChoice() {
   // 优先用下拉里还没保存的选择：切过去就立刻只显示那一套参数
   return settingsDirty["STORAGE_BACKEND"] || settingsSaved["STORAGE_BACKEND"] || "rclone";
@@ -3974,7 +3982,7 @@ function applyStorageScope() {
         && k.startsWith(r.dataset.scope === "openlist" ? "OPENLIST_" : "CD2_")))
       .map(r => r.dataset.scope);
     const others = [...new Set(hiddenDirty)].filter(x => x !== chosen);
-    let text = STORAGE_SCOPE_HINT[chosen] || "";
+    let text = (STORAGE_SCOPE_HINT[chosen] || "") + storageNetNote();
     if (others.length) {
       text += `（另：${others.map(o => o === "openlist" ? "OpenList" : "CloudDrive2")
         .join(" / ")} 的改动还没保存，切过去看一眼再保存更稳妥）`;
@@ -4054,7 +4062,7 @@ function storageStatusRow() {
   // 统一决定 —— 否则它会覆盖掉「已保存 → 待保存」那行提示（曾经就这样闪回去）
   subsApi("/api/storage").then(d => {
     if (!d || !d.kind) return;
-    storageInfo = {kind: d.kind, root: d.root, configured: d.configured};
+    storageInfo = {kind: d.kind, root: d.root, configured: d.configured, net: d.net};
     applyStorageScope();
   }).catch(() => {});
   return row;

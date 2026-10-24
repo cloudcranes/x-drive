@@ -21,6 +21,7 @@ import threading
 import time
 from pathlib import Path
 
+from .. import netalias
 from .. import settings as settings_mod
 from .base import AuthError, Backend, FileEntry, StorageError
 from .rclone import Rclone
@@ -221,7 +222,10 @@ def snapshot() -> dict:
         configured = True                     # rclone 只依赖挂载进来的配置文件
     return {"kind": which, "root": root(), "configured": configured,
             "link_mode": (str(_val("CD2_LINK_MODE") or "none") if which == "clouddrive2"
-                          else ("share" if which == "openlist" else "rclone"))}
+                          else ("share" if which == "openlist" else "rclone")),
+            # 容器内填宿主机 LAN 地址会被自动改写成 host.docker.internal，
+            # 面板据此提一句，免得用户以为「我明明填的是 192.168.1.170」
+            "net": netalias.describe()}
 
 
 def check() -> dict:

@@ -27,6 +27,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .. import netalias
 from .base import AuthError, Backend, FileEntry, Progress, StorageError
 
 PER_PAGE = 200                      # 服务端上限 500，取 200 留余量
@@ -41,9 +42,13 @@ class OpenList(Backend):
                  multipart: bool = False, multipart_mb: float = 512,
                  share: bool = True, share_days: int = 0, share_pwd: str = "",
                  client: httpx.Client | None = None):
-        self.base = (base or "").rstrip("/")
-        if not self.base:
+        raw = (base or "").rstrip("/")
+        if not raw:
             raise AuthError("openlist：没配 OPENLIST_URL")
+        # 容器里填了宿主机 LAN 地址会连不上，这里统一过一遍地址改写
+        self.base, self.note = netalias.resolve(raw)
+        if self.note:
+            log.info("OpenList %s", self.note)
         self.user = user or ""
         self.password = password or ""
         self.otp = otp or ""
@@ -310,8 +315,9 @@ class OpenList(Backend):
             self.purge(probe)
             if not writable:
                 return False, f"openlist {self.base}: 只读挂载，不能上传"
-            return True, "openlist {}: 可读写{}".format(
-                self.base, f" · v{version}" if version else "")
+            note = f"（{self.note}）" if self.note else ""
+            return True, "openlist {}: 可读写{}{}".format(
+                self.base, f" · v{version}" if version else "", note)
         except AuthError as exc:
             return False, str(exc)
         except (StorageError, httpx.HTTPError) as exc:

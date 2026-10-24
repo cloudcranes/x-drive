@@ -370,3 +370,11 @@ def test_storage_status_row_marks_unsaved_backend_switch():
     js = script(html())
     assert "（待保存）" in js
     assert 'val.classList.toggle("dirty", chosen !== saved)' in js
+
+
+def test_storage_panel_explains_host_address_rewrite():
+    """容器里填宿主机 LAN 地址会被后端改写：面板要提一句，否则用户看不懂报错里的别名。"""
+    js = script(html())
+    assert "function storageNetNote()" in js
+    assert "storageInfo.net.container" in js
+    assert "host.docker.internal" in js, "要写出别名具体是什么"

@@ -17,15 +17,19 @@
 """
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from google.protobuf.empty_pb2 import Empty
 
+from .. import netalias
 from .base import AuthError, Backend, FileEntry, Progress, StorageError
 from .cd2_grpc import UNARY, STREAM_IN, STREAM_OUT, Cd2Channel
 from .proto import CloudDrive_pb2 as pb
+
+log = logging.getLogger("x-drive.storage.cd2")
 
 FINISHED, ERROR = 5, 2          # pb.Status_*：Finished / Error
 
@@ -58,10 +62,13 @@ class CloudDrive2(Backend):
         self.chunk = max(1, int(float(chunk_mb or 4) * 1024 * 1024))
         self.link_mode = (link_mode or "none").strip().lower()
         self.link_template = (link_template or "").strip()
-        parts = urlsplit(url if "//" in url else f"//{url}")
+        resolved, self.note = netalias.resolve(url)
+        if self.note:
+            log.info("CloudDrive2 %s", self.note)
+        parts = urlsplit(resolved if "//" in resolved else f"//{resolved}")
         scheme = (parts.scheme or "http").lower()
         self.base = f"{scheme}://{parts.netloc or parts.path}"
-        self.chan = channel or Cd2Channel(url, user, password, tls=tls, ca_file=ca_file,
+        self.chan = channel or Cd2Channel(resolved, user, password, tls=tls, ca_file=ca_file,
                                          timeout=call_timeout, task_timeout=task_timeout)
 
     # ── 路径
@@ -303,7 +310,8 @@ class CloudDrive2(Backend):
                 return False, (f"clouddrive2 {self.chan.target}: 能登录，但"
                                f"{'/' + base if base else '根目录'} 下建不了目录：{exc}")
             where = f" · 归档根 /{base}" if base else ""
-            return True, f"clouddrive2 {self.chan.target}: 可读写{free}{where}"
+            note = f"（{self.note}）" if getattr(self, "note", "") else ""
+            return True, f"clouddrive2 {self.chan.target}: 可读写{free}{where}{note}"
         except AuthError as exc:
             return False, str(exc)
         except StorageError as exc:

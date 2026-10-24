@@ -27,6 +27,7 @@ import time
 
 import httpx
 
+from . import netalias
 from . import settings as settings_mod
 
 log = logging.getLogger("x-drive.metatube")
@@ -46,7 +47,9 @@ CACHE_DIR = os.getenv("METATUBE_CACHE", "")
 # 运行时配置：网页「设置 → 数据源」改过的值优先（settings.hot），
 # 没配过就用模块常量（环境变量 / 默认值）。改完下一次请求即生效，不用重启。
 def base() -> str:
-    return str(settings_mod.hot("METATUBE_URL", BASE) or "").rstrip("/")
+    """MetaTube 的地址。容器里填成宿主机 LAN 地址会连不上，交给 netalias 改写。"""
+    raw = str(settings_mod.hot("METATUBE_URL", BASE) or "").rstrip("/")
+    return netalias.resolve(raw)[0] if raw else raw
 
 
 def _auth() -> tuple[str, str, str]:
