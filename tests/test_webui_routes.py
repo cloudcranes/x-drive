@@ -147,3 +147,17 @@ def test_subs_api_uses_read_json(js):
 
 def test_js_still_balanced(js):
     assert scan(js) == [], "改完前端后 JS 括号/字符串失衡"
+
+
+def test_xlp_row_has_three_paste_boxes(js):
+    """三个粘贴框：凭据 / deviceid / captcha。
+
+    captcha 那一格是后来加的 —— 官方只认浏览器签的那枚（带设备签名），
+    程序自己签的会被判 no client info found，所以只能手工粘。
+    """
+    body = js[js.index("function xlpAuthRow"):js.index("function cloudStatusRow")]
+    assert body.count('el("input", "xlp-paste")') == 3, "应有三个粘贴框"
+    for kind in ('"cred"', '"device"', '"captcha"'):
+        assert kind in body, f"缺少 {kind} 这一类的提交"
+    assert "填入 captcha" in body, "缺少「填入 captcha」按钮"
+    assert "captcha_{clientid}" in body, "提示里要说明从哪取 captcha"

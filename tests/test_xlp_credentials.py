@@ -276,3 +276,108 @@ def test_get_retries_with_captcha_when_refused(monkeypatch):
     out = xunleipan.list_files(client=c)
     assert out == []
     assert seen_captcha == ["ok"], "被判 captcha 后应自动走链重试一次"
+
+
+# ---------------------------------------------------------------- captcha 框
+
+def test_apply_kind_captcha_writes_browser_token(monkeypatch):
+    """captcha 框：粘浏览器签的那枚（ck0. 开头）就写进去。"""
+    saved = {}
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings",
+                        lambda u: saved.update(u) or {"ok": True, "saved": list(u)})
+    out = xunleipan.apply_credentials("ck0.abcDEF0123", kind="captcha")
+    assert saved == {"XLPAN_CAPTCHA_TOKEN": "ck0.abcDEF0123"}, saved
+    assert out["saved"] == ["XLPAN_CAPTCHA_TOKEN"] and not out["error"]
+
+
+def test_apply_kind_captcha_accepts_localstorage_json(monkeypatch):
+    """粘 localStorage 那一整项（{"token":…,"expires_at":…}）也行。"""
+    saved = {}
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings",
+                        lambda u: saved.update(u) or {"ok": True, "saved": list(u)})
+    blob = json.dumps({"token": "ck0.fromLocalStorage", "expires_at": "2026-10-24 22:12:05"})
+    xunleipan.apply_credentials(blob, kind="captcha")
+    assert saved.get("XLPAN_CAPTCHA_TOKEN") == "ck0.fromLocalStorage"
+
+
+def test_apply_kind_captcha_rejects_other_text(monkeypatch):
+    """不是 ck0. 开头的要明说，别把乱七八糟的东西写进设置。"""
+    saved = {}
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings",
+                        lambda u: saved.update(u) or {"ok": True, "saved": list(u)})
+    out = xunleipan.apply_credentials("wdi10.not-a-captcha", kind="captcha")
+    assert out["saved"] == [] and saved == {}
+    assert "ck0" in out["error"]
+
+
+def test_apply_kind_captcha_does_not_touch_other_settings(monkeypatch):
+    """captcha 框只写 captcha：别把粘错的东西顺手写进别处。"""
+    saved = {}
+    import app.web as web_mod
+    monkeypatch.setattr(web_mod, "set_settings",
+                        lambda u: saved.update(u) or {"ok": True, "saved": list(u)})
+    monkeypatch.setattr(web_mod, "get_setting",
+                        lambda k, d=None: saved.get(k, d if d is not None else ""))
+    xunleipan.apply_credentials("ck0.onlythis", kind="captcha")
+    assert set(saved) == {"XLPAN_CAPTCHA_TOKEN"}, saved
+
+
+# ---------------------------------------------------------------- 错误信息要可执行
+
+def test_captcha_detail_extracts_server_reason():
+    """400 里的 error_details[0].detail 要能取出来（区分两种 captcha 失败）。"""
+    body = json.dumps({
+        "error": "captcha_invalid", "error_code": 9,
+        "error_details": [
+            {"@type": "type.googleapis.com/google.rpc.DebugInfo",
+             "stack_entries": [], "detail": "no client info found"},
+        ],
+    })
+    assert xunleipan._captcha_detail(body) == "no client info found"
+
+
+def test_captcha_detail_ignores_broken_json():
+    assert xunleipan._captcha_detail("not json") == ""
+
+
+def test_get_says_client_info_when_server_rejects_unsigned_captcha(monkeypatch):
+    """签发接口给的 captcha 不带设备签名 → 服务端回 no client info found。
+
+    这时不能再只说「轮换链对不上」（重签无用），要明说必须从浏览器重取。
+    """
+    calls = {"n": 0}
+
+    class FakeResp:
+        def __init__(self, code, text):
+            self.status_code = code
+            self.text = text
+
+        def json(self):
+            return json.loads(self.text)
+
+    class FakeClient:
+        def post(self, *a, **kw):
+            calls["n"] += 1
+            return FakeResp(200, json.dumps({"captcha_token": "ck0.signed", "expires_in": 300}))
+
+        def get(self, *a, **kw):
+            return FakeResp(400, json.dumps({
+                "error": "captcha_invalid",
+                "error_details": [{"detail": "no client info found"}],
+            }))
+
+        def close(self):
+            pass
+
+    _env(monkeypatch, token=_jwt())
+    monkeypatch.setattr(xunleipan, "auto_refresh", lambda **kw: {"ok": True, "skipped": True})
+    monkeypatch.setattr(xunleipan, "sign_captcha",
+                        lambda action, **kw: ("ck0.signed", 300))
+    with pytest.raises(xunleipan.PanError) as ei:
+        xunleipan._get("/drive/v1/files", client=FakeClient())
+    msg = str(ei.value)
+    assert "no client info found" in msg, msg
+    assert "浏览器" in msg, msg

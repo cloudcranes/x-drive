@@ -801,7 +801,7 @@ def xlp_apply_credentials(text: str, kind: str = "") -> dict:
     浏览器 localStorage 的 `credentials_{clientid}` 就是一段 JSON，粘进来一次填齐：
     access_token / refresh_token / clientid（clientid 从 JWT 的 aud 自动取）。
 
-    kind="cred" / "device" 时只处理那一类（前端是两个独立输入框）。
+    kind="cred" / "device" / "captcha" 时只处理那一类（前端是三个独立输入框）。
     """
     try:
         out = xunleipan.apply_credentials(text or "", kind=kind)

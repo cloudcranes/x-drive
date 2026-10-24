@@ -4748,13 +4748,16 @@ function xlpAuthRow() {
   row.append(hint);
   row.append(partHint);
 
-  // 两个粘贴框，分开存分开显示状态 —— 之前一个框装所有东西，
+  // 三个粘贴框，分开存分开显示状态 —— 之前一个框装所有东西，
   // 粘完不知道哪几项已经配好了（还缺 deviceid 也看不出来）。
   //   ① 凭据：credentials_{clientid} 整段 JSON（含 access + refresh），
   //      clientid 从 JWT 的 aud 自动取；也可以粘授权码（地址栏 code=… 那段），
   //      程序会拿它换出 access + refresh 一对。
   //   ② deviceid：localStorage 的 deviceid 项（形如 wdi10.…），
   //      读接口必需（不带 x-device-id 直接 400 invalid_argument）。
+  //   ③ captcha：localStorage 的 captcha_{clientid} 项里的 token。
+  //      官方只认**浏览器签的**那枚（带设备签名）；程序自己签的会被判
+  //      no client info found，所以这一项只能手工粘。
   const pasteCred = el("input", "xlp-paste");
   pasteCred.type = "text";
   pasteCred.autocomplete = "off";
@@ -4765,14 +4768,23 @@ function xlpAuthRow() {
   pasteDev.autocomplete = "off";
   pasteDev.spellcheck = false;
   pasteDev.placeholder = "② deviceid：粘贴 wdi10.… 那串";
+  const pasteCap = el("input", "xlp-paste");
+  pasteCap.type = "text";
+  pasteCap.autocomplete = "off";
+  pasteCap.spellcheck = false;
+  pasteCap.placeholder = "③ captcha：粘贴 localStorage 里 captcha_{clientid} 的 token";
   const applyCred = el("button", "ghost", "填入凭据");
   applyCred.type = "button";
   applyCred.title = "认出 access/refresh/clientid 并写进设置（写完立刻验一次）";
   const applyDev = el("button", "ghost", "填入 deviceid");
   applyDev.type = "button";
   applyDev.title = "写进设置（读接口必需）";
+  const applyCap = el("button", "ghost", "填入 captcha");
+  applyCap.type = "button";
+  applyCap.title = "写进设置（官方只认浏览器签的 captcha，程序自己签的会被拒）";
   const credHint = el("span", "hint", "");
   const devHint = el("span", "hint", "");
+  const capHint = el("span", "hint", "");
 
   // 两框分别提交：后端按「只处理这一类」来分，别让 deviceid 混进凭据里
   const submit = async (btn, input, hint, kind) => {
@@ -4807,6 +4819,7 @@ function xlpAuthRow() {
   };
   applyCred.addEventListener("click", () => submit(applyCred, pasteCred, credHint, "cred"));
   applyDev.addEventListener("click", () => submit(applyDev, pasteDev, devHint, "device"));
+  applyCap.addEventListener("click", () => submit(applyCap, pasteCap, capHint, "captcha"));
 
   const pasteRow = el("div", "xlp-paste-row");
   pasteRow.append(el("span", "xlp-lbl", "凭据"));
@@ -4822,12 +4835,22 @@ function xlpAuthRow() {
   devRow.append(devHint);
   row.append(devRow);
 
+  const capRow = el("div", "xlp-paste-row");
+  capRow.append(el("span", "xlp-lbl", "验证"));
+  capRow.append(pasteCap);
+  capRow.append(applyCap);
+  capRow.append(capHint);
+  row.append(capRow);
+
   const note = el("div", "why",
     "迅雷的账号密码直登不支持（实测 currently not supported），"
     + "一键授权也不行：它的授权页只认**已注册**的回调地址，"
     + "自定义地址会被判「无效请求」——白名单在迅雷服务端，改不了。"
-    + "所以只能从浏览器 localStorage 抄一次：credentials_{clientid}（access + refresh）"
-    + "与 deviceid（形如 wdi10.…，读接口必需）。"
+    + "所以只能从浏览器 localStorage 抄：credentials_{clientid}（access + refresh）、"
+    + "deviceid（形如 wdi10.…，读接口必需）、"
+    + "captcha_{clientid} 里的 captcha token。"
+    + "captcha 只能手工粘：官方只认浏览器签的那枚（带设备签名），"
+    + "程序自己签的会被判「no client info found」。"
     + "配了 refresh_token 之后，access_token 过期会自己续。");
   row.append(note);
   return row;

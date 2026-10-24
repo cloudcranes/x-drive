@@ -235,13 +235,39 @@ def apply_credentials(text: str, kind: str = "") -> dict:
       2. **授权码**（地址栏里 code=xxx）—— 先用 code 换出 access+refresh 一对，
          再写。授权码是一次性的，用掉即废（换出来的那对里 refresh 可续期）。
 
-    kind 限定只处理哪一类（"cred" / "device"）—— 两个粘贴框分开提交，
+    kind 限定只处理哪一类（"cred" / "device" / "captcha"）—— 三个粘贴框分开提交，
     免得 deviceid 混进凭据里、或者凭据被当成 deviceid。
 
     missing 列出**还缺什么**：device_id 是必需的（实测读接口不带
     x-device-id 回 400 invalid_argument），而它不在 credentials 那一项里，
     只粘那一项的话程序会用不了 —— 必须明说，不能让人以为填好了。
     """
+    if kind == "captcha":
+        # captcha 只能手工粘：官方只认浏览器签的那枚（带设备签名），
+        # 程序自己签的会被判「no client info found」。所以这里不做任何解析，
+        # 只认 ck0. 开头的 token（浏览器 localStorage 里那枚）。
+        raw = (text or "").strip()
+        if not raw:
+            return {"saved": [], "missing": [], "error": "没填 captcha"}
+        # 粘的是 localStorage 那一项的整段 JSON 的话，取里面的 token
+        token = raw
+        if raw.startswith("{"):
+            try:
+                obj = json.loads(raw)
+            except (ValueError, TypeError):
+                obj = {}
+            token = str(obj.get("token") or obj.get("captcha_token") or "")
+        if not token.startswith("ck0."):
+            return {"saved": [], "missing": [],
+                    "error": "认不出 captcha（应以 ck0. 开头；"
+                             "浏览器 localStorage 里 captcha_{clientid} 那项的 token）"}
+        from . import web as web_mod
+        res = web_mod.set_settings({"XLPAN_CAPTCHA_TOKEN": token})
+        if not res.get("ok"):
+            return {"saved": [], "missing": [],
+                    "error": str(res.get("failed") or "写入失败")[:200]}
+        return {"saved": ["XLPAN_CAPTCHA_TOKEN"], "error": "", "missing": [],
+                "exchanged": "", "client_id": ""}
     parsed = parse_credentials(text)
     if not parsed:
         return {"saved": [], "missing": [], "error": "没认出任何凭据（要 access_token / refresh_token / 整段 JSON / 授权码）"}
@@ -322,6 +348,18 @@ def _get(path: str, params: dict | None = None, *, client=None) -> dict:
         if res.status_code != 200:
             text = res.text[:160]
             if "captcha" in text:
+                # 两种失败，处置完全不同，不能混成一句话：
+                #   · no client info found —— 签发成功但缺设备签名，重签无用，
+                #     必须从浏览器重新取一次 captcha（服务端只认带签名的那个）。
+                #   · 其它 —— 轮换链对不上，重新签一次通常就好了。
+                detail = _captcha_detail(res.text)
+                if "client info" in detail:
+                    raise PanError(
+                        "迅雷 API 拒绝了这次 captcha（no client info found）："
+                        "签发接口给的 captcha 不带设备签名，服务端不认。"
+                        "需要从浏览器 localStorage 的 captcha_{clientid} 里"
+                        "重新取一次 captcha 填进设置"
+                        f"（原始原因：{detail}）")
                 raise PanError(
                     f"迅雷 API 仍要求验证码 token（captcha_invalid）："
                     f"轮换链对不上，需要从浏览器重新取一次 captcha：{text}")
@@ -338,6 +376,25 @@ def _get(path: str, params: dict | None = None, *, client=None) -> dict:
     if err and not data.get("files") and "id" not in data:
         raise PanError(f"迅雷云盘 API 错误：{str(err)[:120]}")
     return data
+
+
+def _captcha_detail(text: str) -> str:
+    """从 400 响应里挑出服务端给的原因（error_details[0].detail）。
+
+    迅雷有两种 captcha 失败，处置方式完全不同：
+      · captcha_token is empty  —— 这次没带上 captcha
+      · no client info found    —— captcha 签发成功但**没有设备签名**，
+        服务端认不出这是哪台设备发出来的。这种不是「重签一次」能解决的。
+    """
+    try:
+        data = json.loads(text[:2000])
+    except (ValueError, TypeError):
+        return ""
+    for item in (data.get("error_details") or []):
+        detail = str(item.get("detail") or "").strip()
+        if detail:
+            return detail
+    return ""
 
 
 def _token_expiry(token: str) -> int:
