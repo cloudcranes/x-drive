@@ -343,3 +343,30 @@ def test_storage_test_button_shows_elapsed():
     assert "let ticking = true;" in js
     assert "测试中… ${Math.round((Date.now() - started) / 1000)}s" in js
     assert "ticking = false;" in js
+
+
+def test_storage_params_are_scoped_to_backend():
+    """切到 CloudDrive2 时不该还挂着 OpenList 的十来项参数（看着像切换没生效）。"""
+    js = script(html())
+    # 后端在 SETTINGS_SPEC 里给每项标 only，界面按它收起无关行
+    assert 'row.dataset.scope = it.only' in js
+    assert "function applyStorageScope()" in js
+    assert 'row.hidden = row.dataset.scope !== chosen' in js
+    # 换后端立刻生效，不必等保存
+    assert 'if (key === "STORAGE_BACKEND") applyStorageScope()' in js
+    # 保存后重载也要按已保存的后端过滤
+    assert "applyStorageScope();" in js
+
+
+def test_storage_scope_keeps_hidden_dirty_visible():
+    """被收起的那几项若有未保存改动，必须提示：否则「保存全部」会存掉看不见的东西。"""
+    js = script(html())
+    assert "hiddenDirty" in js
+    assert "的改动还没保存" in js
+
+
+def test_storage_status_row_marks_unsaved_backend_switch():
+    """状态行要写「已保存 → 待保存」，别让人以为已经切过去了。"""
+    js = script(html())
+    assert "（待保存）" in js
+    assert 'val.classList.toggle("dirty", chosen !== saved)' in js

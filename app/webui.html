@@ -551,6 +551,8 @@
   .stabs button.dirty::after{content:""; width:6px; height:6px; border-radius:50%;
     background:#f0b429; box-shadow:0 0 6px rgba(240,180,41,.75)}
   .settings-pane[hidden]{display:none}
+  .kvrow.setting[hidden]{display:none}
+  #storage-scope-hint{color:var(--muted)}
   /* 未保存的那一格标黄（与标签上的黄点同一套语义） */
   .kvrow.setting .sval.dirty, .kvrow.setting select.sval.dirty{
     border-color:rgba(240,180,41,.55); box-shadow:0 0 0 1px rgba(240,180,41,.22)}
@@ -3851,6 +3853,8 @@ const settingsDirty = {};   // key -> 用户改后的值（还没保存）
 // 设置按功能分区：分组名 -> 这一区包含哪些键。renderDirty 靠它给标签点「未保存」。
 let settingsGroups = {};
 let settingsTab = "";       // 当前分区（分组名），重载后尽量留在原地
+let settingsSaved = {};     // 键 -> 已保存的值（判断「切了还没保存」用）
+let storageInfo = null;     // /api/storage 的结果（后端、根目录、是否配置齐全）
 
 function openSettings() {
   showView("settings");
@@ -3897,6 +3901,8 @@ async function loadSettings() {
     const d = await subsApi("/api/settings");
     if (!d || !d.ok) throw new Error(d && d.error || "读取失败");
     const items = d.items || {};
+    settingsSaved = {};
+    for (const [key, it] of Object.entries(items)) settingsSaved[key] = it.value;
     const groups = {};
     for (const [key, it] of Object.entries(items)) {
       const group = it.group || "其它";
@@ -3930,11 +3936,72 @@ async function loadSettings() {
       list.append(pane);
     });
     switchSettingsTab(settingsTab);
+    applyStorageScope();
     st.textContent = "已加载";
     hint.textContent = `${Object.keys(items).length} 项 · ${names.length} 个分区 · 来源标注在每项右侧`;
   } catch (e) {
     st.textContent = "读取失败";
     hint.textContent = e.message || e;
+  }
+}
+
+// 存储分区按「选了哪个后端」收起无关参数：
+// 以前切到 CloudDrive2，OpenList 的十来个字段还杵在那儿，看起来像切换没生效。
+const STORAGE_SCOPE_HINT = {
+  rclone: "rclone：remote 与 rclone.conf 是启动参数（.env 的 RCLONE_REMOTE / RCLONE_CONFIG_HOST），这里没有要填的。",
+  openlist: "OpenList：填地址与账号即可。分享链接需要账号有分享权限，没有就只显示路径。",
+  clouddrive2: "CloudDrive2：填地址与账号（注册邮箱）。上传是异步任务，程序会等它传完再记账。",
+};
+
+function storageChoice() {
+  // 优先用下拉里还没保存的选择：切过去就立刻只显示那一套参数
+  return settingsDirty["STORAGE_BACKEND"] || settingsSaved["STORAGE_BACKEND"] || "rclone";
+}
+
+function applyStorageScope() {
+  const pane = [...$("settings-list").children].find(p => p.dataset.group === "存储");
+  if (!pane) return;
+  const chosen = String(storageChoice());
+  for (const row of pane.querySelectorAll(".kvrow.setting[data-scope]")) {
+    row.hidden = row.dataset.scope !== chosen;
+  }
+  const hint = pane.querySelector("#storage-scope-hint");
+  if (hint) {
+    // 别的后端那几项如果也有没保存的改动，得说出来 —— 它们被收起来了，
+    // 否则「保存全部改动」会顺手存掉用户看不见的东西
+    const hiddenDirty = [...pane.querySelectorAll(".kvrow.setting[data-scope]")]
+      .filter(r => r.hidden && Object.keys(settingsDirty).some(k => settingsTabOf(k) === "存储"
+        && k.startsWith(r.dataset.scope === "openlist" ? "OPENLIST_" : "CD2_")))
+      .map(r => r.dataset.scope);
+    const others = [...new Set(hiddenDirty)].filter(x => x !== chosen);
+    let text = STORAGE_SCOPE_HINT[chosen] || "";
+    if (others.length) {
+      text += `（另：${others.map(o => o === "openlist" ? "OpenList" : "CloudDrive2")
+        .join(" / ")} 的改动还没保存，切过去看一眼再保存更稳妥）`;
+    }
+    hint.textContent = text;
+  }
+  // 状态行：已保存的后端与当前选择不一致时明说，免得以为已经切过去了
+  const val = pane.querySelector(".svalread");
+  if (val) {
+    const saved = settingsSaved["STORAGE_BACKEND"] || "rclone";
+    const root = settingsSaved["STORAGE_ROOT"]
+      || (storageInfo && storageInfo.root) || "X-Drive";
+    // 只有「当前选择就是已保存的那个」才谈得上配置齐不齐
+    const gap = chosen === saved && storageInfo && storageInfo.configured === false
+      ? " · 未配置" : "";
+    val.textContent = chosen === saved
+      ? `${saved} · ${root}${gap}`
+      : `${saved} → ${chosen}（待保存）`;
+    val.classList.toggle("dirty", chosen !== saved);
+  }
+  // 只显示当前后端时，分区里剩几项一目了然；把计数也写回去
+  const tab = [...$("settings-tabs").children].find(t => t.dataset.group === "存储");
+  if (tab) {
+    // 只数真正的参数行（「当前后端」那行是状态，不算一项设置）
+    const n = [...pane.querySelectorAll(".kvrow.setting[data-key]")].filter(r => !r.hidden).length;
+    const badge = tab.querySelector(".n");
+    if (badge) badge.textContent = String(n);
   }
 }
 
@@ -3980,14 +4047,25 @@ function storageStatusRow() {
   });
   row.append(btn);
   row.append(hint);
+  const scope = el("div", "why");
+  scope.id = "storage-scope-hint";
+  row.append(scope);
+  // 后端信息异步到：到了只用来补「未配置」这类后缀，最终文案仍由 applyStorageScope
+  // 统一决定 —— 否则它会覆盖掉「已保存 → 待保存」那行提示（曾经就这样闪回去）
   subsApi("/api/storage").then(d => {
-    val.textContent = d && d.kind ? `${d.kind} · ${d.root}${d.configured ? "" : " · 未配置"}` : "未知";
-  }).catch(() => { val.textContent = "读取失败"; });
+    if (!d || !d.kind) return;
+    storageInfo = {kind: d.kind, root: d.root, configured: d.configured};
+    applyStorageScope();
+  }).catch(() => {});
   return row;
 }
 
 function settingsRow(key, it) {
   const row = el("div", "kvrow setting");
+  // 「只属于某个后端」的参数带一个 scope：切后端时只显示当前后端要填的那几项，
+  // 不然二十来个 OpenList 字段会一直挂在 CloudDrive2 的选择下面（看着像没生效）
+  if (it.only) row.dataset.scope = it.only;
+  row.dataset.key = key;
   const nm = el("span", "nm");
   nm.textContent = it.label || key;
   nm.title = (it.note || "") + "\n键：" + key;
@@ -4014,6 +4092,7 @@ function settingsRow(key, it) {
       else settingsDirty[key] = sel.value;
       sel.classList.toggle("dirty", key in settingsDirty);
       renderDirty();
+      if (key === "STORAGE_BACKEND") applyStorageScope();
     });
     row.append(sel);
     const srcSel = el("span", "hint", settingsSource(it.source));
@@ -4075,6 +4154,8 @@ function renderDirty() {
   const n = Object.keys(settingsDirty).length;
   $("settings-state").textContent = n ? `${n} 项待保存` : "已加载";
   $("settings-save").disabled = !n;
+  // 存储分区里换后端会收起一部分行：数字要跟着变，否则看起来像没生效
+  if ($("settings-list") && $("settings-list").children.length) applyStorageScope();
   // 未保存的改动可能散在别的分区里：每个标签上点一个黄点，否则用户不知道还剩哪几处
   const dirty = new Set(Object.keys(settingsDirty).map(settingsTabOf).filter(Boolean));
   const tabs = $("settings-tabs");

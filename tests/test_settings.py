@@ -221,3 +221,16 @@ def test_storage_backend_roundtrip(tmp_path, monkeypatch):
     assert inst.explicit("STORAGE_BACKEND") == (True, "clouddrive2")
     # 非法类型不该被写进去
     assert inst.set("CD2_CHUNK_MB", "太宽") is False
+
+
+def test_storage_specs_declare_owning_backend():
+    """每项存储参数标了它属于哪个后端：界面据此裁剪，别让两套参数混在一起。"""
+    spec = settings_mod.SETTINGS_SPEC
+    assert "only" not in spec["STORAGE_BACKEND"] and "only" not in spec["STORAGE_ROOT"]
+    for key in ("OPENLIST_URL", "OPENLIST_PASSWORD", "OPENLIST_SHARE_PWD"):
+        assert spec[key]["only"] == "openlist"
+    for key in ("CD2_URL", "CD2_PASSWORD", "CD2_LINK_MODE", "SHARE_LINK_TEMPLATE"):
+        assert spec[key]["only"] == "clouddrive2"
+    # 快照要透传，前端才拿得到
+    snap = _s(__import__("pathlib").Path("/tmp/xd-scope-test")).snapshot()
+    assert snap["CD2_URL"]["only"] == "clouddrive2"
