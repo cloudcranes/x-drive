@@ -874,34 +874,58 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
             if head not in mounts:
                 return {"ok": False, "error": f"文件路径不在已配置的云盘下（{head}），拒绝取直链"}
 
-    # 1) 迅雷官方 API：外网可播的 web_content_link + 云播转码档
+    # 两条路都可能有坑，**都试一遍**，选能用的那条：
+    #   · 迅雷外网直链：外网可播，但 CDN 节点由迅雷按文件分配 —— 速度差 50 倍
+    #     （实测同一时刻：h05 节点 1MB/5 秒，aliyun08 节点 64KB/27 秒）
+    #   · CD2 内网路径：内网直连，但刚传回的文件在 CD2 缓存里可能还没生效
+    #     （实测读会 IncompleteRead / 超时）
+    # 所以不能只挑一条 —— 探不通的那条直接换另一条。
     is_xunlei = path.split("/", 1)[0] == "迅雷云盘"
     official_allowed = is_xunlei and (backend is None or backend.kind == "clouddrive2")
+
+    candidates: list[dict] = []
     if official_allowed and xunleipan.configured():
         try:
             info = xunleipan.direct_link(path)
-            return {"ok": True, "via": "xunleipan", "path": path,
+            if info.get("link"):
+                candidates.append({
+                    "via": "xunleipan", "path": path,
                     "name": info.get("name") or "",
                     "link": info.get("link") or "",
                     "medias": info.get("medias") or [],
-                    "play": play_url(info.get("link") or ""),
-                    # 能不能直接播：moov 在不在文件头
-                    "playable": probe_playable(info.get("link") or "")}
-        except Exception as exc:                # noqa: BLE001 退回 CD2
-            log.warning("官方 API 取直链失败，退回 CD2：%s", exc)
-    # 2) CD2：内网直链（下载路径）
+                })
+        except Exception as exc:                # noqa: BLE001 试下一条
+            log.warning("官方 API 取直链失败：%s", exc)
     try:
         backend = backend or storage_backend()
         probe = getattr(backend, "download_url", None)
-        link = probe(path) if probe else backend.link(path)
+        cd2_link = probe(path) if probe else backend.link(path)
+        if cd2_link:
+            candidates.append({
+                "via": backend.kind, "path": path,
+                "name": path.rsplit("/", 1)[-1],
+                "link": cd2_link, "medias": [],
+            })
     except Exception as exc:                    # noqa: BLE001
-        return {"ok": False, "error": f"取直链失败：{str(exc)[:120]}"}
-    if not link:
-        return {"ok": False, "error": "这个后端取不到直链（可配迅雷官方 API 或 CD2_LINK_MODE）"}
-    return {"ok": True, "via": backend.kind, "path": path,
-            "name": path.rsplit("/", 1)[-1], "link": link, "medias": [],
-            "play": play_url(link),
-            "playable": probe_playable(link)}
+        log.warning("CD2 取直链失败：%s", exc)
+
+    if not candidates:
+        return {"ok": False, "error": "取直链失败（迅雷官方 API 与 CD2 都不行）"}
+
+    # 逐个探：哪条真能读出字节就用哪条
+    last = None
+    for cand in candidates:
+        cand["play"] = play_url(cand["link"])
+        playable = probe_playable(cand["link"])
+        cand["playable"] = playable if playable is not None else True
+        if playable is None:
+            # 这条路根本读不通（网络/缓存/限流）→ 换下一条
+            log.info("直链 %s 探不通，换下一条", cand["via"])
+            last = cand
+            continue
+        # 读到了字节：能用（True）或文件不能播（False）→ 就它了
+        return {"ok": True, **cand}
+    return {"ok": True, **(last or candidates[0])}
 
 
 def archive_media_path(record: dict, backend) -> str:
@@ -1195,8 +1219,15 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
         except OSError:
             pass
 
-def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool:
+def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool | None:
     """这条直链指向的文件**能不能在浏览器里直接播**。
+
+    返回 True / False / **None**：
+    · True  —— 头部有 moov，能直接播
+    · False —— 读到了字节但头部没 moov（索引在末尾，浏览器会转圈）
+    · None  —— **根本读不出来**（网络不通 / 缓存没生效 / 被限流）
+      这跟 False 要分开：False 是「文件本身不能播」，None 是「这条路走不通，
+      该换另一条」。
 
     mp4 的结构是 `ftyp + mdat + moov`（索引在**末尾**）时，浏览器得先拉到
     文件末尾才知道数据在哪 —— 表现就是**一直转圈**：连接是通的、206 也有，
@@ -1216,9 +1247,9 @@ def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool:
         req = urllib.request.Request(raw, headers={"Range": f"bytes=0-{probe_bytes - 1}"})
         with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT) as resp:
             head = resp.read(probe_bytes)
-    except Exception as exc:                # noqa: BLE001 探不到就不拦
-        log.info("探测可播性失败（按可播处理）：%s", str(exc)[:100])
-        return True
+    except Exception as exc:                # noqa: BLE001 探不到就返回 None
+        log.info("探测可播性失败：%s", str(exc)[:100])
+        return None
     return b"moov" in head
 
 
