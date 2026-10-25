@@ -717,3 +717,51 @@ def test_scrape_confirmation_deduplicates_alias_fields():
       const scores=(confirmed.match(/评分/g)||[]).length;
       assert.equal(scores,1,"「评分」只该列一遍，实际 "+scores+" 次");
     ''')
+
+
+def test_play_warns_when_file_cannot_be_played_directly():
+    """探到文件头没有 moov → 明确告知并问要不要修，不让用户对着转圈。
+
+    这批种子的 MP4 是 `ftyp + mdat + moov`（索引在末尾），浏览器得先拉到
+    5.6GB 末尾才知道数据在哪 —— 表现就是一直转圈：连接是通的、206 也有，
+    但 readyState 停在 0。
+    """
+    run_js(r'''
+      let asked=null;
+      stubs.confirm=(m)=>{asked=m;return false;};
+      stubs.fetch=async(url)=>{
+        if(String(url).includes("/api/cloud/directlink"))
+          return {ok:true,status:200,statusText:"OK",text:async()=>JSON.stringify({
+            ok:true,via:"xunleipan",name:"a.mp4",
+            link:"https://cdn.local/a.mp4",play:"https://cdn.local/a.mp4",
+            medias:[],playable:false})};      // ← 探明不能播
+        return {ok:true,status:200,statusText:"OK",text:async()=>"{}"};
+      };
+      await playArchive({code:"ABC-1",id:"ABC-1",files:["a.mp4"],meta:{}},null);
+      assert.ok(asked,"应当先问用户");
+      assert.ok(asked.includes("ABC-1"),asked);
+      assert.ok(asked.includes("索引"),"要说清是索引在末尾："+asked);
+      assert.ok(asked.includes("修复"),"要给修复入口："+asked);
+    ''')
+
+
+def test_play_opens_player_with_fix_hint_when_unplayable():
+    """用户同意修复 → 播放器打开，提示条直接摆出修复按钮（不空等）。"""
+    run_js(r'''
+      stubs.confirm=(m)=>true;
+      stubs.fetch=async(url)=>{
+        if(String(url).includes("/api/cloud/directlink"))
+          return {ok:true,status:200,statusText:"OK",text:async()=>JSON.stringify({
+            ok:true,via:"xunleipan",name:"a.mp4",link:"https://cdn.local/a.mp4",
+            play:"https://cdn.local/a.mp4",medias:[],playable:false})};
+        return {ok:true,status:200,statusText:"OK",text:async()=>"{}"};
+      };
+      await playArchive({code:"ABC-1",id:"ABC-1",files:["a.mp4"],meta:{}},null);
+      await new Promise(r=>setTimeout(r,300));
+      const p=document.getElementById("player-layer");
+      assert.ok(p,"应当打开播放器");
+      const hint=p.querySelector(".player-hint");
+      assert.equal(hint.style.display,"flex","提示条要直接可见，别让人等");
+      assert.ok(hint.textContent.includes("转圈"),hint.textContent);
+      assert.ok(hint.querySelector("button"),"提示条里要有修复按钮");
+    ''')

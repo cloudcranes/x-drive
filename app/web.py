@@ -602,6 +602,8 @@ VIDEO_HOSTS = ("host.docker.internal", "127.0.0.1", "localhost")
 VIDEO_TIMEOUT = 30.0
 # 单次转发的块大小：16MB 足够顺滑，又不至于把内存撑爆
 VIDEO_CHUNK = 16 * 1024 * 1024
+# 探测可播性时的读超时：探一下就够，探不通就别耗着
+VIDEO_PROBE_TIMEOUT = float(os.getenv("VIDEO_PROBE_TIMEOUT", "8") or 8)
 
 
 def img_cache_max_bytes() -> int:
@@ -881,7 +883,10 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
             return {"ok": True, "via": "xunleipan", "path": path,
                     "name": info.get("name") or "",
                     "link": info.get("link") or "",
-                    "medias": info.get("medias") or []}
+                    "medias": info.get("medias") or [],
+                    "play": play_url(info.get("link") or ""),
+                    # 能不能直接播：moov 在不在文件头
+                    "playable": probe_playable(info.get("link") or "")}
         except Exception as exc:                # noqa: BLE001 退回 CD2
             log.warning("官方 API 取直链失败，退回 CD2：%s", exc)
     # 2) CD2：内网直链（下载路径）
@@ -895,7 +900,8 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
         return {"ok": False, "error": "这个后端取不到直链（可配迅雷官方 API 或 CD2_LINK_MODE）"}
     return {"ok": True, "via": backend.kind, "path": path,
             "name": path.rsplit("/", 1)[-1], "link": link, "medias": [],
-            "play": play_url(link)}
+            "play": play_url(link),
+            "playable": probe_playable(link)}
 
 
 def archive_media_path(record: dict, backend) -> str:
@@ -1157,6 +1163,33 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
             work.rmdir()
         except OSError:
             pass
+
+def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool:
+    """这条直链指向的文件**能不能在浏览器里直接播**。
+
+    mp4 的结构是 `ftyp + mdat + moov`（索引在**末尾**）时，浏览器得先拉到
+    文件末尾才知道数据在哪 —— 表现就是**一直转圈**：连接是通的、206 也有，
+    但 readyState 停在 0、buffered 一直是 0。
+
+    判据：读文件头 1MB，看 moov 在不在里面（faststart 的文件就在）。
+    读不出来就当作「能播」—— 不因为一次探测失败就拦住用户。
+
+    内网直链（CD2）容器里能直连；外网直链（迅雷 CDN）容器**连不上**
+    （实测 Connection refused），这时只能靠浏览器那边判断 —— 所以探测失败
+    一律返回 True，让前端用「超时未起播」来兜底。
+    """
+    raw = (link or "").strip()
+    if not raw:
+        return True
+    try:
+        req = urllib.request.Request(raw, headers={"Range": f"bytes=0-{probe_bytes - 1}"})
+        with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT) as resp:
+            head = resp.read(probe_bytes)
+    except Exception as exc:                # noqa: BLE001 探不到就不拦
+        log.info("探测可播性失败（按可播处理）：%s", str(exc)[:100])
+        return True
+    return b"moov" in head
+
 
 def play_url(link: str) -> str:
     """把云盘直链换成**同源**的播放地址。

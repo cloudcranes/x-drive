@@ -1660,12 +1660,22 @@ async function playArchive(t, btn) {
   // play 是同源播放地址；link 是原始直链（拿来做「在新标签打开」的备选）
   const src = data.play || data.link || "";
   if (!src) { alert("没有可播放的直链"); return; }
+  // **探到文件头没有 moov** → 浏览器会一直转圈（它得先拉到 5.6GB 末尾才知道
+  // 数据在哪）。这时直接说清楚 + 给修复入口，别让人对着圈圈发呆。
+  if (data.playable === false) {
+    if (!confirm(`${code}\n\n这个文件的 MP4 索引在文件末尾，浏览器会一直转圈。\n\n`
+      + `需要先「修复可播性」（把索引提到文件头），才能播放。\n`
+      + `· 5GB 的片子大约半小时\n· 要下载整片再传回，过程中占本地盘\n\n`
+      + `现在去修复吗？`)) return;
+    openPlayer(code, data, src, true);   // 开着播放器，把修复按钮摆出来
+    return;
+  }
   openPlayer(code, data, src);
 }
 
 // 播放器：原地铺一层。Esc / 点背景 / 关闭都退。
 // 多个画质档时给一排按钮（迅雷官方 API 的 medias），默认第一档。
-function openPlayer(code, data, src) {
+function openPlayer(code, data, src, knownUnplayable) {
   closeLayerEl(document.getElementById("player-layer"));
   // 播放器是独立顶层：把归档详情层收掉。两层叠着时按一次 Esc 会把两层
   // 一起关掉（两个 onKey 都挂在 document 上，谁都不检查自己是不是最上层）。
@@ -1712,14 +1722,25 @@ function openPlayer(code, data, src) {
   // hint 里 append 失败提示，顺序一变就拿错节点）
   const hintText = el("span", null, "播不出来？多半是这个 MP4 的索引在文件末尾，浏览器认不了。");
   hint.append(hintText);
+  // **已经探明不能播**：别让用户对着转圈等 —— 直接把原因和出路摆出来
+  if (knownUnplayable) {
+    hint.style.display = "flex";
+    hintText.textContent = "这个 MP4 的索引在文件末尾，浏览器会一直转圈（它得先拉到末尾才知道数据在哪）。修复后就能播。";
+  }
   const fixBtn = el("button", "ghost", "修复可播性");
   fixBtn.type = "button";
   fixBtn.title = "把 MP4 索引（moov）提到文件头，浏览器才认得了。要下载重传，几分钟。";
   fixBtn.addEventListener("click", () => { repairFaststart(code, fixBtn, hint); });
   hint.append(fixBtn);
   stallTimer = setTimeout(() => {
-    // 一会儿还没起播：多半是索引不在头部
-    if (video.readyState === 0 && !video.error) hint.style.display = "flex";
+    // 一会儿还没起播：多半是索引不在头部（浏览器在等文件末尾的 moov）
+    if (video.readyState === 0 && !video.error) {
+      hint.style.display = "flex";
+      if (!knownUnplayable) {
+        hintText.textContent = "还在缓冲。这个 MP4 的索引在文件末尾时浏览器会这样"
+          + "（它得先拉到末尾才知道数据在哪）—— 若一直转圈，点「修复可播性」。";
+      }
+    }
   }, 6000);
   video.addEventListener("error", () => {
     hint.style.display = "flex";

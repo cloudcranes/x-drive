@@ -230,3 +230,53 @@ def test_direct_link_allows_path_inside_archive_root(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "storage_backend", lambda: Backend())
     out = web.cloud_direct_link(path="迅雷云盘/X-Drive/MIMK-186/a.mp4")
     assert out["ok"], out
+
+
+def test_probe_playable_detects_moov_at_head(monkeypatch):
+    """文件头有 moov（faststart 过的）→ 能直接播。"""
+    payload = b"\x00\x00\x00\x18ftypisom" + b"\x00\x00\x00\x10moov" + b"x" * 100
+
+    class Resp:
+        def read(self, n=-1):
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(web.urllib.request, "urlopen",
+                        lambda *a, **k: Resp())
+    assert web.probe_playable("http://cdn.local/a.mp4") is True
+
+
+def test_probe_playable_detects_missing_moov(monkeypatch):
+    """文件头没有 moov（索引在末尾）→ 浏览器会一直转圈。"""
+    payload = b"\x00\x00\x00\x18ftypisom" + b"\x00\x00\x00\x10mdat" + b"x" * 100
+
+    class Resp:
+        def read(self, n=-1):
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(web.urllib.request, "urlopen",
+                        lambda *a, **k: Resp())
+    assert web.probe_playable("http://cdn.local/a.mp4") is False
+
+
+def test_probe_playable_treats_probe_failure_as_playable(monkeypatch):
+    """探不到（网络/权限）时不拦用户 —— 按可播处理。
+
+    容器连不上迅雷的外网 CDN，探测必然失败 —— 那时不能因此说「播不了」。
+    """
+    def boom(*a, **k):
+        raise OSError("Connection refused")
+
+    monkeypatch.setattr(web.urllib.request, "urlopen", boom)
+    assert web.probe_playable("http://cdn.local/a.mp4") is True
