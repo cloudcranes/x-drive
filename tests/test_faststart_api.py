@@ -238,8 +238,8 @@ def test_faststart_worker_replacement_order(tmp_path, monkeypatch):
 
     monkeypatch.setattr(web.urllib.request, "urlopen", lambda *a, **k: FakeResp())
     monkeypatch.setattr(faststart, "needs_faststart", lambda p: True)
-    # 临时目录：本地 /downloads 不可写，指向 tmp_path
-    monkeypatch.setattr(web, "TMP_ROOT", str(tmp_path))
+    # 临时目录：worker 用的是 STATE_DIR 旁边（本地盘），指向 tmp_path
+    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))
 
     fixed = tmp_path / "fixed.mp4"
     fixed.write_bytes(b"x" * 100)
@@ -258,3 +258,73 @@ def test_faststart_worker_replacement_order(tmp_path, monkeypatch):
     assert calls[2][2] == "ABC-1.mp4", calls[2]
     # 最后 purge 的必须是备份，不是原文件
     assert calls[3][1].endswith(".faststart.bak"), calls[3]
+
+
+def test_faststart_temp_dir_is_on_local_disk_not_the_cloud_mount(tmp_path, monkeypatch):
+    """中间件必须放**本地盘**，不能放 TMP_ROOT（迅雷下载器的云盘挂载）。
+
+    TMP_ROOT 在生产上是 /downloads —— 一个云盘挂载点。5GB 的中间件写进去要
+    走上行网络（实测掉到 0.3MB/s，而直连本地盘是 462MB/s），而且会污染
+    用户的下载目录。
+    """
+    from app import core, store as store_mod
+    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(web, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    monkeypatch.setattr(web, "TMP_ROOT", "/downloads")          # 云盘挂载
+    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))  # 本地盘
+    core.save_state(web.STATE, {"ABC-1": {"code": "ABC-1", "files": ["ABC-1.mp4"],
+                                           "backend": "clouddrive2", "rel": "dest/ABC-1"}})
+    monkeypatch.setattr(faststart, "ffmpeg_available", lambda: (True, "可用"))
+    monkeypatch.setattr(faststart, "needs_faststart", lambda p: True)
+
+    used = {}
+
+    class FakeResp:
+        headers = {"Content-Length": "100"}
+
+        def __init__(self):
+            self.left = 100
+
+        def read(self, n=-1):
+            if self.left <= 0:
+                return b""
+            self.left -= 100
+            return b"x" * 100
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        used["work"] = web.Path(web.STATE_DIR).parent / "faststart"
+        return FakeResp()
+
+    monkeypatch.setattr(web.urllib.request, "urlopen", fake_urlopen)
+
+    class Backend:
+        kind = "clouddrive2"
+
+        def list_files(self, rel):
+            return []
+
+        def upload_file(self, local, dest):
+            pass
+
+        def rename_dir(self, src, new_name):
+            pass
+
+        def purge(self, dest):
+            pass
+
+    fixed = tmp_path / "fixed.mp4"
+    fixed.write_bytes(b"x" * 100)
+    monkeypatch.setattr(faststart, "faststart_file", lambda src, work=None: fixed)
+
+    web._faststart_worker("j1", Backend(), "dest/ABC-1/ABC-1.mp4",
+                          "http://cdn.local/a.mp4", "ABC-1")
+
+    assert used.get("work") is not None, "应当用 faststart 临时目录"
+    assert not str(used["work"]).startswith("/downloads"), \
+        f"中间件不能放云盘挂载里：{used['work']}"

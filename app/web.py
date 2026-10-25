@@ -1021,7 +1021,11 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
     # 临时目录按任务隔离：不同归档目录里可能有同名文件（多集发行很常见，
     # 两个目录都叫 movie.mp4）。共用一个目录时，第二个任务会把第一个任务
     # 的中间产物 unlink 掉。
-    work = Path(TMP_ROOT) / "faststart" / job_id
+    #
+    # **必须放本地磁盘**：TMP_ROOT 是迅雷下载器的**云盘挂载**（/downloads），
+    # 5GB 的中间件写进去要走上行网络（实测掉到 0.3MB/s），而且会污染
+    # 用户的下载目录。STATE_DIR 旁边才是本地盘（/work）。
+    work = Path(STATE_DIR).parent / "faststart" / job_id
     work.mkdir(parents=True, exist_ok=True)
     local = work / (Path(path).name + ".part")
     try:
@@ -1031,6 +1035,8 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
         with urllib.request.urlopen(link, timeout=VIDEO_TIMEOUT * 4) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
             got = 0
+            last_beat = 0.0
+            started = time.monotonic()
             with open(local, "wb") as fh:
                 while True:
                     blob = resp.read(VIDEO_CHUNK)
@@ -1038,8 +1044,22 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
                         break
                     fh.write(blob)
                     got += len(blob)
+                    # 进度与心跳：慢的时候一个 16MB 块要等好几分钟，
+                    # 只在块结束时更新的话界面看起来像卡死了。
+                    # 每 10 秒至少刷一次，并带上已下载量与速度。
+                    now = time.monotonic()
+                    if now - last_beat < 10 and got != total:
+                        continue
+                    last_beat = now
+                    speed = got / max(now - started, 0.001)
                     if total:
-                        job_update(job_id, percent=round(got * 100 / total, 1))
+                        job_update(job_id, percent=round(got * 100 / total, 1),
+                                   error=f"正在下载原片… {core.human_size(got)} / "
+                                         f"{core.human_size(total)}"
+                                         f"（{core.human_size(int(speed))}/s）")
+                    else:
+                        job_update(job_id, error=f"正在下载原片… {core.human_size(got)}"
+                                                    f"（{core.human_size(int(speed))}/s）")
         size = local.stat().st_size
         if not size:
             return {"ok": False, "error": "下载到的文件是空的"}
