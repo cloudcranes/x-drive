@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from app import metadata
+from app import web
 
 
 def _env(tmp_path, monkeypatch):
@@ -211,3 +212,49 @@ def test_write_sidecar_keep_preserves_video_entry(tmp_path):
         "附件项按最新生成的实际大小"
     assert "metadata.json" in by
     assert blob["total_size"] == sum(e["size"] for e in blob["files"])
+
+
+def test_verify_reports_slow_read_separately_from_corruption(tmp_path, monkeypatch):
+    """读不到（超时）≠ 损坏 —— 要分开报。
+
+    实测：CD2 的下载路径有时就是慢（读 64KB 要 13.6 秒，同目录另一个文件
+    只要 0.6 秒）。超时只说明「这会儿读不到」，断言「文件坏了」会误报一片。
+    只有服务端明确报错（HTTP 4xx/5xx）才是内容坏。
+    """
+    from app import core, store as store_mod
+    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(web, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    core.save_state(web.STATE, {
+        "ABC-1": {"code": "ABC-1", "files": ["ABC-1.mp4"], "size": 100,
+                  "backend": "clouddrive2", "rel": "dest/ABC-1",
+                  "manifest": {"files": [{"name": "ABC-1.mp4", "size": 100}]}},
+    })
+    monkeypatch.setattr(web, "remote_ls", lambda code, rel_path=None: [
+        {"name": "ABC-1.mp4", "size": 100}])
+    monkeypatch.setattr(web, "archive_locator", lambda record: "dest/ABC-1")
+
+    class Backend:
+        kind = "clouddrive2"
+
+        def download_url(self, path):
+            return "http://cd2.local/x.mp4"
+
+    monkeypatch.setattr(web, "storage_backend", lambda: Backend())
+
+    # 情况一：超时 → 「暂时读不到」
+    def slow(*a, **k):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(web.urllib.request, "urlopen", slow)
+    out = web.verify_archive("ABC-1")
+    assert out["state"] == "暂时读不到", out
+    assert out["unreadable"] == [], out
+    assert out["unreadable_now"], out
+
+    # 情况二：服务端报错 → 「内容异常」
+    def broken(*a, **k):
+        raise web.urllib.error.HTTPError("http://x", 500, "Internal Server Error",
+                                         None, None)
+    monkeypatch.setattr(web.urllib.request, "urlopen", broken)
+    out = web.verify_archive("ABC-1")
+    assert out["state"] == "内容异常", out
+    assert out["unreadable"], out

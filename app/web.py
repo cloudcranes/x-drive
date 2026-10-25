@@ -4433,6 +4433,7 @@ def _probe_remote_readable(code: str, record: dict) -> list[str]:
     读头尾两段而不是只读头：有些坏法只在尾部（文件没写完）。
     """
     out: list[str] = []
+    slow: list[str] = []
     try:
         backend = storage_backend()
         rel = archive_locator(record)
@@ -4441,28 +4442,35 @@ def _probe_remote_readable(code: str, record: dict) -> list[str]:
                  if Path(str(e.get("name") or "")).suffix.lower() in
                  (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".mov", ".rmvb", ".iso")]
         if not media:
-            return out
+            return out, slow
         name = str(media[0].get("name"))
         size = int(media[0].get("size") or 0)
         probe = getattr(backend, "download_url", None)
         if not probe:
-            return out
+            return out, slow
         url = probe(f"{rel}/{name}" if rel else name)
         if not url:
-            return out
+            return out, slow
         for label, start, end in (("头", 0, 65535),
                                   ("尾", max(0, size - 65536), max(0, size - 1))):
             try:
                 req = urllib.request.Request(
                     url, headers={"Range": f"bytes={start}-{end}"})
-                with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT * 3) as resp:
+                with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT * 4) as resp:
                     if not resp.read(65536):
                         out.append(f"{name}（{label}部读不到内容）")
             except Exception as exc:            # noqa: BLE001
-                out.append(f"{name}（{label}部读取失败：{str(exc)[:60]}）")
+                # **超时 ≠ 损坏**：CD2 的下载路径有时就是慢（实测读 64KB 要
+                # 13.6 秒，而同目录另一个文件只要 0.6 秒）。超时只说明「这会儿
+                # 读不到」，不能断言文件坏了 —— 否则会误报一片。
+                # 只有服务端明确报错（HTTP 4xx/5xx）才算内容坏。
+                if isinstance(exc, urllib.error.HTTPError):
+                    out.append(f"{name}（{label}部服务端报错：HTTP {exc.code}）")
+                else:
+                    slow.append(f"{name}（{label}部暂时读不到：{type(exc).__name__}）")
     except Exception as exc:                    # noqa: BLE001 探不了不算异常
         log.info("探测远端可读性失败（跳过）：%s", exc)
-    return out
+    return out, slow
 
 
 def verify_archive(code: str, confirm: bool = False) -> dict:
@@ -4506,14 +4514,18 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
     # 大小与记录一致，但下载直接 500 / 超时）。
     # 所以再抽一个媒体文件读它的**头尾各一小段** —— 读不出来就是真坏了。
     unreadable = []
+    unreadable_now = []
     if not missing and not sized:
-        unreadable = _probe_remote_readable(code, record)
+        unreadable, unreadable_now = _probe_remote_readable(code, record)
     if missing:
         verdict = "缺文件"
     elif sized:
         verdict = "大小异常"
     elif unreadable:
         verdict = "内容异常"
+    elif unreadable_now:
+        # 读得到但这会儿太慢 —— **不是坏了**，别误报
+        verdict = "暂时读不到"
     elif not local:
         verdict = "无清单"
     elif unknown:
@@ -4521,7 +4533,7 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
     else:
         verdict = "校验通过"
     out = {"ok": True, "code": code, "state": verdict, "missing": missing,
-           "unreadable": unreadable,
+           "unreadable": unreadable, "unreadable_now": unreadable_now,
            "extra": extra, "size_mismatch": [
                {"name": n, "local": local[n], "remote": remote[n]} for n in sized],
            "size_unknown": unknown,
