@@ -39,13 +39,17 @@ def script(page: str) -> str:
 # ---------------------------------------------------------------- 1. 类名冲突
 
 def test_card_series_class_does_not_collide_with_sidebar_block():
-    """卡片系列名必须用独立类名：`.series` 的 max-width:38% 会把侧栏筛选块压扁。"""
+    """卡片系列名必须用独立类名：`.series` 的 max-width:38% 会把侧栏筛选块压扁。
+
+    卡片简化成「海报 + 标题」后，系列名不再显示在卡片上，但类名纪律不变 ——
+    弹层里的系列行也不能用裸 `.series`。
+    """
     page = html()
-    assert ".card-series{" in css(page), "卡片系列名应使用 .card-series"
-    assert 'el("span", "card-series"' in script(page), "渲染卡片时要用 card-series"
-    # 全页不应再有裸 `.series{...}` 规则（那会把 .side-block.series 一起改掉）
+    # 全页不应有裸 `.series{...}` 规则（那会把 .side-block.series 一起改掉）
     assert re.search(r"\n\s*\.series\{", css(page)) is None, \
         "还有 .series{} 规则，侧栏系列块会被它压成 38% 宽"
+    # 弹层里的系列行用独立类名
+    assert ".drow{" in css(page), "弹层的信息行要有自己的类名"
 
 
 # ---------------------------------------------------------------- 2. 侧栏可滚
@@ -102,8 +106,8 @@ def test_modal_close_button_has_room_for_text():
     page = html()
     assert "关闭" in page
     assert ".iconbtn.txt{" in css(page), "文字版 iconbtn 要放开宽度"
-    assert page.count('el("button", "iconbtn txt", "关闭")') == 2, \
-        "两个弹层（详情 / 磁力预览）的关闭按钮都要带 txt 类"
+    assert page.count('el("button", "iconbtn txt", "关闭")') == 3, \
+        "三个弹层（详情 / 磁力预览 / 归档详情）的关闭按钮都要带 txt 类"
 
 
 # ---------------------------------------------------------------- 7. 队列滚动
@@ -139,7 +143,7 @@ def test_queue_poll_is_incremental_not_full_rebuild():
 
 def test_non_archive_views_hide_filter_bar():
     js = script(html())
-    body = js[js.index("function showView"):js.index("function showArchive")]
+    body = js[js.index("function showView"):js.index("function showArchive() {")]
     assert 'activefilters' in body, "切走归档视图时筛选条要一起收起"
     assert "closeSide()" in body, "窄屏选完视图要收起抽屉，否则抽屉挡住整个界面"
 
@@ -160,7 +164,7 @@ def test_search_box_can_search_online_resources():
 
 def test_resource_results_hidden_outside_archive():
     js = script(html())
-    body = js[js.index("function showView"):js.index("function showArchive")]
+    body = js[js.index("function showView"):js.index("function showArchive() {")]
     assert "resource-slot" in body, "切到设置/元数据时资源面板要跟着收起"
 
 
@@ -171,6 +175,33 @@ def test_resource_rows_offer_explicit_download():
     assert "downloadCandidate(" in body, "每条候选要有提交入口"
     assert "点「提交云添加」才进队列" in js, "提示要说明搜索本身不落任务"
     assert "下载" not in body, "候选的入口不该再叫「下载」（本地下载已取消）"
+
+
+def test_archive_card_is_poster_only_with_detail_popup():
+    """归档卡片只留海报 + 标题；详细信息在点开的弹层里。"""
+    page = html()
+    js = script(page)
+    styles = css(page)
+    body = js[js.index("function card(t) {"):js.index("function showArchiveDetail(")]
+    # 卡片上不再渲染信息标签行、底栏、演员胶囊
+    assert "card-body" not in body, "卡片不该再有信息标签行"
+    assert "card-foot" not in body, "卡片不该再有底栏"
+    assert "actor-chip" not in body, "卡片不该再有演员胶囊"
+    # 海报 + 标题 + 角标番号
+    assert "card-cover" in body, "卡片要有海报"
+    assert "card-title" in body, "卡片要有标题"
+    assert "card-code" in body, "海报角上要有番号"
+    # 点海报开详情
+    assert "showArchiveDetail(t)" in body, "点海报要开详情弹层"
+    # 详情弹层在
+    assert "function showArchiveDetail(" in js, "要有归档详情弹层"
+    detail = js[js.index("function showArchiveDetail("):js.index("// 删除归档：")]
+    for field in ("片商", "演员", "评分", "云盘路径", "文件"):
+        assert field in detail, f"详情里应有「{field}」"
+    assert "改名" in detail and "删除" in detail, "详情里要有维护动作"
+    # 海报是竖版，比例与网格列宽都要跟着改
+    assert ".poster-card .card-cover{aspect-ratio:3/4" in styles, "海报卡应是竖版比例"
+    assert "minmax(196px,1fr)" in styles, "网格列宽要适配竖版海报"
 
 
 def test_code_of_query_normalizes():
@@ -202,11 +233,15 @@ def test_preview_images_open_in_place_not_new_tab():
 def test_lightbox_escape_does_not_close_parent_modal():
     """Esc 只关灯箱：父弹层的 keydown 处理要先看灯箱在不在。"""
     js = script(html())
-    assert js.count("if (lightboxOpen()) return;") == 2, "两个弹层都要让位给灯箱"
+    # 三个父弹层（番号详情 / 磁力预览 / 归档详情）都要让位给灯箱
+    assert js.count("if (lightboxOpen()) return;") == 3, "三个弹层都要让位给灯箱"
     light = js[js.index("function showLightbox"):js.index("function thumbWall")]
     assert 'document.addEventListener("keydown", onKey, true)' in light, "灯箱要用捕获阶段抢 Esc"
     assert "closeLightbox();" in js[js.index("function showDetail"):js.index("async function showMagnetPreview")], \
         "关掉父弹层时要顺带收灯箱"
+    # 归档详情弹层也一样
+    assert "closeLightbox();" in js[js.index("function showArchiveDetail"):js.index("// 删除归档：")], \
+        "关掉归档详情时也要顺带收灯箱"
 
 
 # ---------------------------------------------------------------- 11. 队列不再是右侧抽屉
@@ -222,7 +257,7 @@ def test_queue_is_a_main_view_not_a_right_drawer():
     m = re.search(r'<section class="panel[^"]*queuepanel" id="queue" hidden', page)
     assert m, "队列应是 panel 视图"
     js = script(page)
-    body = js[js.index("function showView"):js.index("function showArchive")]
+    body = js[js.index("function showView"):js.index("function showArchive() {")]
     assert '["queue", name === "queue"]' in body, "showView 要管队列视图"
     assert '["queuebtn", name === "queue"]' in body, "进队列时侧栏要高亮"
 
@@ -292,7 +327,7 @@ def test_maintenance_merges_into_two_tabs():
     assert 'id="maint-open"' in page
     js = script(page)
     assert "function switchMaintTab" in js
-    body = js[js.index("function showView"):js.index("function showArchive")]
+    body = js[js.index("function showView"):js.index("function showArchive() {")]
     assert '["metapanel", name === "maint"]' in body, "showView 要管维护台视图"
     assert '"normpanel"' not in body and '"healthpanel"' not in body
 
@@ -444,10 +479,11 @@ def test_settings_tab_survives_reload_and_arrow_keys():
     assert "switchSettingsTab(next.dataset.group)" in js
 
 
-def test_card_shows_path_when_no_share_link():
-    """没有分享能力的后端（CloudDrive2）：卡片要显示真实路径，不是一句「无链接」。"""
+def test_detail_shows_path_when_no_share_link():
+    """没有分享能力的后端（CloudDrive2）：详情里要显示真实路径，不是一句「无链接」。"""
     js = script(html())
-    assert "} else if (t.path) {" in js
+    detail = js[js.index("function showArchiveDetail"):js.index("// 删除归档：")]
+    assert '["云盘路径", t.path]' in detail, "详情里要显示云盘路径"
     assert "分享 ↗" in js, "非 Drive 链接不该再叫 Drive"
 
 

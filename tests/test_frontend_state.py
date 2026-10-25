@@ -43,13 +43,32 @@ class Node {
   querySelectorAll(selector) {const sels=selector.split(",").map(s=>s.trim());return this.children.flatMap(c=>[...(sels.some(s=>c.matches(s))?[c]:[]),...c.querySelectorAll(selector)]);}
   querySelector(selector) {return this.querySelectorAll(selector)[0] || null;}
   closest(selector) {return this.matches(selector)?this:this.parentNode?.closest(selector);}
-  async dispatch(type,event={}) {event.target??=this;for(const f of this.listeners[type]||[])await f(event);if(this.parentNode&&!event.stopped)await this.parentNode.dispatch(type,event);}
+  async dispatch(type,event={}) {event.target??=this;event.stopPropagation??=(()=>{event.stopped=true;});
+    for(const f of this.listeners[type]||[])await f(event);if(this.parentNode&&!event.stopped)await this.parentNode.dispatch(type,event);}
 }
 const els=new Map(), flashes=[], opened=[];
 const get=id=>{if(!els.has(id))els.set(id,new Node());return els.get(id);};
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b});return {promise,resolve,reject};};
 const response=(data,status=200)=>({ok:status>=200&&status<300,status,statusText:"fixture",text:async()=>JSON.stringify(data)});
-const ctx={console,assert,Node,els,flashes,opened,get,deferred,response,
+// 最小 document：弹层要按 id 挂载/移除，body 要能记滚动锁
+// getElementById **不能**自动创建 —— 找不到必须返回 null，否则「弹层已关闭」
+// 这类断言永远为假。
+const bodyNode=new Node("body");
+const docListeners={};
+function findById(root,id){
+  if(root.id===id) return root;
+  for(const c of root.children||[]){const hit=findById(c,id);if(hit) return hit;}
+  return null;
+}
+const document={
+  body:bodyNode,
+  getElementById:(id)=>findById(bodyNode,id),
+  createElement:(tag)=>new Node(tag),
+  addEventListener:(type,fn)=>{(docListeners[type]??=[]).push(fn);},
+  removeEventListener:(type,fn)=>{const l=docListeners[type]||[];const i=l.indexOf(fn);if(i>=0)l.splice(i,1);},
+  dispatchEvent:(ev)=>{for(const f of docListeners[ev.type]||[])f(ev);return true;},
+};
+const ctx={console,assert,Node,els,flashes,opened,get,deferred,response,document,docListeners,
   AbortController,setTimeout,clearTimeout,
   $:get,el:(...args)=>new Node(...args),BASE:"",authInit:x=>x,
   gb:n=>String(n),fmt:n=>String(n||""),queueFlash:(message,error)=>flashes.push({message,error}),
@@ -73,6 +92,7 @@ part("function settingsTabOf(","// 存储分区按");
 part("function settingsRow(",'$("settings-open").addEventListener');
 part("const RES_SORTS =","async function searchResources(");
 part("function renderCandidates(","// ── 顶栏类型切换");
+part("let lightbox = null;","function showDetail(");
 ctx.resState={sort:"rec"};
 '''
 
@@ -288,9 +308,10 @@ def test_settings_snapshot_preserves_new_drafts_and_partial_failures():
     ''')
 
 
-def test_archive_refreshes_changed_metadata_and_nested_keyboard_stays_local():
+def test_archive_refreshes_changed_metadata_and_detail_popup_carries_actions():
     run_js(r'''
-      const base={id:"a",code:"ABC",kind:"video",cat:"video",path:"old",meta:{
+      const base={id:"a",code:"ABC",kind:"视频 1",cat:"video",path:"old",size_text:"1GB",
+        count:1,files:["ABC.mp4"],at:"2026-10-25 00:00:00",meta:{
         title:"title",cover:"",maker:"old",rating:1,actors:["old"]}};
       syncFeed([base]);const first=mounted.get("a").node;
       syncFeed([{...base,meta:{...base.meta}}]);assert.equal(mounted.get("a").node,first);
@@ -298,18 +319,66 @@ def test_archive_refreshes_changed_metadata_and_nested_keyboard_stays_local():
         cleanup_pending:[{target:"inbox/A",error:"fixture leftover"}]};
       syncFeed([next]);const updated=mounted.get("a").node;
       assert.notEqual(updated,first);
-      for(const value of ["new-path","new-maker","new-actor","fixture leftover"])
-        assert.match(updated.textContent,new RegExp(value));
+      // 卡片上只留海报与标题：详情信息不在卡片上
+      assert.equal(updated.querySelector(".card-body"),null,"卡片不该再有信息标签行");
+      assert.equal(updated.querySelector(".card-foot"),null,"卡片不该再有底栏");
+      assert.match(updated.querySelector(".card-title").textContent,/title/);
+      assert.match(updated.textContent,/fixture leftover/);   // 清理待处理仍要提示
       for(const field of ["cat","path","cleanup_pending"])
         assert.notEqual(sigOf(base),sigOf({...base,[field]:"changed"}));
-      const linked=card({...base,link:"https://fixture.invalid/share"});
-      const rename=linked.querySelector(".card-del");
-      let prevented=0;
-      await rename.dispatch("keydown",{key:"Enter",preventDefault(){prevented++}});
-      assert.equal(prevented,0);assert.equal(opened.length,0);
-      await linked.dispatch("keydown",{key:"Enter",preventDefault(){prevented++}});
-      await linked.dispatch("keydown",{key:" ",preventDefault(){prevented++}});
-      assert.equal(prevented,2);assert.equal(opened.length,2);
+    ''')
+
+
+def test_archive_card_shows_poster_only_and_opens_detail():
+    """卡片只留海报 + 标题，点海报开详情弹层；详情里才有全部信息与操作。"""
+    run_js(r'''
+      const t={id:"a",code:"ABC-1",kind:"视频 1",cat:"video",size_text:"4.97GB",
+        count:1,files:["ABC-1.mp4"],at:"2026-10-25 00:00:00",series:"ABC",link:"",
+        path:"clouddrive2:dest/ABC-1",
+        meta:{title:"长标题测试",cover:"https://img.invalid/c.jpg",maker:"片商",
+              actors:["演员甲","演员乙"],rating:"8.5",duration:"120分钟",
+              date:"2026-01-02",previews:["https://img.invalid/p1.jpg"]}};
+      const node=card(t);
+      // 卡片只有海报与标题
+      assert.equal(node.querySelectorAll(".card-body").length,0);
+      assert.equal(node.querySelectorAll(".card-foot").length,0);
+      assert.equal(node.querySelectorAll(".actor-chip").length,0);
+      assert.match(node.querySelector(".card-title").textContent,/长标题测试/);
+      assert.match(node.querySelector(".card-code").textContent,/ABC-1/);
+      // 详情信息不在卡片上
+      for(const v of ["片商","演员甲","8.5","4.97GB"])
+        assert.equal(node.textContent.includes(v),false,"卡片不该显示 "+v);
+
+      // 点海报 → 详情弹层
+      const cover=node.querySelector(".card-cover");
+      await cover.dispatch("click",{});
+      const layer=document.getElementById("detail-layer");
+      assert.ok(layer,"点海报应打开详情弹层 | body children="+JSON.stringify(document.body.children.map(c=>c.id))+" | document.body.append="+typeof document.body.append);
+      const text=layer.textContent;
+      for(const v of ["片商","演员甲","8.5","4.97GB","ABC-1.mp4","120分钟","2026-01-02"])
+        assert.ok(text.includes(v),"详情里应有 "+v);
+      // 详情里有关键动作：改名 / 删除
+      assert.ok(layer.querySelector(".dactions"),"详情里要有操作区");
+      assert.match(layer.textContent,/改名/);
+      assert.match(layer.textContent,/删除/);
+    ''')
+
+
+def test_archive_detail_popup_closes_by_escape_and_mask():
+    run_js(r'''
+      const t={id:"a",code:"ABC-1",kind:"视频 1",cat:"video",size_text:"1GB",count:1,
+        files:["ABC-1.mp4"],at:"2026-10-25",path:"p",meta:{title:"x"}};
+      const node=card(t);
+      await node.querySelector(".card-cover").dispatch("click",{});
+      let layer=document.getElementById("detail-layer");
+      assert.ok(layer);
+      layer.dispatch("click",{target:layer});          // 点遮罩
+      assert.equal(document.getElementById("detail-layer"),null,"点遮罩应关闭");
+      await node.querySelector(".card-cover").dispatch("click",{});
+      layer=document.getElementById("detail-layer");
+      assert.ok(layer);
+      document.dispatchEvent({type:"keydown",key:"Escape"});  // Esc
+      assert.equal(document.getElementById("detail-layer"),null,"Esc 应关闭");
     ''')
 
 

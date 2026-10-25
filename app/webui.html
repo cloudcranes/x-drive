@@ -245,7 +245,7 @@
   }
 
   .grid{display:grid; gap:var(--gap); padding:14px var(--pad) 72px;
-    grid-template-columns:repeat(auto-fill, minmax(232px,1fr))}
+    grid-template-columns:repeat(auto-fill, minmax(196px,1fr))}
 
   .card{position:relative; display:flex; flex-direction:column; border:1px solid var(--line);
     border-radius:var(--radius); background:linear-gradient(180deg,rgba(19,19,19,.92),rgba(9,9,9,.95));
@@ -272,6 +272,16 @@
     color:var(--faint)}
   .card-title{padding:9px 13px 0; font-size:12.5px; line-height:1.45; color:var(--text);
     display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  /* 海报卡：只留海报 + 标题。番号压在海报角上，列表一眼能认出来。 */
+  .poster-card{gap:0}
+  .poster-card .card-cover{aspect-ratio:3/4; border-bottom:none; position:relative; cursor:pointer}
+  .poster-card .card-cover:focus-visible{outline:2px solid var(--cyan); outline-offset:-2px}
+  .poster-card .card-title{padding:8px 11px 10px; font-size:12px; line-height:1.4;
+    -webkit-line-clamp:2; color:var(--text-2)}
+  .poster-card .why.cleanup-pending{padding:0 11px 10px}
+  .card-code{position:absolute; left:0; bottom:0; font-family:var(--mono); font-size:10px;
+    font-weight:700; letter-spacing:.06em; padding:3px 7px; color:var(--text);
+    background:linear-gradient(transparent, rgba(0,0,0,.85) 55%); text-shadow:0 1px 3px rgba(0,0,0,.9)}
   .card-actors{padding:8px 13px 0; display:flex; flex-wrap:wrap; gap:5px}
   .actor-chip{font:inherit; font-size:10.5px; padding:2px 8px; border-radius:999px; cursor:pointer;
     color:var(--violet); border:1px solid rgba(201,163,255,.28); background:rgba(201,163,255,.07)}
@@ -711,6 +721,8 @@
     .resultbar{padding-top:12px}
     .card-head{padding:11px 11px 0}
     .card-body{padding:5px 11px 0}
+    /* 海报卡：窄屏再收一档，两列放得下而不挤 */
+    .poster-card .card-title{padding:7px 9px 9px; font-size:11.5px}
     /* 窄卡片底栏排两行：时间一行，操作 + 链接一行，别让「改名 / 删除」折成竖排 */
     .card-foot{padding:9px 11px 10px; row-gap:3px}
     .card-foot .time{flex:1 1 100%; order:0; color:var(--faint)}
@@ -1277,15 +1289,10 @@ function cleanupPendingText(items) {
 }
 function card(t) {
   const m = t.meta || {};
-  const node = el("article", "card");
-  const head = el("div", "card-head");
-  head.append(el("span", "card-series", t.series || "—"));
-  head.append(el("span", "code", t.code));
-  node.append(head);
+  const node = el("article", "card poster-card");
 
-  // 封面：走同源代理，避免浏览器直连图床被拦。
-  // 没封面 / 图床 403·502 都渲染同一块占位：卡片版面保持一致，
-  // 也不会出现破图标或一块死黑让人以为页面坏了。
+  // 卡片只留两样：海报 + 标题。其余信息（演员/片商/评分/体积/路径/操作）
+  // 全在点开后的详情弹层里 —— 列表扫一眼就能看完，不被一堆标签挤满。
   const cover = el("div", "card-cover");
   if (m.cover) {
     const img = el("img");
@@ -1304,92 +1311,150 @@ function card(t) {
     cover.classList.add("nocover");
     cover.append(el("span", "noimg", "无封面"));
   }
+  // 番号压在海报角上：列表里一眼能认出是哪部，不用读标题
+  const badge = el("span", "card-code", t.code || "");
+  cover.append(badge);
   node.append(cover);
 
-  // 标题是元数据里最有用的信息，放不下就截断
-  if (m.title) {
-    const ti = el("div", "card-title", m.title);
-    ti.title = m.title;
-    node.append(ti);
-  }
+  // 标题：元数据里最有用的信息，放不下就截断
+  const title = m.title || t.code || "";
+  const ti = el("div", "card-title", title);
+  ti.title = title;
+  node.append(ti);
 
-  const body = el("div", "card-body");
-  const kind = el("span", "tag " + (t.cat === "video" ? "vid" : "img"), t.kind);
-  body.append(kind);
-  body.append(el("span", "tag", t.size_text));
-  if (m.maker) body.append(el("span", "tag", m.maker));
-  if (m.rating) body.append(el("span", "tag rate", "★ " + m.rating));
-  node.append(body);
+  // 归档成功但源目录还留着内容：只提示，不提供删除 —— 要人自己核对
   const cleanup = cleanupPendingText(t.cleanup_pending);
   if (cleanup) node.append(el("div", "why cleanup-pending", cleanup));
 
-  // 演员单独一行，点了能当筛选条件
-  const actors = m.actors || [];
-  if (actors.length) {
-    const row = el("div", "card-actors");
-    for (const name of actors.slice(0, 4)) {
-      const a = el("button", "actor-chip", name);
-      a.addEventListener("click", e => {
-        e.stopPropagation();
-        view.q = name;
-        $("q").value = name;
-        applyFilter();
-      });
-      row.append(a);
+  // 点海报开详情弹层（点卡片其它地方不响应：卡片上已经没有别的动作了）
+  const openDetail = () => showArchiveDetail(t);
+  cover.classList.add("card-cover-btn");
+  cover.setAttribute("role", "button");
+  cover.setAttribute("tabindex", "0");
+  cover.setAttribute("aria-label", `${t.code} · 查看详情`);
+  cover.addEventListener("click", e => {
+    e.stopPropagation();
+    openDetail();
+  });
+  cover.addEventListener("keydown", e => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    openDetail();
+  });
+  return node;
+}
+
+// 归档详情弹层：海报 + 标题之外的全部信息。
+// 字段一律按「有才渲染」处理 —— 缺什么就少一行，不编。
+function showArchiveDetail(t) {
+  const m = t.meta || {};
+  const old = document.getElementById("detail-layer");
+  if (old) old.remove();
+  const layer = el("div", "dlayer");
+  layer.id = "detail-layer";
+  // 三个出口（点遮罩 / Esc / 关闭）都走同一个 close：背景滚动锁必须成对解开，
+  // 否则关掉弹层后整页再也滚不动。
+  const closeLayer = () => {
+    closeLightbox();               // 灯箱不是独立入口，跟着所在弹层一起收
+    document.removeEventListener("keydown", onKey);
+    layer.remove();
+    document.body.style.overflow = "";
+  };
+  const onKey = e => {
+    if (e.key !== "Escape") return;
+    if (lightboxOpen()) return;      // 灯箱开着时 Esc 只关灯箱
+    closeLayer();
+  };
+  layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
+  document.addEventListener("keydown", onKey);
+  document.body.style.overflow = "hidden";
+
+  const panel = el("div", "dpanel");
+  const head = el("div", "dhead");
+  head.append(el("span", "dcode", t.code || ""));
+  const close = el("button", "iconbtn txt", "关闭");
+  close.type = "button";
+  close.addEventListener("click", closeLayer);
+  head.append(close);
+  panel.append(head);
+
+  const top = el("div", "dtop");
+  if (m.cover) {
+    const img = el("img", "dcover");
+    img.alt = t.code || "";
+    img.addEventListener("error", () => img.remove());
+    img.src = BASE + "/proxy?u=" + encodeURIComponent(m.cover);
+    top.append(img);
+  }
+  const metaBox = el("div", "dmeta");
+  if (m.title) metaBox.append(el("div", "dtitle", m.title));
+  const rows = [
+    ["番号", t.code],
+    ["系列", t.series || m.series],
+    ["发行日期", m.date],
+    ["时长", m.duration],
+    ["片商", m.maker],
+    ["发行商", m.publisher],
+    ["导演", m.director],
+    ["演员", (m.actors || []).join(" / ")],
+    ["类别", (m.categories || []).join("、")],
+    ["评分", m.rating],
+    ["文件构成", t.kind],
+    ["体积", t.size_text],
+    ["文件数", t.count ? String(t.count) : ""],
+    ["归档时间", t.at],
+    ["云盘路径", t.path],
+    ["来源", m.source || t.source],
+  ].filter(r => r[1]);
+  for (const [k, v] of rows) {
+    const row = el("div", "drow");
+    row.append(el("span", "dk", k));
+    row.append(el("span", "dv", v));
+    metaBox.append(row);
+  }
+  // 文件清单：归档里到底有哪些文件
+  if ((t.files || []).length) {
+    metaBox.append(el("div", "dsub", `文件 · ${t.files.length}`));
+    for (const name of t.files) {
+      const row = el("div", "drow");
+      row.append(el("span", "dv", name));
+      metaBox.append(row);
     }
-    node.append(row);
+  }
+  top.append(metaBox);
+  panel.append(top);
+
+  if ((m.previews || []).length) {
+    panel.append(el("div", "dsub", `预览图 · ${m.previews.length}`));
+    panel.append(thumbWall(m.previews, "预览"));
   }
 
-  const foot = el("div", "card-foot");
-  foot.append(el("span", "time", fmt(t.at)));
-  const ren = el("button", "card-del", "改名");
+  const actions = el("div", "dactions");
+  // 改名 / 删除：这两个是归档维护动作，放在详情里最合适 —— 卡片上不再挤按钮
+  const ren = el("button", "ghost", "改名");
   ren.type = "button";
   ren.title = "改番号：远端目录与归档记录一起改";
-  ren.addEventListener("click", e => {
-    e.stopPropagation();
-    askRename(t);
-  });
-  foot.append(ren);
-  const del = el("button", "card-del", "删除");
+  ren.addEventListener("click", () => { closeLayer(); askRename(t); });
+  actions.append(ren);
+  const del = el("button", "ghost danger", "删除");
   del.type = "button";
   del.title = "删除归档目录与记录（不可逆）";
-  del.addEventListener("click", e => {
-    e.stopPropagation();
-    askDelete(t);
-  });
-  foot.append(del);
+  del.addEventListener("click", () => { closeLayer(); askDelete(t); });
+  actions.append(del);
   if (t.link) {
-    // 换后端后链接可能来自 OpenList 分享页或 CD2 直链，别一律叫 Drive
     const gdrive = /drive\.google\.com/.test(t.link);
-    const a = el("a", null, gdrive ? "Drive ↗" : "分享 ↗");
+    const a = el("a", "ghost", gdrive ? "Drive ↗" : "分享 ↗");
     a.href = t.link; a.target = "_blank"; a.rel = "noopener";
-    foot.append(a);
-  } else if (t.path) {
-    // 后端没有分享能力（例如 CloudDrive2）：显示真实路径，比一句「无链接」有用
-    const p = el("span", "nolink", t.path);
-    p.title = t.path;
-    foot.append(p);
-  } else {
-    foot.append(el("span", "nolink", "无链接"));
+    actions.append(a);
   }
-  node.append(foot);
-
-  node.addEventListener("click", e => {
-    if (e.target.closest("a")) return;
-    if (t.link) window.open(t.link, "_blank", "noopener");
-  });
-  // 卡片是列表主体，只能鼠标点等于把键盘用户挡在外面
-  if (t.link) {
-    node.tabIndex = 0;
-    node.setAttribute("role", "link");
-    node.setAttribute("aria-label", `${t.code} · 打开 Drive`);
-    node.addEventListener("keydown", e => {
-      if (e.target !== node || (e.key !== "Enter" && e.key !== " ")) return;
-      e.preventDefault();
-      window.open(t.link, "_blank", "noopener");
-    });
+  if (m.url) {
+    const a = el("a", "ghost", "javbus 原页 ↗");
+    a.href = m.url; a.target = "_blank"; a.rel = "noopener";
+    actions.append(a);
   }
-  return node;
+  panel.append(actions);
+  layer.append(panel);
+  document.body.append(layer);
 }
 
 // 删除归档：两段式。先问服务端「将删什么」，把番号和体积摆给用户看，
