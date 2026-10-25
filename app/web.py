@@ -1271,6 +1271,16 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
         except OSError:
             pass
 
+# 可播性探测的缓存：直链 URL 变了就是新的一次判定，但同一个 URL 在短时间内
+# 反复探测没必要 —— 而探测在慢节点上要**几十秒到几分钟**（实测 aliyun08 节点
+# 253 秒），放在 HTTP 请求里同步做会把整个请求挂住。
+#
+# 缓存 10 分钟：既避免同一文件反复点「播放」时反复等，又不至于错过
+# 「文件刚被修好」这种变化（那个变化会伴随直链 URL 变化 —— URL 变了就不命中缓存）。
+_PLAYABLE_CACHE: dict[str, tuple[float, bool | None]] = {}
+PLAYABLE_CACHE_TTL = float(os.getenv("PLAYABLE_CACHE_TTL", "600") or 600)
+
+
 def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool | None:
     """这条直链指向的文件**能不能在浏览器里直接播**。
 
@@ -1295,6 +1305,9 @@ def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool | None:
     raw = (link or "").strip()
     if not raw:
         return True
+    hit = _PLAYABLE_CACHE.get(raw)
+    if hit and time.time() - hit[0] < PLAYABLE_CACHE_TTL:
+        return hit[1]
     # 迅雷 CDN 会**间歇性**拒绝连接（实测同一 URL 连打 10 次：成功 2 次、
     # 8 次 RemoteDisconnected）。所以要重试 —— 一次失败就下结论会误判。
     last = ""
@@ -1303,12 +1316,15 @@ def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool | None:
             req = urllib.request.Request(raw, headers={"Range": f"bytes=0-{probe_bytes - 1}"})
             with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT) as resp:
                 head = resp.read(probe_bytes)
-            return b"moov" in head
+            result = b"moov" in head
+            _PLAYABLE_CACHE[raw] = (time.time(), result)
+            return result
         except Exception as exc:            # noqa: BLE001
             last = f"{type(exc).__name__}: {str(exc)[:80]}"
             if attempt < 2:
                 time.sleep(1.0)
     log.info("探测可播性失败（试了 3 次）：%s", last)
+    _PLAYABLE_CACHE[raw] = (time.time(), None)
     return None
 
 

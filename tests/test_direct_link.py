@@ -234,6 +234,7 @@ def test_direct_link_allows_path_inside_archive_root(tmp_path, monkeypatch):
 
 def test_probe_playable_detects_moov_at_head(monkeypatch):
     """文件头有 moov（faststart 过的）→ 能直接播。"""
+    web._PLAYABLE_CACHE.clear()
     payload = b"\x00\x00\x00\x18ftypisom" + b"\x00\x00\x00\x10moov" + b"x" * 100
 
     class Resp:
@@ -253,6 +254,7 @@ def test_probe_playable_detects_moov_at_head(monkeypatch):
 
 def test_probe_playable_detects_missing_moov(monkeypatch):
     """文件头没有 moov（索引在末尾）→ 浏览器会一直转圈。"""
+    web._PLAYABLE_CACHE.clear()
     payload = b"\x00\x00\x00\x18ftypisom" + b"\x00\x00\x00\x10mdat" + b"x" * 100
 
     class Resp:
@@ -277,6 +279,8 @@ def test_probe_playable_returns_none_when_unreachable(monkeypatch):
     None 是「读不出字节」（网络不通 / 缓存没生效 / 被限流）。
     直链接口靠这个区别来决定「换另一条路」。
     """
+    web._PLAYABLE_CACHE.clear()
+
     def boom(*a, **k):
         raise OSError("Connection refused")
 
