@@ -184,3 +184,36 @@ def test_ffmpeg_available_reports_missing_binary(monkeypatch):
     ok, why = faststart.ffmpeg_available()
     assert ok is False
     assert "definitely-not-ffmpeg" in why
+
+
+# ─────────────────────────────────────────── 判定方向（纯字节，不依赖 ffmpeg）
+
+def test_faststart_file_accepts_tail_moov_and_refuses_head_moov(tmp_path, monkeypatch):
+    """重排的入口判定方向不能反。
+
+    这里曾经写成「没有 moov 就报错」—— 于是**所有真正需要重排的文件**
+    （moov 在末尾）都在入口被拒，任务报「这个文件的 moov 已经在头部」，
+    驴唇不对马嘴，而且线上真跑一次要浪费 9 分钟下载才发现。
+
+    这条测试不依赖 ffmpeg：入口判定发生在调用 ffmpeg 之前。
+    """
+    head = _fake_mp4(tmp_path / "head.mp4", moov_at_head=True)
+    tail = _fake_mp4(tmp_path / "tail.mp4", moov_at_head=False)
+
+    called = []
+
+    def fake_run(*a, **k):
+        called.append(a)
+        raise RuntimeError("不该走到 ffmpeg")
+
+    monkeypatch.setattr(faststart.subprocess, "run", fake_run)
+
+    # 头部有 moov → 明确拒绝（本来就能播，不必重排）
+    with pytest.raises(faststart.FaststartError, match="不需要重排"):
+        faststart.faststart_file(head, tmp_path)
+    assert called == [], "已经是 faststart 的文件不该去调 ffmpeg"
+
+    # 尾部有 moov → **要**继续走到 ffmpeg（不该被入口拒掉）
+    with pytest.raises(RuntimeError):
+        faststart.faststart_file(tail, tmp_path)
+    assert called, "真正需要重排的文件必须走到 ffmpeg"

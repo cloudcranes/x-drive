@@ -78,7 +78,10 @@ def faststart_file(src: Path, work_dir: Path | None = None) -> Path:
     src = Path(src)
     if not src.is_file():
         raise FaststartError(f"文件不存在：{src}")
-    if not has_moov_at_head(src):
+    # moov **在**头部 = 已经 faststart 好了 = 不用重排。
+    # （这里曾经写反了：判成「没有 moov 就报错」，于是所有真正需要重排的文件
+    #  都在这一步被拒，任务报「这个文件的 moov 已经在头部」—— 驴唇不对马嘴。）
+    if has_moov_at_head(src):
         raise FaststartError("这个文件的 moov 已经在头部，不需要重排")
     exe = shutil.which(FFMPEG) or FFMPEG
     work = Path(work_dir or tempfile.gettempdir())
