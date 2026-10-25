@@ -3432,12 +3432,14 @@ def scrape_preview(code: str) -> dict:
     # 手动刮削的价值就在补全字段（演员/封面/预览图/发行商…），
     # 只报 12 个 LOCKABLE 字段的话，用户根本看不到补到了什么。
     for key in sorted(set(old) | set(merged)):
+        if key.startswith("_"):
+            continue                      # 内部标记（来源等），不进差异
         before, after = old.get(key), merged.get(key)
         if before == after:
             continue
         changes[key] = {"from": before, "to": after}
     return {"ok": True, "code": code, "locked": sorted(locks), "changes": changes,
-            "found": bool(fresh), "provider": fresh.get("scraped_from") or ""}
+            "found": bool(fresh), "provider": fresh.get("_providers") or ""}
 
 
 def _scrape_fresh(code: str) -> tuple[dict, str]:
@@ -3500,7 +3502,10 @@ def _scrape_fresh(code: str) -> tuple[dict, str]:
     # 标题统一带番号前缀（metatube 的标题不带前缀）
     if out.get("title"):
         out["title"] = metadata.with_code_prefix(out["title"], code)
-    out["scraped_from"] = "+".join(providers)
+    # 技术字段（磁力凭证 gid/uc、过程信息）不进归档 ——
+    # gid 每次抓取都变，存进去会变成「每次刮削都变」的假差异
+    out = metadata.strip_technical(out)
+    out["_providers"] = "+".join(providers)
     return out, ""
 
 
@@ -3539,6 +3544,8 @@ def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = 
         fresh, why = _scrape_fresh(code)
         if why:
             return {"ok": False, "error": why}
+        # _providers 是内部标记，不进记录
+        fresh = {k: v for k, v in fresh.items() if not k.startswith("_")}
         merged = metadata.merge(old, fresh, locks=locks)
     if fields:
         for key, value in fields.items():

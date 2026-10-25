@@ -480,3 +480,38 @@ def test_scrape_preview_reports_fields_beyond_lockable(tmp_path, monkeypatch):
         assert key in out["changes"], f"预览漏报了 {key}"
     assert out["changes"]["actors"]["to"] == ["演员丙"]
     assert out["changes"]["previews"]["to"] == ["http://x/1.jpg", "http://x/2.jpg"]
+
+
+def test_strip_technical_removes_session_and_process_fields():
+    """磁力凭证与过程字段不进归档记录。
+
+    gid/uc 是 javbus 磁力接口的凭证，**每次请求新生成**（实测同一番号两次抓取
+    分别给 61217107961 / 61217107964）—— 存进归档会变成「每次刮削都变」的
+    假差异，还会被误当业务字段展示给用户。
+    """
+    from app import metadata
+    out = metadata.strip_technical({
+        "title": "标题", "gid": "61217107961", "uc": "0",
+        "fetched_at": "2026-10-25T13:59:03", "source": "javbus",
+        "source_url": "https://www.javbus.com/ja/MIMK-186", "scraped_from": "javbus+metatube",
+    })
+    assert out == {"title": "标题"}, out
+
+
+def test_scrape_preview_ignores_session_fields(tmp_path, monkeypatch):
+    """预览不该报 gid 这种每次都变的字段 —— 那是假差异。"""
+    core, web = _scrape_env(tmp_path, monkeypatch)
+    core.save_state(web.STATE, {"SSIS-6": {"code": "SSIS-6", "meta": {"gid": "111"}}})
+    monkeypatch.setattr(web.metatube, "configured", lambda: False)
+
+    async def fake_javbus(code, path=None, client=None, timeout=0, refresh=False):
+        return {"code": "SSIS-6", "title": "SSIS-6 标题", "gid": "222", "uc": "0",
+                "director": "导演甲"}
+
+    monkeypatch.setattr(web.meta, "lookup", fake_javbus)
+    out = web.scrape_preview("SSIS-6")
+
+    assert out["ok"] is True
+    assert "gid" not in out["changes"], f"gid 是每次都变的会话凭证，不该报差异：{out['changes']}"
+    assert "uc" not in out["changes"]
+    assert "director" in out["changes"], "真正的作品字段要报"

@@ -72,6 +72,22 @@ def normalize_meta(rec: dict) -> dict:
     return out
 
 
+# 这些字段**不归入归档记录**。
+#
+# · gid / uc：javbus 的磁力接口凭证，每次请求新生成（实测同一番号两次抓取
+#   分别给 61217107961 / 61217107964），不是影片标识 —— 存进归档会变成
+#   「每次刮削都变」的假差异，还会被误当业务字段展示。
+# · scraped_from / fetched_at：本次抓取的来源与时间，是过程信息不是作品信息。
+# · source / source_url：数据源标记与地址，归档有自己的 source 字段，混在一起
+#   会让人分不清「这条记录从哪来」和「这部片的信息源是谁」。
+_TECHNICAL_FIELDS = ("gid", "uc", "scraped_from", "fetched_at", "source", "source_url")
+
+
+def strip_technical(rec: dict) -> dict:
+    """去掉技术字段与过程字段，只留作品信息。"""
+    return {k: v for k, v in (rec or {}).items() if k not in _TECHNICAL_FIELDS}
+
+
 def _xml_escape(text: str) -> str:
     return (str(text or "").replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
