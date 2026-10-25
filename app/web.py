@@ -479,6 +479,32 @@ def archived_codes() -> set[str]:
         return set()
 
 
+def _find_archive_record(state: dict, code: str) -> dict:
+    """按番号找一条归档记录。找不到就返回空字典。
+
+    归档表的键是**归档当时的目录名**，不一定等于规范番号：
+    磁力里没有可识别的番号时（实测 `mimk-186ch` —— 番号粘连了后缀，
+    codes.canonical 认不出来），目录名就用了磁力原名，键也跟着是原名。
+    这时用大写去查就查不到 —— 记录明明在，界面却说「没有归档记录」。
+
+    所以依次试：规范名 → 原样 → 大写 → 小写，并且按 key_of 归一兜底
+    （`SSIS-123` 与 `ssis123` 是同一部）。
+    """
+    wanted = (code or "").strip()
+    if not wanted:
+        return {}
+    for key in (wanted, wanted.upper(), wanted.lower()):
+        record = state.get(key)
+        if record:
+            return record
+    # 归一后找：目录名去连字符 vs 番号带连字符，两边是同一部
+    target = workspace.key_of(wanted)
+    for key, record in (state or {}).items():
+        if workspace.key_of(str(key)) == target:
+            return record or {}
+    return {}
+
+
 def _dir_size(path: Path) -> int:
     """递归算一个目录的字节数。不跟符号链接：防循环，也不把别处的挂载算进来。"""
     total = 0
@@ -2112,7 +2138,7 @@ def purge_archives(codes_to_drop: list[str]) -> list[dict]:
         if not code:
             continue
         state = core.load_state(STATE)
-        record = state.get(code) or {}
+        record = _find_archive_record(state, code)
         if not record:
             continue
         try:
@@ -3390,7 +3416,7 @@ def scrape_preview(code: str) -> dict:
     """差异预览：重新刮一次，只列出会变的字段，不动任何文件。"""
     code = codes.canonical(code) or (code or "").strip().upper()
     state = core.load_state(STATE)
-    record = state.get(code) or {}
+    record = _find_archive_record(state, code)
     old = (record.get("meta") or {})
     locks = set(record.get("locked") or [])
     fresh = {}
@@ -3439,7 +3465,7 @@ def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = 
         return {"ok": False, "code": code, "error": "同一字段不能同时锁定和解锁",
                 "fields": both}
     state = core.load_state(STATE)
-    record = dict(state.get(code) or {})
+    record = dict(_find_archive_record(state, code))
     if not record:
         return {"ok": False, "error": f"{code} 没有归档记录"}
     old = dict(record.get("meta") or {})
@@ -3714,9 +3740,16 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
     默认**只报告**：远端缺文件可能是历史上传未完成或有人手删，程序不该自作主张
     补传或删除。要看差异就让它列出来，动手得显式 confirm。
     """
-    code = codes.canonical(code) or (code or "").strip().upper()
+    raw = (code or "").strip()
     state = core.load_state(STATE)
-    record = state.get(code) or {}
+    # 先按原样找，再按规范名找：归档表的键是**归档当时的目录名**，
+    # 番号认不出来时就是磁力原名（实测 mimk-186ch），规范化会把原样丢掉。
+    record = _find_archive_record(state, raw)
+    if not record:
+        code = codes.canonical(raw) or raw.upper()
+        record = _find_archive_record(state, code)
+    else:
+        code = raw
     if not record:
         return {"ok": False, "code": code, "error": "没有归档记录"}
     local = {str(n): 0 for n in (record.get("files") or [])}

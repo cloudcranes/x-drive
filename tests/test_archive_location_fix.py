@@ -181,3 +181,35 @@ def test_actual_cloud_run_carries_client_and_destination_into_archive(env, monke
     saved = core.load_state(web.STATE)["AB-1"]
     assert saved["backend"] == "clouddrive2"
     assert saved["rel"] == "chosen-dest/AB-1" and saved["root"] == "chosen-dest"
+
+
+def test_archive_record_lookup_finds_unrecognised_names(env, monkeypatch):
+    """归档表的键是**归档当时的目录名**，不一定等于规范番号。
+
+    实测（线上 MIMK-186）：磁力里的名字是 `mimk-186ch`，番号粘连后缀认不出来，
+    目录名就用了磁力原名，键也跟着是原名。这时用大写去查就查不到 ——
+    记录明明在，界面却说「没有归档记录」。
+
+    所以查找要依次试：原样 → 大写 → 小写 → 归一后比对。
+    """
+    state = {"mimk-186ch": {"code": "mimk-186ch", "files": ["mimk-186ch.mp4"],
+                             "rel": "dest/mimk-186ch", "backend": "clouddrive2"}}
+    assert web._find_archive_record(state, "mimk-186ch")
+    assert web._find_archive_record(state, "MIMK-186CH")
+    assert web._find_archive_record(state, "MIMK-186") is not None, "归一后应能对上"
+    assert web._find_archive_record(state, "MIMK-999") == {}
+
+
+def test_verify_archive_reports_found_record_by_raw_key(env, monkeypatch):
+    """核验接口要能找到那条记录（键是磁力原名时也能核）。"""
+    core.save_state(web.STATE, {"mimk-186ch": {
+        "code": "mimk-186ch", "files": ["mimk-186ch.mp4"], "size": 7,
+        "backend": "clouddrive2", "rel": "dest/mimk-186ch",
+        "manifest": {"files": [{"name": "mimk-186ch.mp4", "size": 7, "ext": ".mp4"}]}}})
+    monkeypatch.setattr(web, "storage_backend", lambda: SimpleNamespace(kind="clouddrive2"))
+    monkeypatch.setattr(web, "remote_ls", lambda code, **_: [{"name": "mimk-186ch.mp4", "size": 7}])
+
+    out = web.verify_archive("mimk-186ch")
+
+    assert out["ok"] is True, out
+    assert out["state"] == "校验通过", out

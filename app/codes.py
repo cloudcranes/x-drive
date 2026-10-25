@@ -15,6 +15,14 @@ HEYZO_RE = re.compile(r"\bHEYZO[-_ ]?(\d{3,5})\b", re.I)
 GENERIC_RE = re.compile(r"\b([A-Za-z]{2,6})[-_ ]?(\d{2,5})\b")
 # 带分隔符的强匹配：`MIMK-285` 比 `SIS001` 更可信，规范名优先用它
 GENERIC_RE_STRICT = re.compile(r"\b([A-Za-z]{2,6})[-_ ](\d{2,5})\b")
+# 番号后面粘连着字母后缀：`MIMK-267ch`（中文版）、`ABC-123C`。
+# 这种写法以前认不出来，于是归档目录名用了磁力原名（实测 mimk-186ch），
+# 站内既不是番号、也跟别的记录对不上。
+# 规则：数字后面跟 1~3 个字母，且字母不是常见的画质/编码词（见 BLOCK_SUFFIX）。
+#
+# 注意这里不能用 `\b` 收尾：数字与字母之间**没有**词边界（`267ch` 是一个词），
+# 写成 `\b` 会让整条规则永远不匹配 —— 数字后要用「非字母」或结尾来断开。
+GENERIC_RE_SUFFIX = re.compile(r"\b([A-Za-z]{2,6})[-_ ](\d{2,5})([A-Za-z]{1,3})(?![A-Za-z0-9])")
 
 BLOCK_PREFIX = {
     "WEB", "WEBDL", "WEBRIP", "BD", "BDRIP", "BRRIP", "HDRIP", "DVDRIP", "BLURAY",
@@ -22,6 +30,10 @@ BLOCK_PREFIX = {
     "MP4", "MKV", "AVI", "FHD", "HD", "SD", "UHD",
 }
 BLOCK_NUMBER = {"1080", "720", "480", "2160", "264", "265", "30", "60", "24", "25", "50"}
+# 番号后面的字母后缀里，这些是画质/编码/版本标记，不是「中文版」那种后缀 ——
+# `MIMK-267U`（多语种版）该认成 MIMK-267，但 `MIMK-267H264`（编码）不是。
+# 注意 **CH 不在里面**：它就是「中文版」的意思（实测 MIMK-267ch / mimk-186ch）。
+BLOCK_SUFFIX = {"H", "H264", "H265", "X", "X264", "X265", "U", "C", "JP", "EN"}
 
 URL_RE = re.compile(r"(?:magnet:\?[^\s\"'<>]+|https?://[^\s\"'<>]+)", re.I)
 
@@ -79,6 +91,14 @@ def canonical(code: str) -> str:
     for match in GENERIC_RE_STRICT.finditer(strip_urls(text)):
         prefix, number = match.group(1).upper(), match.group(2)
         if prefix in BLOCK_PREFIX or number in BLOCK_NUMBER:
+            continue
+        return normalize(f"{prefix}-{number}")
+    # 番号后面粘连着字母后缀：`MIMK-267ch`（中文版）、`ABC-123C`
+    for match in GENERIC_RE_SUFFIX.finditer(strip_urls(text)):
+        prefix, number, suffix = match.group(1).upper(), match.group(2), match.group(3).upper()
+        if prefix in BLOCK_PREFIX or number in BLOCK_NUMBER:
+            continue
+        if suffix in BLOCK_SUFFIX:
             continue
         return normalize(f"{prefix}-{number}")
     found = detect(text)
