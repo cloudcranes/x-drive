@@ -163,7 +163,8 @@ def test_scrape_preview_only_reports_changes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(web.metatube, "scrape", fake_scrape)
     out = web.scrape_preview("SSIS-2")
-    assert out["changes"]["title"] == {"from": "旧", "to": "新"}
+    # 新标题补上番号前缀：站内惯例是「番号 + 标题」，metatube 的标题不带前缀
+    assert out["changes"]["title"] == {"from": "旧", "to": "SSIS-2 新"}
     assert "summary" in out["changes"]
     assert core.load_state(web.STATE)["SSIS-2"]["meta"]["title"] == "旧", "预览不许改记录"
 
@@ -357,3 +358,47 @@ def test_archive_record_stores_normalized_meta():
         manifest_files=["MIMK-186.mp4"])
     assert rec["meta"]["release_date"] == "2024-11-29"
     assert rec["meta"]["title"] == "标题"
+
+
+def test_with_code_prefix_adds_missing_prefix():
+    """metatube 的标题不带番号前缀 —— 补上去，番号才不从标题里消失。"""
+    from app import metadata
+    assert metadata.with_code_prefix("入り浸りギャル", "MIMK-186") == "MIMK-186 入り浸りギャル"
+
+
+def test_with_code_prefix_does_not_duplicate():
+    """已有前缀就不重复加。"""
+    from app import metadata
+    assert metadata.with_code_prefix("MIMK-186 入り浸りギャル", "MIMK-186") == "MIMK-186 入り浸りギャル"
+    assert metadata.with_code_prefix("MIMK-186", "MIMK-186") == "MIMK-186"
+
+
+def test_with_code_prefix_handles_empty():
+    from app import metadata
+    assert metadata.with_code_prefix("", "MIMK-186") == ""
+    assert metadata.with_code_prefix("标题", "") == "标题"
+
+
+def test_scrape_preview_matches_what_sync_writes(tmp_path, monkeypatch):
+    """预览说会变成什么，写入就得变成什么 —— 两处判据不许分叉。
+
+    以前 preview 与 sync 各写一套跳过逻辑，分叉时用户看到的是假话。
+    """
+    core, web = _scrape_env(tmp_path, monkeypatch)
+    core.save_state(web.STATE, {"SSIS-9": {"code": "SSIS-9", "meta": {"title": "旧标题"}}})
+    monkeypatch.setattr(web.metatube, "configured", lambda: True)
+
+    async def fake_scrape(code, provider="", client=None):
+        return {"code": code, "title": "新标题", "release_date": "2024-11-29",
+                "runtime": "120 分钟"}
+
+    monkeypatch.setattr(web.metatube, "scrape", fake_scrape)
+    preview = web.scrape_preview("SSIS-9")
+
+    web.scrape_sync("SSIS-9", resync=True, confirm=False)
+    rec = core.load_state(web.STATE)["SSIS-9"]
+
+    for key, change in preview["changes"].items():
+        assert rec["meta"].get(key) == change["to"], \
+            f"{key}：预览说变成 {change['to']!r}，实际写成了 {rec['meta'].get(key)!r}"
+    assert rec["meta"]["title"] == "SSIS-9 新标题", "写入的标题要带番号前缀"

@@ -83,6 +83,25 @@ def _blank(value) -> bool:
         isinstance(value, (list, tuple, dict, set)) and not value)
 
 
+def with_code_prefix(title: str, code: str) -> str:
+    """标题带上番号前缀。
+
+    站内惯例是「番号 + 空格 + 标题」—— 卡片上直接能看出是哪部。但两条源的
+    标题格式不一样：javbus 带番号前缀，metatube 不带。补刮时若直接用新值，
+    标题会从「MIMK-186 入り浸り…」变成「入り浸り…」，番号前缀就没了 ——
+    标题与番号脱节，NFO 的 sorttitle 也跟着不对。
+
+    这里统一：缺前缀就补上，已有前缀就不重复加。
+    """
+    text = (title or "").strip()
+    prefix = (code or "").strip()
+    if not text or not prefix:
+        return text
+    if text.upper().startswith(prefix.upper() + " ") or text.upper() == prefix.upper():
+        return text
+    return f"{prefix} {text}"
+
+
 def merge(old: dict, fresh: dict, locks: set[str] | None = None) -> dict:
     """新数据盖旧数据，但锁定字段保旧值、空值不覆盖有效值。
 

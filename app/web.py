@@ -3429,6 +3429,10 @@ def scrape_preview(code: str) -> dict:
     if fresh and not metatube.matches(code, fresh):
         return {"ok": False, "code": code,
                 "error": f"服务返回的是 {fresh.get('code')}，不是 {code}"}
+    # 与 scrape_sync 完全一致的处理：标题补番号前缀
+    # （预览说一套、写入做另一套，就是骗用户）
+    if fresh.get("title"):
+        fresh = {**fresh, "title": metadata.with_code_prefix(fresh["title"], code)}
     changes = {}
     # 预览必须走**和真正写入完全一样**的判定，否则会出现「预览说不会覆盖、实际却覆盖了」。
     # 以前这里自己写了一套跳过逻辑（无条件跳过锁字段），而 scrape_sync 走
@@ -3481,6 +3485,9 @@ def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = 
             return {"ok": False, "error": str(exc)[:200]}
         if fresh and not metatube.matches(code, fresh):
             return {"ok": False, "error": f"服务返回的是 {fresh.get('code')}，不是 {code}"}
+        # 标题统一带番号前缀：metatube 的标题不带前缀，直接用会让番号从标题里消失
+        if fresh.get("title"):
+            fresh = {**fresh, "title": metadata.with_code_prefix(fresh["title"], code)}
         merged = metadata.merge(old, fresh, locks=locks)
     if fields:
         for key, value in fields.items():

@@ -130,4 +130,5 @@ def test_preview_reports_first_time_field(tmp_path, monkeypatch):
 
     preview = web.scrape_preview("SSIS-123")
 
-    assert preview["changes"]["title"]["to"] == "首次标题"
+    # 标题补上番号前缀（站内惯例：番号 + 标题）
+    assert preview["changes"]["title"]["to"] == "SSIS-123 首次标题"

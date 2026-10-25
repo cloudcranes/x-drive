@@ -61,8 +61,9 @@ def test_unlock_then_resync_can_overwrite(tmp_path, monkeypatch):
 
     web.scrape_sync("SSIS-123", unlock=["title"])
     out = web.scrape_sync("SSIS-123", resync=True)
-    assert out["changed"].get("title") == "新标题"
-    assert core.load_state(web.STATE)["SSIS-123"]["meta"]["title"] == "新标题"
+    # 标题会补上番号前缀：站内惯例是「番号 + 标题」
+    assert out["changed"].get("title") == "SSIS-123 新标题"
+    assert core.load_state(web.STATE)["SSIS-123"]["meta"]["title"] == "SSIS-123 新标题"
 
 
 def test_unlock_ignores_unknown_field_names(tmp_path, monkeypatch):
