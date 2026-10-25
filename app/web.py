@@ -4186,6 +4186,24 @@ def validate_archive_backend(backend, record: dict) -> None:
         raise storage.StorageError(str(exc)) from exc
 
 
+def _rel_from_path(path: str, code: str) -> str:
+    """从记录里的 `后端:远端/路径` 派生后端内相对路径。
+
+    只认**末段等于番号**的情况：路径写错、番号对不上时宁可返回空串，
+    让调用方退回全局根，而不是拿着一条可能指向别的目录的路径去删文件。
+    """
+    text = str(path or "").strip()
+    if not text or ":" not in text:
+        return ""
+    _kind, _, tail = text.partition(":")
+    rel = tail.strip("/")
+    if not rel or any(bit in (".", "..") for bit in rel.split("/")) or "\\" in rel:
+        return ""
+    if code and rel.rsplit("/", 1)[-1] != code:
+        return ""
+    return rel
+
+
 def archive_locator(record: dict) -> str:
     """按归档记录定位远端目录，返回后端内相对路径。
 
@@ -4203,6 +4221,14 @@ def archive_locator(record: dict) -> str:
     code = str(record.get("code") or "").strip("/")
     if ".." in code or "/" in code or "\\" in code:
         raise storage.StorageError(f"归档番号不合法：{code!r}")
+    # 旧记录没有三元组，但 path 记着**归档当时**的真实远端位置
+    # （clouddrive2:迅雷云盘/X-Drive/MIMK-267）。拿它派生 rel 比退回全局根准：
+    # 归档是在当时的根下写的，后来改了 STORAGE_ROOT 也会照旧找对地方
+    # （实测 MIMK-267 正是这样：全局根已是 Downloads/downloads/test，
+    #  退回全局根只会报「路径不存在」，而实际文件在 迅雷云盘/X-Drive 下）。
+    derived = _rel_from_path(record.get("path"), code)
+    if derived:
+        return derived
     return storage.rel(code)
 
 

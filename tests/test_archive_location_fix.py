@@ -41,6 +41,36 @@ def record():
             "files_detail": [{"name": "AB-1.mp4", "size": 7}]}
 
 
+def test_legacy_record_without_triple_uses_its_own_path(env, monkeypatch):
+    """旧记录没有三元组，但 path 记着归档当时的真实位置 —— 照它定位。
+
+    实测 MIMK-267：全局 STORAGE_ROOT 后来改成了别的根，退回全局根只会报
+    「路径不存在」，而文件其实还在记录写明的位置。
+    """
+    monkeypatch.setattr(storage, "root", lambda: "changed-root")
+    legacy = {"code": "AB-1", "path": "clouddrive2:迅雷云盘/X-Drive/AB-1", "files": []}
+    assert web.archive_locator(legacy) == "迅雷云盘/X-Drive/AB-1"
+
+
+def test_legacy_path_with_mismatched_leaf_falls_back(env, monkeypatch):
+    """path 末段与番号对不上时不采信它 —— 宁可退回全局根也不指错目录。"""
+    monkeypatch.setattr(storage, "root", lambda: "global-root")
+    legacy = {"code": "AB-1", "path": "clouddrive2:迅雷云盘/X-Drive/OTHER", "files": []}
+    assert web.archive_locator(legacy) == "global-root/AB-1"
+
+
+def test_legacy_path_without_backend_prefix_is_ignored(env, monkeypatch):
+    monkeypatch.setattr(storage, "root", lambda: "global-root")
+    legacy = {"code": "AB-1", "path": "迅雷云盘/X-Drive/AB-1", "files": []}
+    assert web.archive_locator(legacy) == "global-root/AB-1"
+
+
+def test_legacy_path_with_traversal_is_rejected(env, monkeypatch):
+    monkeypatch.setattr(storage, "root", lambda: "global-root")
+    legacy = {"code": "AB-1", "path": "clouddrive2:../etc/AB-1", "files": []}
+    assert web.archive_locator(legacy) == "global-root/AB-1"
+
+
 def test_cloud_finish_preserves_actual_location(env, monkeypatch):
     monkeypatch.setattr(storage, "root", lambda: "other-root")
     web._finish_cloud("j", "magnet:a", {"records": [record()]})
