@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from pathlib import Path
@@ -127,6 +128,7 @@ def organize_landed(landed, backend, my_inbox: str, dest: str, code: str,
     """
     records: list[dict] = []
     pending_cleanup: list[dict] = []
+    failed: list[dict] = []
     for item in landed:
         if lease_check is not None:
             lease_check()
@@ -136,9 +138,26 @@ def organize_landed(landed, backend, my_inbox: str, dest: str, code: str,
         # 源目录就是收件目录本身，不是它下面的某个子目录。
         loose = item.folder == cloudingest.LOOSE_KEY
         source = "" if loose else item.folder
-        plan = cloudorganize.plan(source, item.files, folder_code=code or "")
-        moved = cloudorganize.apply(backend, my_inbox, plan, code or plan.target,
-                                    dst_root=dest)
+        # **逐条独立**：一个条目失败不许牵连其它条目。
+        #
+        # 以前是「全部整理完才返回」：一次落地两处（种子目录 + 根下散文件）
+        # 时两处共用同一个 target，第二处撞「目标已存在」抛异常 —— 第一处
+        # **已经搬进归档目录了**，但 records 一个都没返回 → 调用方不写归档
+        # 记录 → 云盘里那个目录成了没人认领的**孤儿**（账实不符）。
+        #
+        # 现在每个条目单独 try：成功的照常记账，失败的单独记下来。
+        try:
+            plan = cloudorganize.plan(source, item.files, folder_code=code or "")
+            moved = cloudorganize.apply(backend, my_inbox, plan, code or plan.target,
+                                        dst_root=dest)
+            # 重复下载：目标里本来就有（同名同大小），源文件是冗余 → 归入 drop
+            if moved.get("repeated"):
+                plan = dataclasses.replace(
+                    plan, drop=list(plan.drop) + list(moved["repeated"]))
+        except Exception as exc:            # noqa: BLE001 一个条目失败不影响其它
+            log.warning("整理落地条目 %s 失败：%s", item.folder, exc)
+            failed.append({"source": item.folder, "error": str(exc)[:200]})
+            continue
         records.append({
             "folder": moved["target"],
             "path": f"{backend.kind}:{dest}/{moved['target']}",
@@ -153,7 +172,7 @@ def organize_landed(landed, backend, my_inbox: str, dest: str, code: str,
             "inbox": my_inbox if loose else f"{my_inbox}/{item.folder}",
         })
         pending_cleanup.append({"plan": plan, "src_root": my_inbox, "dst_root": dest})
-    return records, pending_cleanup
+    return records, pending_cleanup, failed
 
 
 def clean_sources(backend, pending_cleanup, *, lease_check: LeaseCheck | None = None,
@@ -250,7 +269,8 @@ def remove_empty_shells(backend, paths: list[str], *,
     return leftover
 
 
-def build_record(rec: dict, scraped: dict | None = None) -> dict:
+def build_record(rec: dict, scraped: dict | None = None, *,
+                 source: str = "", infohash: str = "") -> dict:
     """按 metadata.archive_record 的契约组装一条归档记录。
 
     files 来自远端清单、path 是云盘路径。刮削附件这一步跳过：附件要写进
@@ -258,6 +278,13 @@ def build_record(rec: dict, scraped: dict | None = None) -> dict:
 
     scraped 由调用方查好后传进来 —— 网页侧是 asyncio.run(meta.lookup(...))，
     Bot 侧直接在事件循环里 await，两个入口的异步上下文不一样。
+
+    **source 与 infohash 必须一起落进记录**：
+    · source = 磁力链接。丢了它，`unclassified-*` 的自愈（靠 source 认番号）
+      与界面的「来源」显示都失灵；网页与 Bot 的记录字段也会不一致
+      （Bot 侧以前单独补了 source，网页侧没补）。
+    · infohash = 同一部片的身份。丢了它，dup_check 的「同 infohash 多份归档」
+      这一层对云添加归档完全不生效。
     """
     from . import metadata
 
@@ -265,11 +292,12 @@ def build_record(rec: dict, scraped: dict | None = None) -> dict:
     names = list(rec.get("files") or [])
     size = int(rec.get("size") or 0)
     record = metadata.archive_record(
-        folder, rec["path"], "", names, size, "",
+        folder, rec["path"], "", names, size, source or "",
         Path("/nonexistent-cloud"),            # 没有本地工作区，清单按远端回填
         scraped=scraped or {},
         manifest_files=names,
         pending=True,                            # 附件没推，标成待补
+        infohash=infohash,
     )
     # 云端没有本地文件可 stat：清单大小直接用落地时读到的那份
     by_size = {str(f.get("name")): int(f.get("size") or 0)

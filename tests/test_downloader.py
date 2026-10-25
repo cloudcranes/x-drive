@@ -75,7 +75,7 @@ def stub(monkeypatch, tmp_path):
                   "rel": f"{dest}/{code or 'UNCLASSIFIED'}",
                   "files": [f"{code or 'UNCLASSIFIED'}.mp4"],
                   "files_detail": [{"name": "v.mp4", "size": 2 << 20}],
-                  "size": 2 << 20, "inbox": my_inbox}], [])
+                  "size": 2 << 20, "inbox": my_inbox}], [], [])
 
     monkeypatch.setattr(cloudadd, "organize_landed", fake_organize)
 
@@ -84,9 +84,11 @@ def stub(monkeypatch, tmp_path):
         return []
 
     monkeypatch.setattr(cloudadd, "clean_sources", fake_clean)
-    monkeypatch.setattr(cloudadd, "build_record", lambda rec, scraped=None: {
+    monkeypatch.setattr(cloudadd, "build_record", lambda rec, scraped=None, **kw: {
         "code": rec["folder"], "path": rec["path"], "files": rec["files"],
-        "size": rec["size"], "backend": rec.get("backend"), "rel": rec.get("rel")})
+        "size": rec["size"], "backend": rec.get("backend"), "rel": rec.get("rel"),
+        # source / infohash 现在由 build_record 统一落进去
+        "source": kw.get("source", ""), "infohash": kw.get("infohash", "")})
     return calls
 
 

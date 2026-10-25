@@ -842,6 +842,30 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
     path = (path or "").strip("/")
     if not path or ".." in path or "\\" in path:
         return {"ok": False, "error": "缺少合法的文件路径"}
+    # **只给 path 不给 code 时**，前面的归档根前缀校验没有着落 ——
+    # 登录用户就能对任意云盘路径取直链（包括别的云盘挂载）。
+    #
+    # 判据：路径必须在**已配置的云盘挂载**下面。挂载名从 CLOUD_DEST /
+    # CLOUD_INBOX 的第一段取（迅雷云盘/…），以及后端实际能碰到的根。
+    # 不能只限死在归档根 —— 直链本来就可能是收件目录里的文件。
+    if not code:
+        mounts = set()
+        for key in ("CLOUD_DEST", "CLOUD_INBOX"):
+            value = str(get_setting(key) or "").strip("/")
+            if value:
+                mounts.add(value.split("/", 1)[0])       # 第一段 = 挂载名
+        # 后端的归档根（storage.rel）本身也是可碰的范围
+        try:
+            root = str(storage.rel("")).strip("/")
+            if root:
+                mounts.add(root.split("/", 1)[0])
+        except Exception:
+            pass
+        mounts = {m for m in mounts if m}
+        if mounts:
+            head = path.split("/", 1)[0]
+            if head not in mounts:
+                return {"ok": False, "error": f"文件路径不在已配置的云盘下（{head}），拒绝取直链"}
 
     # 1) 迅雷官方 API：外网可播的 web_content_link + 云播转码档
     is_xunlei = path.split("/", 1)[0] == "迅雷云盘"
@@ -881,6 +905,44 @@ def archive_media_path(record: dict, backend) -> str:
     if not media:
         raise storage.StorageError(f"{rel} 里没有媒体文件")
     return f"{rel}/{media[0].name}"
+
+
+def _update_archive_size(code: str, path: str, old_size: int, new_size: int) -> None:
+    """faststart 之后回写归档记录里的文件大小。
+
+    重排会改变字节数（moov 挪位置 → 文件大小变了）。不更新的话
+    verify_archive 拿「记录里的旧大小」跟「远端的新大小」比，
+    每次都判「大小异常」—— 假告警，会把用户引去点「补传」。
+    """
+    try:
+        state = core.load_state(STATE) or {}
+        record = _find_archive_record(state, code)
+        if not record:
+            return
+        name = Path(path).name
+        manifest = dict(record.get("manifest") or {})
+        files = list(manifest.get("files") or [])
+        changed = False
+        for entry in files:
+            if isinstance(entry, dict) and entry.get("name") == name:
+                entry["size"] = int(new_size)
+                changed = True
+        if changed:
+            manifest["files"] = files
+            manifest["total_size"] = sum(int(f.get("size") or 0)
+                                        for f in files if isinstance(f, dict))
+        total = int(record.get("size") or 0)
+        new_total = max(0, total - int(old_size or 0) + int(new_size or 0))
+        updated = dict(record)
+        if changed:
+            updated["manifest"] = manifest
+        if new_total != total:
+            updated["size"] = new_total
+        if changed or new_total != total:
+            core.update_state(STATE, {code: updated})
+            log.info("faststart：已更新 %s 的归档大小（%d -> %d）", code, total, new_total)
+    except Exception as exc:                    # noqa: BLE001 回写失败不影响修复本身
+        log.warning("faststart 后更新归档大小失败：%s", exc)
 
 
 def faststart_archive(code: str) -> dict:
@@ -956,7 +1018,10 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
     """
     from . import faststart
 
-    work = Path(TMP_ROOT) / "faststart"
+    # 临时目录按任务隔离：不同归档目录里可能有同名文件（多集发行很常见，
+    # 两个目录都叫 movie.mp4）。共用一个目录时，第二个任务会把第一个任务
+    # 的中间产物 unlink 掉。
+    work = Path(TMP_ROOT) / "faststart" / job_id
     work.mkdir(parents=True, exist_ok=True)
     local = work / (Path(path).name + ".part")
     try:
@@ -1038,6 +1103,9 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
             except OSError:
                 pass
         log.info("faststart：完成 %s（%d -> %d 字节）", path, size, new_size)
+        # 回写归档记录里的文件大小：重排会改变字节数，不更新的话
+        # verify_archive 每次都报「大小异常」—— 假告警，用户会去点「补传」。
+        _update_archive_size(code, path, size, new_size)
         return {"ok": True, "changed": True, "path": path,
                 "old_size": size, "new_size": new_size,
                 "message": "已重排，索引提到文件头，现在可以在浏览器里播了"}
@@ -1049,6 +1117,16 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
     finally:
         try:
             local.unlink(missing_ok=True)
+        except OSError:
+            pass
+        # 任务专属的临时目录一起收掉（5GB 的中间件，留着会占满磁盘）
+        try:
+            for f in work.iterdir():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+            work.rmdir()
         except OSError:
             pass
 
@@ -1112,7 +1190,7 @@ def _cloud_run(job_id: str, source: str, code: str, key: str,
         raise RuntimeError("云添加没有落地任何内容")
 
     phase = time.monotonic()
-    records, pending = cloudadd.organize_landed(
+    records, pending, failed = cloudadd.organize_landed(
         landed, backend, my_inbox, dest, code,
         lease_check=lambda: require_lease(job_id, code),
         event=lambda kind, detail: job_event(job_id, kind, detail))
@@ -1120,10 +1198,15 @@ def _cloud_run(job_id: str, source: str, code: str, key: str,
     for record in records:
         job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
                                   "cloud": record})
+    # 有条目整理失败：已成功的那些照常记账（不能变成没人认领的孤儿），
+    # 失败的那些如实报出来。
+    if failed:
+        for f in failed:
+            job_event(job_id, "failed", f"整理 {f.get('source')} 失败：{f.get('error')}")
     return {"landed": [x.folder for x in landed], "records": records,
             "inbox": my_inbox, "dest": dest, "_backend": backend,
             # 1.4：清理挪到记账之后，由调用方在归档落盘成功后执行
-            "cleanup": pending}
+            "cleanup": pending, "failed": failed}
 
 
 def fetch_image(url: str, limit: int = 12 << 20) -> bytes:
@@ -1149,7 +1232,13 @@ def _finish_cloud(job_id: str, source: str, out: dict) -> None:
         except Exception as exc:                # 元数据只是锦上添花
             log.warning("查 %s 的元数据失败：%s", folder, exc)
             info = {}
-        record = cloudadd.build_record(rec, scraped=info)
+        # source（磁力）与 infohash 要落进记录：查重、自愈、来源显示都靠它们。
+        # extra 可能**不是字典**（序列化损坏）—— 那就当没有，别在这崩掉。
+        raw = (_store().get(job_id) or {}).get("extra")
+        extra = raw if isinstance(raw, dict) else {}
+        record = cloudadd.build_record(
+            rec, scraped=info, source=source,
+            infohash=str(extra.get("infohash") or ""))
         _archive_lease(job_id, folder)
         core.update_state(STATE, {folder: record})
         job_event(job_id, "done", f"{folder} · {core.human_size(size)} · 云盘")

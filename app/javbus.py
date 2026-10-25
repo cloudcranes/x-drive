@@ -99,7 +99,14 @@ def normalize_movie(raw: dict) -> dict:
                      for s in (raw.get("samples") or []) if (s or {}).get("src") or (s or {}).get("thumbnail")][:8],
         "cover_size": _dims(raw.get("imageSize")),
         "rating": "",
-        "review": str(raw.get("score") or "").strip(),      # 观众评分（0-10）
+        # 源站**没有**评分与简介字段（实测 2026-10-25：/api/movies/MIMK-186
+        # 的原始 JSON 里既没有 score 也没有 summary）—— 早先这里写的是
+        # `"review": raw.get("score")`，看着像有评分，其实恒为空；而且
+        # 「review」这个键名会被误当成简介（字段名归一里 review→summary）。
+        # 结论：javbus 给不了评分与简介，这两项只能靠 metatube（实测那边
+        # 也常常是空的）—— 所以界面上「评分」「简介」两行多半不显示，
+        # 那是源站能力边界，不是程序漏了。
+        "review": "",
         "want": int(raw.get("want") or 0),                   # 想看人数
         "liked": int(raw.get("like") or 0),                  # 收藏人数
         "source": "javbus",

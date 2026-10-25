@@ -47,7 +47,10 @@ def test_no_media_is_an_error():
     files = [F("readme.txt", 5), F("x.url", 3)]
     with pytest.raises(OrganizeError) as err:
         cloudorganize.plan("ABC-123", files)
-    assert "没有可归档" in str(err.value)
+    # 报错要说清是「格式不认识」而不是「只有广告」——
+    # 后者会让人以为是种子的错，其实是程序没认出这个容器
+    assert "格式都不认识" in str(err.value), str(err.value)
+    assert "readme.txt" in str(err.value), "要把文件名列出来"
 
 
 def test_single_file_kept_even_if_small():
@@ -282,3 +285,150 @@ def test_apply_rejects_empty_roots():
     plan = cloudorganize.plan("A-1", [F("x.mp4", 1)])
     with pytest.raises(OrganizeError):
         cloudorganize.apply(cloud, "", plan, "A-1", dst_root="archive")
+
+
+# ─────────────────────────────────────────── 多集/多图：不能按体积误杀
+
+def test_keeps_all_episodes_of_a_multi_episode_release():
+    """多集发行：一集 4K + 若干 1080p，**每一集都要留**。
+
+    体积比例规则（本意是「正片 4.4GB vs 推广视频 14MB，差三个数量级」）
+    在多集上会误杀：1080p 一集的体积约 4K 的 1/5，正好落在 0.25 线上 ——
+    于是三集正片被当成样片**永久删除**，站内只剩一集的记录，用户无从察觉。
+
+    判据不是体积，是**结构**：同扩展名的多个文件 = 多集/分卷，全留。
+    """
+    files = [F("ep1.mkv", 1_500_000_000), F("ep2.mkv", 1_500_000_000),
+             F("ep3.mkv", 1_500_000_000), F("ep4.mkv", 8_000_000_000),
+             F("ad.txt", 136)]
+    plan = cloudorganize.plan("DEMO-1", files)
+    assert sorted(plan.move) == ["ep1.mkv", "ep2.mkv", "ep3.mkv", "ep4.mkv"], \
+        "多集的每一集都要留"
+    assert plan.drop == ["ad.txt"], "只有广告该丢"
+
+
+def test_keeps_all_photos_of_an_image_pack():
+    """图包同理：100 张照片，一���都不能丢。
+
+    同一条逻辑在图包上炸过：最大 5MB、其余 800KB → 只留 1 张，其余 99 张
+    连同封面一起被 purge。
+    """
+    files = [F("PHOTO-1.jpg", 5_000_000)]
+    files += [F(f"PHOTO-{i}.jpg", 800_000) for i in range(2, 101)]
+    plan = cloudorganize.plan("PIC-1", files)
+    assert len(plan.move) == 100, f"图包要全留，实得 {len(plan.move)}"
+
+
+def test_keeps_sidecar_files_with_the_main_video():
+    """字幕 / 封面是**正片的附属**，跟着一起留，不当广告丢。"""
+    files = [F("main.mp4", 4_000_000_000), F("main.srt", 45_000),
+             F("cover.jpg", 120_000)]
+    plan = cloudorganize.plan("DEMO-2", files)
+    assert "main.mp4" in plan.move
+    assert "main.srt" in plan.move, "字幕要跟着正片留"
+    assert "cover.jpg" in plan.move, "封面要跟着正片留"
+    assert plan.drop == []
+
+
+def test_still_drops_a_real_ad_next_to_a_single_video():
+    """护栏不能把广告也留下 —— 单个正片 + 明显小的推广视频，仍然只留正片。"""
+    files = [F("movie.mp4", 4_400_000_000),
+             F("台湾uu美少女直播 20年信誉保证.mp4", 13_890_000),
+             F("社区最新情报.mp4", 15_089_802)]
+    plan = cloudorganize.plan("DEMO-3", files)
+    assert plan.move == ["movie.mp4"], "单个正片场景仍要认得出广告"
+    assert len(plan.drop) == 2
+
+
+# ─────────────────────────────────────────── 重复下载 / 多处落地
+
+class _FakeBackend:
+    """够用的假后端：能列、能搬、能删。"""
+
+    def __init__(self, files=None, dirs=None):
+        self.files = dict(files or {})
+        self.dirs = set(dirs or ())
+
+    def list_dirs(self, path):
+        prefix = (path.rstrip("/") + "/") if path else ""
+        out = set()
+        for d in self.dirs:
+            if d.startswith(prefix) and "/" not in d[len(prefix):]:
+                out.add(d[len(prefix):])
+        return sorted(out)
+
+    def list_files(self, path):
+        prefix = (path.rstrip("/") + "/") if path else ""
+        out = []
+        for name, size in self.files.items():
+            if name.startswith(prefix) and "/" not in name[len(prefix):]:
+                out.append(type("E", (), {"name": name[len(prefix):], "size": size})())
+        return out
+
+    def ensure_dir(self, path):
+        self.dirs.add(path)
+        return path
+
+    def move_file(self, src, dst):
+        # 真后端是「先查目标在不在，不在才搬」—— 失败时源文件原封不动
+        if dst in self.files:
+            raise RuntimeError(f"目标已存在：{dst}")
+        if src not in self.files:
+            raise RuntimeError(f"源文件不存在：{src}")
+        self.files[dst] = self.files.pop(src)
+
+    def purge(self, path):
+        self.files.pop(path, None)
+        for f in [f for f in self.files if f.startswith(path + "/")]:
+            self.files.pop(f)
+        return "已删除"
+
+
+def test_already_archived_file_is_treated_as_redundant_not_fatal():
+    """目标里已有同名同大小的文件 → 源文件是冗余，不当致命错误。
+
+    以前这种情况直接抛错 → 任务 failed → 源文件留在原地 → 重跑再撞同一个
+    已存在的目录再失败 —— **死循环**。
+    """
+    be = _FakeBackend(files={"dest/DEMO-1/DEMO-1.mp4": 4000,
+                             "inbox/seed/movie.mp4": 4000},
+                      dirs={"dest/DEMO-1", "inbox/seed"})
+    plan = cloudorganize.plan("seed", [F("movie.mp4", 4000)], folder_code="DEMO-1")
+
+    moved = cloudorganize.apply(be, "inbox", plan, "DEMO-1", dst_root="dest")
+
+    assert moved["repeated"] == ["movie.mp4"], moved
+    assert moved["files"] == ["DEMO-1.mp4"], "目标里已有的文件要算进清单"
+    assert "inbox/seed/movie.mp4" in be.files, "冗余的源文件先留着，交给清理"
+
+
+def test_same_name_different_size_is_not_treated_as_archived():
+    """同名**不同大小** = 换版重发，不是重复下载 —— 不能当冗余丢掉。"""
+    be = _FakeBackend(files={"dest/DEMO-1/DEMO-1.mp4": 9999,
+                             "inbox/seed/movie.mp4": 4000},
+                      dirs={"dest/DEMO-1", "inbox/seed"})
+    plan = cloudorganize.plan("seed", [F("movie.mp4", 4000)], folder_code="DEMO-1")
+
+    with pytest.raises(OrganizeError):
+        cloudorganize.apply(be, "inbox", plan, "DEMO-1", dst_root="dest")
+
+    assert "inbox/seed/movie.mp4" in be.files, "源文件不能被丢"
+
+
+def test_plan_rejects_illegal_folder_code():
+    """番号不合法要在**计划阶段**就拒 —— 推到执行阶段报错会让人以为是云端的问题。"""
+    with pytest.raises(OrganizeError, match="番号不合法"):
+        cloudorganize.plan("", [F("movie.mp4", 100)], folder_code="../x")
+
+
+def test_suffix_ignores_trailing_space():
+    """文件名带尾随空格时扩展名仍要认出来 —— 否则那个文件被静默当广告丢掉。"""
+    assert cloudorganize._suffix("movie.mp4 ") == ".mp4"
+    assert cloudorganize._suffix("movie.MP4") == ".mp4"
+
+
+def test_m2ts_is_recognized_as_video():
+    """BD 原盘的 .m2ts 要认得 —— 不认得的话整个任务失败且报「只有广告？」。"""
+    plan = cloudorganize.plan("seed", [F("movie.m2ts", 8_000_000_000)],
+                              folder_code="X-3")
+    assert plan.move == ["movie.m2ts"]

@@ -99,10 +99,12 @@ def _install(monkeypatch, tmp_path, wait_side_effect):
         [{"folder": "DEMO-1", "path": "clouddrive2:dest/DEMO-1", "backend": "clouddrive2",
           "root": "dest", "rel": "dest/DEMO-1", "files": ["DEMO-1.mp4"],
           "files_detail": [{"name": "DEMO-1.mp4", "size": 1024}], "size": 1024,
-          "inbox": "inbox/task"}], []))
+          "inbox": "inbox/task"}], [], []))
     monkeypatch.setattr(cloudadd, "clean_sources", lambda *a, **k: [])
-    monkeypatch.setattr(cloudadd, "build_record", lambda rec, scraped=None: {
-        "code": rec["folder"], "path": rec["path"], "files": rec["files"], "size": rec["size"]})
+    monkeypatch.setattr(cloudadd, "build_record", lambda rec, scraped=None, **kw: {
+        "code": rec["folder"], "path": rec["path"], "files": rec["files"],
+        "size": rec["size"], "source": kw.get("source", ""),
+        "infohash": kw.get("infohash", "")})
     return cfg, submitted
 
 

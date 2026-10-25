@@ -273,7 +273,7 @@ def test_archive_is_not_written_when_lease_lost(tmp_path, monkeypatch):
 
     def lose_before_finish(landed, backend, my_inbox, dest, code, **kw):
         st.claim_owner("j1", "other", now=time.time() + store.STALE_BEAT + 1)
-        return ([], [])
+        return ([], [], [])
 
     monkeypatch.setattr(web.cloudadd, "organize_landed", lose_before_finish)
     from app import core

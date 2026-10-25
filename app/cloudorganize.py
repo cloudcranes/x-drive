@@ -21,8 +21,16 @@ from pathlib import Path, PurePosixPath
 
 log = logging.getLogger("x-drive.cloudorganize")
 
-VIDEO_EXT = {".mp4", ".mkv", ".avi", ".wmv", ".mov", ".m4v", ".ts", ".flv", ".rmvb", ".iso"}
+VIDEO_EXT = {".mp4", ".mkv", ".avi", ".wmv", ".mov", ".m4v", ".ts", ".flv", ".rmvb", ".iso",
+             # BD 原盘的容器很常见（.m2ts）—— 不认识它会让整个任务失败，
+             # 而且报错文案说「只有广告？」，极具误导性（实际是格式没认出来）
+             ".m2ts", ".m2t", ".vob", ".mpg", ".mpeg", ".divx", ".asf", ".m2p", ".ogm"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+# 副产物：字幕 / 封面 / 清单 —— 它们是**正片的附属**，跟着正片一起留。
+# 以前它们被当成广告 purge 掉了（字幕没了、封面也没了）。
+# 注意：**不含 .txt** —— 种子里的 .txt 绝大多数是广告（"最新地址获取…"），
+# 不是字幕。字幕用 .srt/.ass/.ssa/.sub/.vtt 这些正经扩展名。
+SIDECAR_EXT = {".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".sup", ".smi"}
 # 广告/推广文件的名字特征：实测种子里夹着 `489155.com@xxx.mp4`、`最新地址获取…txt`
 _AD_MARKS = ("489155.com", "最新地址", "最新位址", "获取", "直播", "收藏不迷路",
              "社区最新", "聚合全网", "推广", "广告")
@@ -52,7 +60,12 @@ class Plan:
 
 
 def _suffix(name: str) -> str:
-    return PurePosixPath(name).suffix.lower()
+    """取扩展名（小写）。
+
+    先 strip：CD2 会归一化目录名，但文件名不一定 —— `movie.mp4 `（尾随空格）
+    的 suffix 是 '.mp4 '，不匹配 VIDEO_EXT，那个文件会被当成广告丢掉。
+    """
+    return PurePosixPath((name or "").strip()).suffix.lower().strip()
 
 
 def is_ad(name: str) -> bool:
@@ -68,6 +81,16 @@ def is_ad(name: str) -> bool:
 # 推广视频 14MB —— 差三个数量级，这条线画在哪都安全。
 SAMPLE_RATIO = 0.25
 
+# **多集/图包场景**用的严格线：小于最大文件的 1/10 才当样片丢。
+#
+# 0.25 那条线在多集发行上会误杀：一集 4K + 若干 1080p，1080p 一集的体积
+# 约 4K 的 1/5，正好落在 0.25 线上 —— 三集正片被当样片**永久删除**，
+# 源目录被清空，站内只剩一集的记录，用户完全无从察觉。
+#
+# 实测推广视频与正片差**三个数量级**（14MB vs 4.4GB），所以 1/10 这条线
+# 既能分清推广视频，又不会碰到多集。
+SAMPLE_RATIO_STRICT = 0.1
+
 
 def pick_main(files: list[dict]) -> list[dict]:
     """从落地目录里挑出要归档的文件。
@@ -76,18 +99,56 @@ def pick_main(files: list[dict]) -> list[dict]:
     `489155.com@MIMK-290.mp4` —— 名字里带推广域名，但它是唯一的正片；
     而叫得像样的 `社 區 最 新 情 報.mp4` 只有 15MB，是广告。
     所以名字里的推广标记只用来解释「为什么丢掉」，不用来判定「要不要留」。
+
+    **但体积比例只用于「一堆视频里挑主体」这一种场景**。多集发行与图包
+    不能这么判：一集 4K + 若干 1080p 是**同一部片的多集**，1080p 那一集的
+    体积约 4K 的 1/5，正好落在 SAMPLE_RATIO 线上 —— 用比例判会把三集正片
+    当成样片**永久删除**（源目录还被清空，站内只剩一集的记录，用户完全
+    无从察觉）。图包同理：100 张照片只留 1 张、其余全 purge。
+
+    所以先看**结构**：同扩展名的多个文件 = 多集/多图/分卷，全留。
+    只有「同扩展名、且体积差一个数量级」时才可能是「主体 + 样片」。
     """
     videos = [f for f in files if _suffix(str(f.get("name") or "")) in VIDEO_EXT]
     if videos:
-        biggest = max(int(f.get("size") or 0) for f in videos)
-        return [f for f in videos
-                if int(f.get("size") or 0) >= max(biggest * SAMPLE_RATIO, 1)]
+        return _pick_by_structure(videos)
     images = [f for f in files if _suffix(str(f.get("name") or "")) in IMAGE_EXT]
     if images:
-        biggest = max(int(f.get("size") or 0) for f in images)
-        return [f for f in images
-                if int(f.get("size") or 0) >= max(biggest * SAMPLE_RATIO, 1)]
+        return _pick_by_structure(images)
     return []
+
+
+def _pick_by_structure(items: list[dict]) -> list[dict]:
+    """同类文件里挑主体：结构优先，体积只在「明显是样片」时才用。
+
+    规则：
+      · **同扩展名且有多个** → 多集/多图/分卷，**全留**。
+        （这是最要紧的一条：按体积挑主体会误杀多集发行。）
+      · **同扩展名只有一个** → 它就是主体，留它；其余（字幕/封面/广告）
+        按各自规则处理。
+      · 同扩展名多个、但体积差一个数量级 → 可能是「主体 + 样片」。
+        这时才用比例挑 —— 但只在**数量少**（≤4）时才敢这么判，
+        数量多就更像多集而不是样片。
+    """
+    by_ext: dict[str, list[dict]] = {}
+    for f in items:
+        by_ext.setdefault(_suffix(str(f.get("name") or "")), []).append(f)
+    # 取最大的那一组（同扩展名的才算同类）
+    ext, group = max(by_ext.items(), key=lambda kv: (len(kv[1]), kv[0]))
+    if len(group) == 1:
+        return list(group)
+    # 同扩展名的多个文件，默认**全留** —— 多集/图包/分卷都比「主体+样片」常见。
+    #
+    # 只有「同扩展名、且有一个小到明显不是正片」时才可能是样片。判据要**很严**：
+    # 以前用的 0.25 会在多集上误杀（一集 4K + 若干 1080p，1080p 约 4K 的
+    # 1/5，正好落在线上），三集正片被永久删除、源目录清空、站内只剩一集。
+    # 现在要小到 **1/10 以下**（推广视频 14MB vs 正片 4.4GB 是三个数量级）
+    # 才当样片丢。
+    biggest = max(int(f.get("size") or 0) for f in group)
+    kept = [f for f in group
+            if int(f.get("size") or 0) >= max(biggest * SAMPLE_RATIO_STRICT, 1)]
+    # 全被滤掉 = 判据不适用这个组合 → 全留（宁可多留，不要误删）
+    return kept or list(group)
 
 
 def target_name(folder: str, files: list[dict]) -> str:
@@ -120,13 +181,39 @@ def plan(source: str, files: list[dict], *, rename: bool = True,
         raise OrganizeError(f"落地目录名不安全，拒绝整理：{source!r}")
     keep = pick_main(files)
     if not keep:
-        raise OrganizeError(f"{source or '收件目录'} 里没有可归档的媒体文件（只有广告？）")
+        # 分清两种情况：目录是空的 vs 文件都在但格式不认识 ——
+        # 后者报错说「只有广告？」会让人以为是种子的错，其实是格式没认出来
+        names = [str(f.get("name") or "") for f in files if f.get("name")]
+        if names:
+            raise OrganizeError(
+                f"{source or '收件目录'} 里的文件格式都不认识：{names[:5]}")
+        raise OrganizeError(f"{source or '收件目录'} 是空的，没有可归档的文件")
     kept_names = [str(f.get("name") or "") for f in keep if f.get("name")]
     if len(set(kept_names)) != len(kept_names):
         raise OrganizeError(f"{source or '收件目录'} 里有同名文件，云端无法区分：{kept_names}")
+    # 副产物跟着正片一起留 —— 它们是正片的附属，不是广告。
+    # 字幕：一律跟着留（扩展名够明确）。
+    # 图片（封面/海报）：**只在有视频主体时**才跟着留 —— 图包里的 .jpg
+    # 是照片本身，不是封���。
+    have_video = any(_suffix(n) in VIDEO_EXT for n in kept_names)
+    sidecars = []
+    for f in files:
+        name = str(f.get("name") or "")
+        if not name or name in kept_names:
+            continue
+        ext = _suffix(name)
+        if ext in SIDECAR_EXT:
+            sidecars.append(name)
+        elif have_video and ext in IMAGE_EXT:
+            sidecars.append(name)
+    kept_names = kept_names + [n for n in sidecars if n not in kept_names]
     drop = [str(f.get("name") or "") for f in files
             if str(f.get("name") or "") and str(f.get("name") or "") not in kept_names]
     target = (folder_code or "").strip()
+    if target and _BAD_NAME.search(target):
+        # 在计划阶段就拒：推到执行阶段才报错（"目录名不安全，拒绝执行"）
+        # 会让人以为是云端的问题，其实是这个番号不合法。
+        raise OrganizeError(f"番号不合法，拒绝整理：{folder_code!r}")
     if not target:
         target = target_name(source, keep) if rename else source
     return Plan(source=source,
@@ -191,11 +278,21 @@ def apply(backend, src_root: str, plan_obj: Plan, folder_code: str = "",
         raise OrganizeError(f"建目标目录失败：{exc}") from exc
 
     moved: list[tuple[str, str]] = []
+    # 已经归档过的（目标目录里已有同名同大小文件）→ 源文件是冗余，
+    # 不搬、只把它交给清理（drop）。
+    #
+    # 以前这种情况直接抛错 → 任务 failed → 源文件留在原地 → 重跑再撞同一个
+    # 已存在的目录再失败 —— **死循环**（cloud_submit 只在成功后才清）。
+    repeated: list[str] = []
     for old, new in mapping:
         try:
             if old != new or src != dst:
                 backend.move_file(f"{src}/{old}", f"{dst}/{new}")
         except Exception as exc:                # noqa: BLE001
+            if _is_already_archived(backend, dst, new, old, plan_obj):
+                # 目标里已经有同样的文件了：这次是重复下载，源文件是冗余
+                repeated.append(old)
+                continue
             _rollback(backend, moved, dst, src)
             raise OrganizeError(f"移动 {old} 失败：{exc}") from exc
         moved.append((new, old))                # 记下反方向，便于回滚
@@ -219,7 +316,32 @@ def apply(backend, src_root: str, plan_obj: Plan, folder_code: str = "",
     return {"target": plan_obj.target, "folder": dst,
             "files": files_out,
             "size": plan_obj.size,
-            "dropped": plan_obj.drop}
+            "dropped": plan_obj.drop,
+            # 目标里本来就有的（重复下载）：这些源文件是冗余，交给清理
+            "repeated": repeated}
+
+
+def _is_already_archived(backend, dst: str, new_name: str, old_name: str,
+                         plan_obj: Plan) -> bool:
+    """目标目录里是不是已经有「同样内容」的文件了（= 重复下载）。
+
+    判据要**两个都成立**：同名**且**同大小。只是一同名就当重复的话，
+    换版重发（同名不同内容）会被误判成冗余而丢掉新版本。
+
+    读不出来就返回 False（不当重复）—— 那就照旧报错，让流程停下来，
+    总比悄悄丢掉一个文件强。
+    """
+    try:
+        entries = {str(e.name): int(e.size or 0) for e in backend.list_files(dst)}
+    except Exception:                          # noqa: BLE001 读不出来 = 不确定
+        return False
+    if new_name not in entries:
+        return False
+    want = int(plan_obj.sizes.get(old_name) or 0)
+    have = int(entries.get(new_name) or 0)
+    if want and have and want != have:
+        return False                            # 同名不同内容 = 换版，不是重复
+    return True
 
 
 def cleanup_source(backend, src_root: str, plan_obj: Plan, dst_root: str = "") -> str:

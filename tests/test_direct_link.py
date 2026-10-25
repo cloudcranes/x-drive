@@ -65,6 +65,10 @@ def _env(tmp_path, monkeypatch):
     from app import store as store_mod
     monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
     monkeypatch.setattr(web, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    # 与线上同构的云盘挂载（迅雷云盘 / 归档根 / 收件目录）
+    monkeypatch.setattr(web, "get_setting",
+                        lambda key: {"CLOUD_DEST": "迅雷云盘/X-Drive",
+                                     "CLOUD_INBOX": "迅雷云盘/我的资源"}.get(key, ""))
 
 
 def test_direct_link_prefers_xunleipan(tmp_path, monkeypatch):
@@ -196,3 +200,33 @@ def test_video_proxy_rejects_foreign_hosts():
     assert "host.docker.internal" in web.VIDEO_HOSTS
     assert "example.com" not in web.VIDEO_HOSTS
     assert "evil.test" not in web.VIDEO_HOSTS
+
+
+def test_direct_link_rejects_path_outside_archive_root(tmp_path, monkeypatch):
+    """只给 path 不给 code 时，路径必须在归档根之下。
+
+    否则登录用户可以对归档根之外的任意云盘文件取直链。
+    """
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(web.xunleipan, "configured", lambda: False)
+    monkeypatch.setattr(web, "get_setting",
+                        lambda key: {"CLOUD_DEST": "迅雷云盘/X-Drive",
+                                     "CLOUD_INBOX": "迅雷云盘/我的资源"}.get(key, ""))
+
+    out = web.cloud_direct_link(path="别人的云盘/私密目录/secret.mp4")
+    assert not out["ok"], "别的云盘挂载不该给直链"
+    assert "云盘" in out["error"], out
+
+
+def test_direct_link_allows_path_inside_archive_root(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(web.xunleipan, "configured", lambda: False)
+    class Backend:
+        kind = "clouddrive2"
+
+        def download_url(self, path):
+            return "http://cd2.local:19798/static/x.mp4"
+
+    monkeypatch.setattr(web, "storage_backend", lambda: Backend())
+    out = web.cloud_direct_link(path="迅雷云盘/X-Drive/MIMK-186/a.mp4")
+    assert out["ok"], out

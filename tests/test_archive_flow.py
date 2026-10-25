@@ -112,19 +112,19 @@ def _stub_cloud(monkeypatch, landed=None, records=None):
     monkeypatch.setattr(cloudadd, "wait_landing", fake_wait)
     monkeypatch.setattr(cloudadd, "clean_sources", lambda *a, **k: [])
     monkeypatch.setattr(cloudadd, "build_record",
-                        lambda rec, scraped=None: _record_of(rec, scraped))
+                        lambda rec, scraped=None, **kw: _record_of(rec, scraped, **kw))
     if records is not None:
         monkeypatch.setattr(cloudadd, "organize_landed",
-                            lambda *a, **k: (records, []))
+                            lambda *a, **k: (records, [], []))
     return fake_wait
 
 
-def _record_of(rec, scraped=None):
+def _record_of(rec, scraped=None, *, source="", infohash=""):
     """按 metadata.archive_record 的契约组装一条记录（与真实实现同源）。"""
     record = metadata.archive_record(
-        rec["folder"], rec["path"], "", rec["files"], rec["size"], "",
+        rec["folder"], rec["path"], "", rec["files"], rec["size"], source or "",
         Path("/nonexistent-cloud"), scraped=scraped or {},
-        manifest_files=rec["files"], pending=True)
+        manifest_files=rec["files"], pending=True, infohash=infohash)
     record.update({k: rec[k] for k in ("backend", "root", "rel") if k in rec})
     by_size = {str(f.get("name")): int(f.get("size") or 0)
                for f in (rec.get("files_detail") or [])}
@@ -309,6 +309,8 @@ def test_web_and_bot_record_field_sets_agree(tmp_path, monkeypatch):
     _stub_cloud(monkeypatch)
     web.STORE.start("jc", CODEC, "magnet:a")
     hold_web("jc")
+    # 两端都要带上 infohash（查重靠它）—— 这是字段契约的一部分
+    web.job_update("jc", extra={"infohash": "ab" * 20})
     web._finish_cloud("jc", "magnet:a", {"records": [_cloud_rec()]})
     web_rec = core.load_state(web.STATE)[CODEC]
 
@@ -317,6 +319,10 @@ def test_web_and_bot_record_field_sets_agree(tmp_path, monkeypatch):
     stub_bot(monkeypatch, {})
     _, _, _ = run_bot(bot_root, {})
     bot_rec = core.load_state(bot_root / "state.json")[CODEC]
+    # 两端都要带上 source（磁力）与 infohash —— 缺了就查重、自愈、来源显示全失灵
+    for rec, who in ((web_rec, "web"), (bot_rec, "bot")):
+        assert rec.get("infohash"), f"{who} 侧没落 infohash"
+        assert rec.get("source"), f"{who} 侧没落 source"
 
     assert set(web_rec) == set(bot_rec), (
         f"字段集合不一致：只在 web={set(web_rec) - set(bot_rec)}，"

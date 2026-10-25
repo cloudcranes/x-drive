@@ -565,8 +565,12 @@ async def run_task(
         key = code or f"job{index}"
 
         known = state.get(code) if code else None
-        if known and known.get("link") and not force:
-            results.append(f"♻️ {code} 已存在：{known['link']}")
+        if known and not force:
+            # 按**记录是否存在**判断，不看 link —— 云添加链路写出来的记录
+            # link 恒为空串（CD2 没有分享链接），拿 link 当判据等于永远
+            # 不跳过已归档：同一个番号重发给 Bot 就会重新下载。
+            where = known.get("link") or known.get("path") or known.get("rel") or "云盘归档"
+            results.append(f"♻️ {code} 已存在：{where}")
             continue
 
         # 2.6 统一准入：闸门关闭（恢复后待对账）时新消息/重试一律不开工，
@@ -681,12 +685,17 @@ async def run_task(
                 raise RuntimeError("云添加没有落地任何内容")
 
             phase = time.monotonic()
-            records, pending = cloudadd.organize_landed(
+            records, pending, failed = cloudadd.organize_landed(
                 landed, backend, my_inbox, dest, code,
                 lease_check=lambda: require_lease(cfg, job_id),
                 event=lambda kind, detail: task_event(cfg, job_id, kind, detail))
             clock["organize"] = time.monotonic() - phase
             job_size = int(records[0].get("size") or 0) if records else 0
+            # 有条目整理失败：已成功的照常记账，失败的如实报出来
+            if failed:
+                for f in failed:
+                    task_event(cfg, job_id, "failed",
+                               f"整理 {f.get('source')} 失败：{f.get('error')}")
 
             require_lease(cfg, job_id)          # 写归档前
             for rec in records:
@@ -696,8 +705,13 @@ async def run_task(
                 except Exception as exc:        # 元数据只是锦上添花
                     log.warning("查 %s 的元数据失败：%s", folder, exc)
                     info = {}
-                record = cloudadd.build_record(rec, scraped=info)
-                record["source"] = source
+                # source 与 infohash 统一从 build_record 落进去 ——
+                # 网页侧以前没补 source，两端记录字段不一致
+                raw = (task_store(cfg).get(job_id) or {}).get("extra")
+                extra = raw if isinstance(raw, dict) else {}
+                record = cloudadd.build_record(
+                    rec, scraped=info, source=source,
+                    infohash=str(extra.get("infohash") or ""))
                 core.update_state(cfg.state_path, {folder: record})
                 state[folder] = record
                 task_event(cfg, job_id, "done",

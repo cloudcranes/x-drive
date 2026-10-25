@@ -159,3 +159,70 @@ def test_partial_drop_failure_remains_visible(monkeypatch):
     assert cloud.files['inbox/seed/ad2.txt'] == 1
     assert cloud.deleted == ['inbox/seed/ad1.txt']
     assert cloud.files['archive/DEMO-123/DEMO-123.mp4'] == 100
+
+
+def test_organize_landed_keeps_success_records_when_one_item_fails():
+    """一次落地两处时，一处失败不许让另一处变成没人认领的孤儿。
+
+    以前是「全部整理完才返回」：第二处撞「目标已存在」抛异常 → 第一处
+    **已经搬进归档目录了**，但 records 一个都没返回 → 站内不写归档记录
+    → 云盘里那个目录成了账实不符的孤儿。
+    """
+    from app import cloudadd, cloudingest
+
+    class _Item:
+        def __init__(self, folder, files):
+            self.folder = folder
+            self.files = files
+            self.total = sum(int(f.get("size") or 0) for f in files)
+
+    class _Backend:
+        kind = "clouddrive2"
+
+        def __init__(self):
+            self.dirs = {"inbox"}
+            self.files = {"inbox/seed/a.mp4": 100, "inbox/root/b.mp4": 100}
+
+        def list_dirs(self, path):
+            return []
+
+        def list_files(self, path):
+            return []
+
+        def ensure_dir(self, path):
+            self.dirs.add(path)
+            return path
+
+        def move_file(self, src, dst):
+            if dst in self.files:
+                raise RuntimeError("目标已存在")
+            self.files[dst] = self.files.pop(src, 0)
+
+        def purge(self, path):
+            self.files.pop(path, None)
+
+    # 第一处搬得进去，第二处撞同一个 target
+    backend = _Backend()
+    items = [_Item("seed", [{"name": "a.mp4", "size": 100}]),
+             _Item(cloudingest.LOOSE_KEY, [{"name": "b.mp4", "size": 100}])]
+    original = cloudadd.cloudorganize.apply
+    calls = {"n": 0}
+
+    def fake_apply(be, src_root, plan, folder_code="", dst_root=""):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"target": "DEMO-1", "folder": "dest/DEMO-1",
+                    "files": ["DEMO-1.mp4"], "size": 100, "dropped": []}
+        raise RuntimeError("目标已存在：DEMO-1.mp4")
+
+    cloudadd.cloudorganize.apply = fake_apply
+    try:
+        records, pending, failed = cloudadd.organize_landed(
+            items, backend, "inbox", "dest", "DEMO-1")
+    finally:
+        cloudadd.cloudorganize.apply = original
+
+    assert len(records) == 1, "成功的那一处必须照常产出记录"
+    assert records[0]["folder"] == "DEMO-1"
+    assert len(failed) == 1, "失败的那一处要单独报出来"
+    assert failed[0]["source"] == cloudingest.LOOSE_KEY
