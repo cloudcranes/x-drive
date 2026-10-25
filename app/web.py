@@ -3605,6 +3605,13 @@ class Handler(BaseHTTPRequestHandler):
             want_refresh = (qs.get("refresh", ["0"]) or ["0"])[0] in ("1", "true", "yes")
             self._json(xlp_auth_status(refresh=want_refresh))
             return
+        if path == "/api/meta/infohash":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            self._json(backfill_infohash())
+            return
         if path == "/api/meta/backfill":
             # 给老归档补元数据：会联网抓，所以显式触发而不是渲染时自动跑
             limit = int((parse_qs(parts.query).get("limit", ["50"]) or ["50"])[0] or 50)
@@ -3802,6 +3809,37 @@ def scrape_status() -> dict:
     except Exception as exc:
         info["error"] = str(exc)[:200]
     return info
+
+
+def backfill_infohash() -> dict:
+    """给老归档补上 infohash：能从磁力链接推出来的就推。
+
+    云添加链路从 2026-10-25 起会把 infohash 一起写进记录，但**更早**的归档
+    没有这个键 —— 而 dup_check 的「同 infohash 多份归档」这一层就查不到它们。
+
+    infohash 可以从记录里的磁力链接（source）反推，推不出来的（本地下载
+    时代的老记录压根没存磁力）就跳过 —— 不编。
+    """
+    from . import xunlei
+
+    state = core.load_state(STATE) or {}
+    updated, skipped = [], []
+    for key, record in state.items():
+        if not isinstance(record, dict):
+            continue
+        if record.get("infohash"):
+            continue
+        source = str(record.get("source") or "")
+        if not source:
+            skipped.append(key)
+            continue
+        ih = xunlei.info_hash_of(source)
+        if not ih:
+            skipped.append(key)
+            continue
+        core.update_state(STATE, {key: {**record, "infohash": ih}})
+        updated.append(key)
+    return {"ok": True, "updated": updated, "skipped": skipped}
 
 
 def _scrape_pending() -> list[str]:

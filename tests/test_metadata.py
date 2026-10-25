@@ -553,3 +553,30 @@ def test_scrape_pending_separates_metadata_gap_from_missing_attachments(tmp_path
     st = web_mod.scrape_status()
     assert st["pending"] == ["ABC-2"]
     assert st["attachment_pending"] == ["ABC-1", "ABC-2"]
+
+
+def test_backfill_infohash_from_magnet_source(tmp_path, monkeypatch):
+    """老归档没记 infohash —— 能从磁力链接推出来就补上。
+
+    云添加链路从 2026-10-25 起会写 infohash，但更早的归档没有这个键，
+    而 dup_check 的「同 infohash 多份归档」这一层就查不到它们。
+    """
+    from app import core, store as store_mod, web as web_mod
+    monkeypatch.setattr(web_mod, "STATE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(web_mod, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    core.save_state(web_mod.STATE, {
+        # 能推出来
+        "A-1": {"code": "A-1", "source": "magnet:?xt=urn:btih:" + "ab" * 20},
+        # 已经有了，不动
+        "A-2": {"code": "A-2", "source": "magnet:?xt=urn:btih:" + "cd" * 20,
+                 "infohash": "cd" * 20},
+        # 没有磁力，推不出来 —— 不编
+        "A-3": {"code": "A-3", "source": ""},
+    })
+    out = web_mod.backfill_infohash()
+    assert out["updated"] == ["A-1"], out
+    assert out["skipped"] == ["A-3"], out
+    st = core.load_state(web_mod.STATE)
+    assert st["A-1"]["infohash"] == "ab" * 20
+    assert st["A-2"]["infohash"] == "cd" * 20
+    assert "infohash" not in st["A-3"], "推不出来就不写这个键"
