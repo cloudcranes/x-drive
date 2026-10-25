@@ -160,6 +160,45 @@ def test_lookup_empty_code(tmp_path):
     assert asyncio.run(meta.lookup("", str(tmp_path / "m.json"))) is None
 
 
+def test_lookup_tries_canonical_code_when_magnet_name_fails(tmp_path, monkeypatch):
+    """归档目录名是磁力原名时，也要能用规范番号查到元数据。
+
+    实测踩过：云添加用磁力原名做目录名（`mimk-186ch` —— 番号粘连了后缀），
+    拿它去查 JavBus 是 404，于是整条归档的元数据都空了（界面上海报、标题、
+    演员、评分全没有）。
+
+    现在查名字按「规范番号 → 原名」的顺序试，规范番号优先 ——
+    磁力原名可能对应好几部片，认出来的那个才是这部。
+    """
+    p = str(tmp_path / "m.json")
+    asked = []
+
+    async def fake_movie(code, client=None):
+        asked.append(code)
+        if code == "MIMK-186":
+            return {"code": code, "title": "查到的标题", "cover": "http://x/c.jpg"}
+        return None
+
+    monkeypatch.setattr(meta.javbus, "movie", fake_movie)
+    monkeypatch.setattr(meta, "_use_javbus", lambda: True)
+
+    info = asyncio.run(meta.lookup("mimk-186ch", p))
+
+    assert info is not None, "磁力原名查不到时应当退回规范番号"
+    assert info["title"] == "查到的标题"
+    assert "MIMK-186" in asked, f"应当试规范番号：{asked}"
+    # 缓存按规范番号写 —— 下次按番号查就直接命中
+    saved = json.loads(Path(p).read_text(encoding="utf-8"))
+    assert saved["MIMK-186"]["title"] == "查到的标题"
+
+
+def test_cached_finds_entry_by_canonical_code(tmp_path):
+    """缓存按规范番号存着时，用磁力原名也要能取到（看板渲染走这条）。"""
+    p = str(tmp_path / "m.json")
+    meta.save_cache({"MIMK-186": {"code": "MIMK-186", "title": "缓存里的"}}, p)
+    assert meta.cached("mimk-186ch", p)["title"] == "缓存里的"
+
+
 # ---------------------------------------------------------------- 补抓
 
 def test_backfill_updates_state(tmp_path, monkeypatch, detail_html, search_html):

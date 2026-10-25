@@ -18,7 +18,7 @@ import time
 
 import httpx
 
-from . import core, javbus
+from . import codes, core, javbus
 
 log = logging.getLogger("x-drive.meta")
 
@@ -247,8 +247,33 @@ def cached(code: str, path: str | None = None) -> dict | None:
     """只查缓存，不联网。看板渲染走这条路径。"""
     if not code:
         return None
-    item = load_cache(path).get(code.upper())
-    return item if isinstance(item, dict) else None
+    data = load_cache(path)
+    for key in _lookup_keys(code):
+        item = data.get(key)
+        if isinstance(item, dict) and item:
+            return item
+    return None
+
+
+def _lookup_keys(code: str) -> list[str]:
+    """查元数据时该试哪些名字（按优先级）。
+
+    归档目录名**不一定等于番号** —— 云添加用磁力原名做目录名（实测
+    `mimk-186ch`，因为番号粘连了后缀认不出来），直接拿它去查 JavBus 会
+    404，元数据就整条丢了。所以先试归一后的规范番号，再退回原名。
+
+    顺序要紧：规范番号优先 —— 磁力原名可能对应好几部片（`MIMK-186ch` 是
+    「MIMK-186 的中文版」），认出来的那个才是这部。
+    """
+    raw = (code or "").strip()
+    keys: list[str] = []
+    canonical = codes.canonical(raw)
+    if canonical:
+        keys.append(canonical)
+    upper = raw.upper()
+    if upper not in keys:
+        keys.append(upper)
+    return keys
 
 
 def _throttle() -> None:
@@ -283,9 +308,12 @@ async def lookup(code: str, path: str | None = None, client: httpx.AsyncClient |
     """按番号取元数据：先看缓存，没有再联网抓，抓到就写缓存。
 
     任何失败都返回 None，不抛异常 —— 调用方不该因为查不到信息而中断下载。
+
+    查的名字按 _lookup_keys 依次试：归档目录名可能是磁力原名（`mimk-186ch`），
+    直接拿去查会 404 —— 那样整条归档的元数据就没了。
     """
-    code = (code or "").strip().upper()
-    if not code:
+    keys = _lookup_keys(code)
+    if not keys:
         return None
     hit = cached(code, path)
     if hit:
@@ -298,25 +326,36 @@ async def lookup(code: str, path: str | None = None, client: httpx.AsyncClient |
         # 优先 javbus：直接返回 JSON，字段更全（导演/片商/发行商/系列/精确时长），
         # 不用解析 HTML。它挂了再回退到 javdb。
         if _use_javbus():
-            try:
-                info = await javbus.movie(code, client=cli)
-            except Exception as exc:
-                log.warning("javbus 查 %s 出错：%s", code, exc)
-                info = None
-            if info and info.get("title"):
-                if not info.get("rating"):
-                    info["rating"] = ""
-                _save(info, code, path)
-                return info
+            for key in keys:
+                try:
+                    info = await javbus.movie(key, client=cli)
+                except Exception as exc:
+                    log.warning("javbus 查 %s 出错：%s", key, exc)
+                    info = None
+                if info and info.get("title"):
+                    if not info.get("rating"):
+                        info["rating"] = ""
+                    _save(info, key, path)
+                    return info
+                # 这个名字查不到就换下一个（磁力原名 → 规范番号）
+                if len(keys) > 1:
+                    log.info("javbus 没有 %s，改查 %s", key, "、".join(keys))
 
         _throttle()
-        r = await cli.get(f"{BASE}/search", params={"q": code}, headers={"User-Agent": UA})
-        if r.status_code != 200:
-            log.warning("javdb 搜索 %s 返回 %s", code, r.status_code)
-            return None
-        path_part = parse_search(r.text, code)
+        path_part = ""
+        used_key = keys[0]
+        for key in keys:
+            r = await cli.get(f"{BASE}/search", params={"q": key}, headers={"User-Agent": UA})
+            if r.status_code != 200:
+                log.warning("javdb 搜索 %s 返回 %s", key, r.status_code)
+                continue
+            found = parse_search(r.text, key)
+            if not found:
+                log.info("javdb 没有 %s 的精确匹配", key)
+                continue
+            path_part, used_key = found, key
+            break
         if not path_part:
-            log.info("javdb 没有 %s 的精确匹配", code)
             return None
 
         _throttle()
@@ -324,13 +363,13 @@ async def lookup(code: str, path: str | None = None, client: httpx.AsyncClient |
         if r2.status_code != 200:
             log.warning("javdb 详情 %s 返回 %s", path_part, r2.status_code)
             return None
-        info = parse_detail(r2.text, code)
+        info = parse_detail(r2.text, used_key)
         if not info.get("title"):
-            log.info("%s 详情页没有解析出标题，不写缓存", code)
+            log.info("%s 详情页没有解析出标题，不写缓存", used_key)
             return None
 
         info["url"] = BASE + path_part
-        _save(info, code, path)
+        _save(info, used_key, path)
         return info
     except Exception as exc:
         log.warning("javdb 查询 %s 失败：%s", code, exc)
