@@ -609,3 +609,111 @@ def test_second_faststart_repair_unlocks_the_first_button():
       assert.equal(b1.disabled,false,"第二次开始时上一次的按钮要解锁");
       assert.equal(b2.disabled,true,"新按钮进入等待状态");
     ''')
+
+
+def test_sig_covers_every_field_the_detail_popup_reads():
+    """卡片签名要盖住详情弹层读的全部 meta 字段。
+
+    少了哪个，手动刮削补上那个字段后签名就不变 → 卡片不重建 → 弹层里
+    还是旧值（用户会以为写入失败而重复操作）。
+    """
+    run_js(r'''
+      const base={id:"a",code:"ABC",kind:"video",cat:"video",size_text:"1GB",
+        path:"p",meta:{title:"t",cover:"c",maker:"m",rating:"1",actors:["x"]}};
+      // 导演、发行日期、类别、发行商、简介、预览图、时长 —— 都要能改签名
+      const fields=[
+        ["director","导演甲"],["release_date","2024-01-01"],["date","2024-01-02"],
+        ["categories",["剧情"]],["genres",["剧情"]],["publisher","发行商乙"],
+        ["summary","简介丙"],["review","评分丁"],["runtime","120 分钟"],
+        ["duration","120 分钟"],["previews",["http://x/1.jpg"]],
+        ["cover_url","http://x/c.jpg"],["score","8.5"],["label","发行商戊"],
+      ];
+      const sig0=sigOf(base);
+      for(const [k,v] of fields){
+        const next={...base,meta:{...base.meta,[k]:v}};
+        assert.notEqual(sigOf(next),sig0,"meta."+k+" 变了签名却没变");
+      }
+    ''')
+
+
+def test_detail_popup_survives_string_actors():
+    """后端给了字符串形态的 actors 也不能把整页锁死。"""
+    run_js(r'''
+      const t={id:"a",code:"ABC-1",kind:"视频 1",cat:"video",size_text:"1GB",
+        count:1,files:["ABC-1.mp4"],at:"2026-10-25",path:"p",
+        meta:{title:"x",actors:"演员甲、演员乙"}};      // 字符串，不是数组
+      const node=card(t);
+      let threw=null;
+      try{ await node.querySelector(".card-cover").dispatch("click",{}); }catch(e){ threw=e; }
+      assert.equal(threw,null,"actors 是字符串时不该抛："+(threw&&threw.message));
+      const layer=document.getElementById("detail-layer");
+      assert.ok(layer,"弹层应当照常挂上");
+      assert.match(layer.textContent,/演员甲/);
+    ''')
+
+
+def test_detail_popup_shows_real_series_over_derived_one():
+    """真实系列名（javbus 给的）要盖住从番号推导的那个。"""
+    run_js(r'''
+      const t={id:"a",code:"SSIS-1",kind:"视频 1",cat:"video",size_text:"1GB",
+        count:1,files:["a.mp4"],at:"2026-10-25",path:"p",series:"SSIS",
+        meta:{title:"x",series:"真系列名"}};
+      const node=card(t);
+      await node.querySelector(".card-cover").dispatch("click",{});
+      const layer=document.getElementById("detail-layer");
+      assert.match(layer.textContent,/真系列名/,"应当显示真实的系列名");
+    ''')
+
+
+def test_faststart_watch_clears_when_task_cancelled():
+    """任务被停止（cancelled）或从列表消失时，按钮要解锁。"""
+    run_js(r'''
+      stubs.confirm=()=>true;
+      stubs.fetch=async()=>({ok:true,status:200,statusText:"OK",
+        text:async()=>JSON.stringify({ok:true,job_id:"job-x",code:"ABC-1"})});
+      const b=document.createElement("button");
+      b.textContent="修复可播性";
+      await repairFaststart("ABC-1",b,null);
+      assert.equal(b.disabled,true,"修复进行中应当禁用");
+      // 任务被停止
+      lastJobs=[{id:"job-x",stage:"cancelled",error:"用户停止"}];
+      checkFaststartProgress();
+      assert.equal(b.disabled,false,"任务停止后按钮要解锁");
+      assert.equal(b.textContent,"修复可播性","按钮文字要复原");
+    ''')
+
+
+def test_faststart_watch_clears_when_task_disappears():
+    """任务记录被删掉（挤出列表）时，按钮也要解锁。"""
+    run_js(r'''
+      stubs.confirm=()=>true;
+      stubs.fetch=async()=>({ok:true,status:200,statusText:"OK",
+        text:async()=>JSON.stringify({ok:true,job_id:"job-y",code:"ABC-1"})});
+      const b=document.createElement("button");
+      await repairFaststart("ABC-1",b,null);
+      assert.equal(b.disabled,true);
+      lastJobs=[];                     // 任务不见了
+      checkFaststartProgress();
+      assert.equal(b.disabled,false,"任务消失后按钮要解锁");
+    ''')
+
+
+def test_scrape_confirmation_deduplicates_alias_fields():
+    """确认框里同一个字段只列一遍（后端返回新旧两套键）。"""
+    run_js(r'''
+      let confirmed=null;
+      stubs.confirm=(m)=>{confirmed=m;return true;};
+      stubs.metaApi=async(path,body)=>{
+        if(path==="/api/scrape/preview")return {ok:true,found:true,changes:{
+          date:{from:"2024-01-01",to:"2024-11-29"},
+          release_date:{from:"2024-01-01",to:"2024-11-29"},
+          score:{from:null,to:"8.5"},
+          rating:{from:null,to:"8.5"}}};
+        return {ok:true,changed:{}};
+      };
+      await manualScrape({code:"ABC-1",id:"ABC-1"},()=>{},null);
+      const hits=(confirmed.match(/发行日期/g)||[]).length;
+      assert.equal(hits,1,"「发行日期」只该列一遍，实际 "+hits+" 次");
+      const scores=(confirmed.match(/评分/g)||[]).length;
+      assert.equal(scores,1,"「评分」只该列一遍，实际 "+scores+" 次");
+    ''')

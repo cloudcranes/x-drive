@@ -359,10 +359,22 @@ def test_normalize_meta_maps_javbus_keys_to_lockable_names():
     assert out["score"] == "8.5"
     assert out["cover_url"] == "http://x/c.jpg"
     assert out["genres"] == ["剧情"]
-    assert out["summary"] == "简介"
     # 老键留着：不丢东西
     assert out["date"] == "2024-11-29"
     assert out["title"] == "标题"
+    # review 不映射（javbus 拿它放评分，不是简介）
+
+
+def test_normalize_meta_does_not_map_review_to_summary():
+    """javbus 的 review 是**观众评分**（0-10），不是简介。
+
+    早先误映射成 summary，结果：评分的数字被当成「简介」显示，而「评分」
+    那行反倒空了。简介只有 metatube 的 summary。
+    """
+    from app import metadata
+    out = metadata.normalize_meta({"review": "8.5", "title": "标题"})
+    assert out.get("summary") in (None, ""), "评分不该被映射成简介"
+    assert out["review"] == "8.5", "review 要原样保留（它是评分）"
 
 
 def test_normalize_meta_keeps_existing_new_names():

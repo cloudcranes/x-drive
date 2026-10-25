@@ -1398,9 +1398,7 @@ function showArchiveDetail(t) {
   // 否则关掉弹层后整页再也滚不动。
   const closeLayer = () => {
     closeLightbox();               // 灯箱不是独立入口，跟着所在弹层一起收
-    document.removeEventListener("keydown", onKey);
-    layer.remove();
-    document.body.style.overflow = "";
+    closeLayerEl(layer);           // 摘监听器 + 移除节点 + 按剩余层数决定滚动锁
   };
   const onKey = e => {
     if (e.key !== "Escape") return;
@@ -1410,7 +1408,8 @@ function showArchiveDetail(t) {
   layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
   document.addEventListener("keydown", onKey);
   LAYER_CLEANUP.set(layer.id, () => document.removeEventListener("keydown", onKey));
-  document.body.style.overflow = "hidden";
+  // 滚动锁放在**渲染完之后**再上：渲染途中抛异常（后端给了意外形状）的话，
+  // 弹层没挂上、监听器已挂、锁已上 —— 整页就再也滚不动、Esc 也关不掉。
 
   const panel = el("div", "dpanel");
   const head = el("div", "dhead");
@@ -1440,18 +1439,29 @@ function showArchiveDetail(t) {
     }
     return "";
   };
+  // 数组字段的防护：后端有可能给字符串（拼错了就是 "演员甲"），
+  // 直接 .join 会抛异常 —— 而弹层还没挂上、滚动锁已经锁了、监听器已经挂了，
+  // 一抛错整页就再也滚不动、Esc 也关不掉。
+  const asList = v => {
+    if (Array.isArray(v)) return v;
+    if (!v) return [];
+    return String(v).split(/\s*[,/、]\s*/).filter(Boolean);
+  };
   const rows = [
     ["番号", t.code],
-    ["系列", t.series || pick("series")],
+    // 系列：真实系列名（javbus 给的）优先；t.series 是从番号推导的（SSIS-123 → SSIS），
+    // 永远非空，放在前面会把真实系列名遮蔽掉
+    ["系列", pick("series") || t.series],
     ["发行日期", pick("release_date", "date")],
     ["时长", pick("runtime", "duration")],
     ["片商", pick("maker")],
     ["发行商", pick("publisher", "label")],
     ["导演", pick("director")],
-    ["演员", (pick("actors") || []).join(" / ")],
-    ["类别", (pick("genres", "categories") || []).join("、")],
-    ["评分", pick("score", "rating")],
-    ["简介", pick("summary", "review")],
+    ["演员", asList(pick("actors")).join(" / ")],
+    ["类别", asList(pick("genres", "categories")).join("、")],
+    // 评分：javbus 把它存在 review 键里（0-10 的观众评分，不是简介）
+    ["评分", pick("score", "rating", "review")],
+    ["简介", pick("summary")],
     ["封面尺寸", pick("cover_size")],
     ["文件构成", t.kind],
     ["体积", t.size_text],
@@ -1522,6 +1532,7 @@ function showArchiveDetail(t) {
   panel.append(actions);
   layer.append(panel);
   document.body.append(layer);
+  document.body.style.overflow = "hidden";
 }
 
 // 手动刮削：先拉差异预览给用户看，确认了才写入。
@@ -1530,6 +1541,12 @@ const SCRAPE_FIELD_TEXT = {
   title: "标题", original_title: "原题", summary: "简介", release_date: "发行日期",
   runtime: "时长", director: "导演", maker: "片商", label: "发行商",
   series: "系列", actors: "演员", genres: "类别", score: "评分",
+};
+// 老键 → 归一后的目标键（跟后端 metadata._ALIAS 一致）。
+// 确认框按目标键去重：同��个字段不该列两遍。
+const SCRAPE_ALIAS = {
+  date: "release_date", duration: "runtime", rating: "score",
+  cover: "cover_url", categories: "genres",
 };
 // javbus 那一路的字段（比 metatube 多得多）
 const SCRAPE_EXTRA_TEXT = {
@@ -1576,9 +1593,25 @@ async function manualScrape(t, closeLayer, btn) {
     return;
   }
   // 把差异摆给用户看：哪些字段会变、变成什么
-  const lines = keys.map(k => {
+  //
+  // 后端返回的 changes 里**新旧两套键都在**（normalize_meta 只补不搬，老键留着），
+  // 所以同一个字段会出现两行一模一样的「发行日期」，还会互相矛盾
+  // （一个说 review 变了、一个说 score 变了）。按归一后的目标键去重：
+  // 新键优先，老键只用来取旧值。
+  const merged = {};
+  for (const k of keys) {
     const c = changes[k] || {};
-    const name = SCRAPE_FIELD_TEXT[k] || SCRAPE_EXTRA_TEXT[k] || k;
+    const target = SCRAPE_ALIAS[k] || k;
+    if (!merged[target]) {
+      merged[target] = { from: c.from, to: c.to, raw: k };
+    } else if (SCRAPE_ALIAS[k] && merged[target].raw !== k) {
+      // 老键的值才是站内真正的旧值（归一后新键是同一个值的副本）
+      merged[target].from = c.from;
+    }
+  }
+  const lines = Object.keys(merged).map(target => {
+    const c = merged[target];
+    const name = SCRAPE_FIELD_TEXT[target] || SCRAPE_EXTRA_TEXT[target] || target;
     return `${name}：${fmtScrapeVal(c.from)} → ${fmtScrapeVal(c.to)}`;
   });
   const provider = data.provider ? `\n（来源：${data.provider}）` : "";
@@ -1634,14 +1667,19 @@ async function playArchive(t, btn) {
 // 多个画质档时给一排按钮（迅雷官方 API 的 medias），默认第一档。
 function openPlayer(code, data, src) {
   closeLayerEl(document.getElementById("player-layer"));
+  // 播放器是独立顶层：把归档详情层收掉。两层叠着时按一次 Esc 会把两层
+  // 一起关掉（两个 onKey 都挂在 document 上，谁都不检查自己是不是最上层）。
+  closeLayerEl(document.getElementById("detail-layer"));
   const layer = el("div", "dlayer player-layer");
   layer.id = "player-layer";
+  // stall 定时器要在关闭时清掉 —— 不然关掉播放器 6 秒后它还会触发，
+  // 去改一个已经随层被移除的游离节点。
+  let stallTimer = null;
   const closeLayer = () => {
     const v = layer.querySelector("video");
     if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
-    document.removeEventListener("keydown", onKey);
-    layer.remove();
-    document.body.style.overflow = "";
+    if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+    closeLayerEl(layer);           // 摘监听器 + 移除节点 + 按剩余层数决定滚动锁
   };
   const onKey = e => {
     if (e.key !== "Escape") return;
@@ -1670,22 +1708,25 @@ function openPlayer(code, data, src) {
   // 「修复可播性」把索引提到文件头（要下载 + 重传，几分钟）。
   const hint = el("div", "player-hint");
   hint.style.display = "none";
+  // 文案单独拿个引用：靠 firstChild 拿它，依赖 append 顺序（后面还会往
+  // hint 里 append 失败提示，顺序一变就拿错节点）
+  const hintText = el("span", null, "播不出来？多半是这个 MP4 的索引在文件末尾，浏览器认不了。");
+  hint.append(hintText);
   const fixBtn = el("button", "ghost", "修复可播性");
   fixBtn.type = "button";
   fixBtn.title = "把 MP4 索引（moov）提到文件头，浏览器才认得了。要下载重传，几分钟。";
   fixBtn.addEventListener("click", () => { repairFaststart(code, fixBtn, hint); });
-  hint.append(el("span", null, "播不出来？多半是这个 MP4 的索引在文件末尾，浏览器认不了。"));
   hint.append(fixBtn);
-  const stall = setTimeout(() => {
+  stallTimer = setTimeout(() => {
     // 一会儿还没起播：多半是索引不在头部
     if (video.readyState === 0 && !video.error) hint.style.display = "flex";
   }, 6000);
   video.addEventListener("error", () => {
     hint.style.display = "flex";
-    hint.firstChild.textContent = "播放失败：直链可能已过期，或这个 MP4 的索引在文件末尾。";
+    hintText.textContent = "播放失败：直链可能已过期，或这个 MP4 的索引在文件末尾。";
   });
   video.addEventListener("loadedmetadata", () => {
-    clearTimeout(stall);
+    if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
     hint.style.display = "none";
   });
   panel.append(video);
@@ -1742,7 +1783,10 @@ async function repairFaststart(code, btn, hint) {
     const d = await readJson(r, "/api/cloud/faststart");
     if (!d || !d.ok) {
       if (btn) { btn.disabled = false; btn.textContent = old; }
-      if (hint) hint.append(el("span", null, "修复失败：" + ((d && d.error) || "未知原因")));
+      if (hint) {
+        hint.style.display = "flex";      // 不显示的话用户根本看不到失败原因
+        hint.append(el("span", null, "修复失败：" + ((d && d.error) || "未知原因")));
+      }
       return;
     }
     // 重排是后台任务（十几分钟）。**不另起定时器** —— 页面本来就有 3 秒一轮的
@@ -1758,7 +1802,10 @@ async function repairFaststart(code, btn, hint) {
     loadJobs(true);
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = old; }
-    if (hint) hint.append(el("span", null, "修复失败：" + (e.message || e)));
+    if (hint) {
+      hint.style.display = "flex";
+      hint.append(el("span", null, "修复失败：" + (e.message || e)));
+    }
   }
 }
 
@@ -1770,18 +1817,28 @@ function checkFaststartProgress() {
   const w = faststartWatch;
   if (!w) return;
   const row = lastJobs.find(j => j.id === w.jobId);
-  if (!row) return;
+  if (!row) {
+    // 任务不在列表里了：可能被「删记录」清掉，或挤出 recent(20) 窗口。
+    // 不清理的话按钮永远卡在「修复中…」，再也发不起第二次修复。
+    faststartWatch = null;
+    if (w.btn) { w.btn.disabled = false; w.btn.textContent = w.label; }
+    return;
+  }
   if (row.stage === "done") {
     faststartWatch = null;
     if (w.btn) { w.btn.disabled = false; w.btn.textContent = w.label; }
     queueFlash("已修复，可以播了");
-    const layer = document.getElementById("player-layer");
-    if (layer) layer.remove();
-    document.body.style.overflow = "";
-  } else if (row.stage === "failed") {
+    // 走 closeLayerEl：摘掉 keydown 监听器，并且按「还有没有别的层开着」
+    // 决定滚动锁 —— 直接 layer.remove() 会把别的层还锁着的背景也解锁
+    closeLayerEl(document.getElementById("player-layer"));
+  } else if (row.stage === "failed" || row.stage === "cancelled") {
     faststartWatch = null;
     if (w.btn) { w.btn.disabled = false; w.btn.textContent = w.label; }
-    if (w.hint) w.hint.append(el("span", null, "修复失败：" + (row.error || "未知原因")));
+    if (w.hint) {
+      w.hint.style.display = "flex";       // 不显示的话用户看不到失败原因
+      w.hint.append(el("span", null,
+        row.stage === "cancelled" ? "修复已停止" : ("修复失败：" + (row.error || "未知原因"))));
+    }
   } else if (w.btn) {
     w.btn.textContent = "修复中 " + (row.percent ? Math.round(row.percent) + "%" : "…");
   }
@@ -2025,9 +2082,19 @@ async function askDelete(t) {
 // 增量渲染：按 id 复用已有卡片，轮询时只重排、不重建
 const mounted = new Map();
 let inflight = null;
+// 卡片的重建签名。**详情弹层读的每一个 meta 字段都要进来** ——
+// 少了哪个，手动刮削补上那个字段后签名就不变、卡片不重建，
+// 弹层里还是旧值（用户会以为写入失败而重复操作）。
+// 实测踩过：签名里只有 title/cover/maker/rating/actors，javbus 刮出来的
+// 导演、发行日期、类别、发行商、简介、预览图全不在里面。
 const sigOf = t => JSON.stringify([t.at, t.code, t.kind, t.cat, t.size_text,
-  t.link, t.path, t.series, t.meta && [t.meta.title, t.meta.cover,
-    t.meta.maker, t.meta.rating, t.meta.actors], t.cleanup_pending]);
+  t.link, t.path, t.series, t.cleanup_pending,
+  t.meta && [t.meta.title, t.meta.cover, t.meta.cover_url, t.meta.maker,
+    t.meta.publisher, t.meta.label, t.meta.director, t.meta.series,
+    t.meta.release_date, t.meta.date, t.meta.runtime, t.meta.duration,
+    t.meta.score, t.meta.rating, t.meta.summary, t.meta.review,
+    t.meta.actors, t.meta.genres, t.meta.categories, t.meta.previews,
+    t.meta.cover_size, t.meta.source]]);
 
 function syncFeed(tasks) {
   const feed = $("feed");
@@ -3254,9 +3321,7 @@ function showDetail(code, info) {
   // 否则关掉弹层后整页再也滚不动。
   const closeLayer = () => {
     closeLightbox();               // 灯箱不是独立入口，跟着所在弹层一起收
-    document.removeEventListener("keydown", onKey);
-    layer.remove();
-    document.body.style.overflow = "";
+    closeLayerEl(layer);           // 摘监听器 + 移除节点 + 按剩余层数决定滚动锁
   };
   const onKey = e => {
     if (e.key !== "Escape") return;
@@ -3343,9 +3408,7 @@ async function showMagnetPreview(item, btn) {
   layer.id = "preview-layer";
   const closeLayer = () => {
     closeLightbox();               // 灯箱不是独立入口，跟着所在弹层一起收
-    document.removeEventListener("keydown", onKey);
-    layer.remove();
-    document.body.style.overflow = "";
+    closeLayerEl(layer);           // 摘监听器 + 移除节点 + 按剩余层数决定滚动锁
   };
   const onKey = e => {
     if (e.key !== "Escape") return;
@@ -4790,7 +4853,10 @@ $("panel-clean").addEventListener("click", async () => {
 let queueFlashTimer = null;
 function queueFlash(msg, isError) {
   const box = $("queue-flash");
-  if (!box) { flash(msg, isError); return; }
+  // 队列面板不在当前视图时，那条提示是**看不见**的（写在 hidden 的节点里）——
+  // 这时落到全局提示位去。
+  const panel = $("queue");
+  if (!box || (panel && panel.hidden)) { flash(msg, isError); return; }
   box.textContent = msg;
   box.className = "hint" + (isError ? " err" : "");
   clearTimeout(queueFlashTimer);

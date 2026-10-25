@@ -46,13 +46,16 @@ LOCKABLE = ("title", "original_title", "summary", "release_date", "runtime", "di
 #
 # 归一方向：**站内记录统一成 LOCKABLE 那套**（metatube 的键名），因为
 # LOCKABLE、NFO、metadata.json 全是按它写的。
+#
+# **review 不在这张表里**：javbus 的 review 是「观众评分」（0-10，见
+# app/javbus.py），不是简介 —— 早先误映射成 summary，结果评分的数字被
+# 当成简介显示，而「评分」那行反倒空了。简介只有 metatube 的 summary。
 _ALIAS = {
     "date": "release_date",
     "duration": "runtime",
     "rating": "score",
     "cover": "cover_url",
     "categories": "genres",
-    "review": "summary",
 }
 
 
