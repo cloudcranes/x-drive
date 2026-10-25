@@ -446,7 +446,9 @@
   .player-meta{display:flex; flex-wrap:wrap; gap:10px; margin-top:10px;
     font-family:var(--mono); font-size:10.5px; color:var(--faint)}
   .player-hint{margin-top:10px; padding:8px 10px; border-radius:6px; font-size:11.5px;
-    color:#ffc98a; border:1px solid rgba(255,201,138,.3); background:rgba(255,201,138,.06)}
+    color:#ffc98a; border:1px solid rgba(255,201,138,.3); background:rgba(255,201,138,.06);
+    display:flex; flex-wrap:wrap; align-items:center; gap:10px}
+  .player-hint .ghost{margin-left:auto}
   .dwall{display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:8px}
   .dthumb{display:block; aspect-ratio:16/9; overflow:hidden; border-radius:6px; border:1px solid var(--line);
     cursor:zoom-in}
@@ -1638,11 +1640,30 @@ function openPlayer(code, data, src) {
   video.preload = "metadata";
   video.playsInline = true;
   video.src = src;
+  // 播不出来时给一条出路：这批种子的 MP4 索引在末尾，浏览器认不了。
+  // 「修复可播性」把索引提到文件头（要下载 + 重传，几分钟）。
+  const hint = el("div", "player-hint");
+  hint.style.display = "none";
+  const fixBtn = el("button", "ghost", "修复可播性");
+  fixBtn.type = "button";
+  fixBtn.title = "把 MP4 索引（moov）提到文件头，浏览器才认得了。要下载重传，几分钟。";
+  fixBtn.addEventListener("click", () => { repairFaststart(code, fixBtn, hint); });
+  hint.append(el("span", null, "播不出来？多半是这个 MP4 的索引在文件末尾，浏览器认不了。"));
+  hint.append(fixBtn);
+  const stall = setTimeout(() => {
+    // 一会儿还没起播：多半是索引不在头部
+    if (video.readyState === 0 && !video.error) hint.style.display = "flex";
+  }, 6000);
   video.addEventListener("error", () => {
-    const hint = el("div", "player-hint", "播放失败：直链可能已过期，或这个后端不给可播的地址");
-    panel.append(hint);
+    hint.style.display = "flex";
+    hint.firstChild.textContent = "播放失败：直链可能已过期，或这个 MP4 的索引在文件末尾。";
+  });
+  video.addEventListener("loadedmetadata", () => {
+    clearTimeout(stall);
+    hint.style.display = "none";
   });
   panel.append(video);
+  panel.append(hint);
 
   // 多画质档（迅雷官方 API 的 medias）
   const medias = (data.medias || []).filter(m => m.url);
@@ -1673,6 +1694,41 @@ function openPlayer(code, data, src) {
   document.body.append(layer);
   // 自动起播：浏览器可能拦（有声/无手势），拦了就让用户自己点播放键
   video.play().catch(() => {});
+}
+
+// 修复可播性：把 MP4 的索引（moov）提到文件头，浏览器才认得了。
+// 要下载 + 重传（5GB 约十几分钟），所以先问清楚再动手。
+async function repairFaststart(code, btn, hint) {
+  if (!confirm(`${code}\n\n修复可播性？\n\n`
+    + `这个 MP4 的索引在文件末尾，浏览器认不了。修复要把索引提到文件头：\n`
+    + `· 要先下载整片，再重排，最后传回原位\n`
+    + `· 5GB 的片子大约十几分钟\n`
+    + `· 视频不重编码，只是挪索引，画质不变\n\n`
+    + `确定要修吗？`)) return;
+  if (btn) btn.disabled = true;
+  const old = btn ? btn.textContent : "";
+  if (btn) btn.textContent = "修复中…";
+  try {
+    const r = await fetch(BASE + "/api/cloud/faststart", authInit({
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code})}));
+    const d = await readJson(r, "/api/cloud/faststart");
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+    if (!d || !d.ok) {
+      if (hint) hint.append(el("span", null, "修复失败：" + ((d && d.error) || "未知原因")));
+      return;
+    }
+    queueFlash(d.changed ? "已修复，可以播了" : (d.message || "不需要修复"));
+    if (d.changed) {
+      // 修好了就把播放器收掉，让用户重新点一次播放拿新直链
+      const layer = document.getElementById("player-layer");
+      if (layer) layer.remove();
+      document.body.style.overflow = "";
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+    if (hint) hint.append(el("span", null, "修复失败：" + (e.message || e)));
+  }
 }
 
 // 删除归档：两段式。先问服务端「将删什么」，把番号和体积摆给用户看，

@@ -868,6 +868,112 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
             "play": play_url(link)}
 
 
+def archive_media_path(record: dict, backend) -> str:
+    """归档目录里的媒体文件路径（取第一个视频）。
+
+    找不到媒体就抛 StorageError —— 调用方要据此报错，不能瞎猜一个路径。
+    """
+    rel = archive_locator(record)
+    entries = backend.list_files(rel)
+    media_ext = (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".mov", ".rmvb", ".iso", ".m4v")
+    media = [e for e in entries if Path(e.name).suffix.lower() in media_ext]
+    if not media:
+        raise storage.StorageError(f"{rel} 里没有媒体文件")
+    return f"{rel}/{media[0].name}"
+
+
+def faststart_archive(code: str) -> dict:
+    """把归档里的媒体重排成「浏览器能播」的 MP4（moov 提到文件头）。
+
+    这类种子里的 MP4 是 `ftyp + mdat + moov` —— 索引在**最末尾**。浏览器只
+    认 `ftyp + moov + mdat`，找不到就一直在等，于是「播放」点了没反应。
+
+    做法：下载 → ffmpeg `-c copy -movflags +faststart` 重排（不重编码）→
+    传回原位。**原文件先不删** —— 上传成功、校验过大小之后才替换，
+    中途失败不会把归档弄成半截。
+
+    代价：整片 5GB 要下载一遍再上传一遍（实测约 12 分钟 + 5GB 临时空间）。
+    所以这是**按需**动作：用户在界面上点了才跑。
+    """
+    from . import faststart
+
+    ok, why = faststart.ffmpeg_available()
+    if not ok:
+        return {"ok": False, "error": f"不能重排：{why}"}
+    state = core.load_state(STATE)
+    key = codes.canonical(code) or (code or "").strip().upper()
+    record = _find_archive_record(state, key)
+    if not record:
+        return {"ok": False, "error": f"没有 {key} 的归档记录"}
+    try:
+        backend = storage_backend()
+        validate_archive_backend(backend, record)
+        path = archive_media_path(record, backend)
+    except storage.StorageError as exc:
+        return {"ok": False, "error": str(exc)[:200]}
+
+    probe = getattr(backend, "download_url", None)
+    if not probe:
+        return {"ok": False, "error": "这个后端取不到下载地址，重排做不了"}
+    try:
+        link = probe(path)
+    except Exception as exc:                    # noqa: BLE001
+        return {"ok": False, "error": f"取下载地址失败：{str(exc)[:120]}"}
+    if not link:
+        return {"ok": False, "error": "取不到下载地址，重排做不了"}
+
+    work = Path(TMP_ROOT) / "faststart"
+    work.mkdir(parents=True, exist_ok=True)
+    local = work / Path(path).name
+    try:
+        # ① 下载
+        log.info("faststart：下载 %s", path)
+        with urllib.request.urlopen(link, timeout=VIDEO_TIMEOUT * 4) as resp:
+            with open(local, "wb") as fh:
+                shutil.copyfileobj(resp, fh, VIDEO_CHUNK)
+        size = local.stat().st_size
+        if not size:
+            return {"ok": False, "error": "下载到的文件是空的"}
+        if not faststart.needs_faststart(local):
+            return {"ok": True, "changed": False,
+                    "message": "这个文件的索引已经在头部，本来就能播"}
+        # ② 重排
+        log.info("faststart：重排 %s（%d 字节）", path, size)
+        fixed = faststart.faststart_file(local, work)
+        new_size = fixed.stat().st_size
+        # ③ 传回原位（先传临时名，成功后再替换）
+        tmp_dest = f"{path}.faststart.tmp"
+        try:
+            backend.upload_file(fixed, tmp_dest)
+            backend.purge(path)
+            backend.rename_dir(tmp_dest, Path(path).name)
+        except Exception as exc:                # noqa: BLE001
+            try:
+                backend.purge(tmp_dest)
+            except Exception:
+                pass
+            return {"ok": False, "error": f"传回失败：{str(exc)[:160]}"}
+        finally:
+            try:
+                fixed.unlink(missing_ok=True)
+            except OSError:
+                pass
+        log.info("faststart：完成 %s（%d -> %d 字节）", path, size, new_size)
+        return {"ok": True, "changed": True, "path": path,
+                "old_size": size, "new_size": new_size,
+                "message": "已重排，索引提到文件头，现在可以在浏览器里播了"}
+    except faststart.FaststartError as exc:
+        return {"ok": False, "error": str(exc)[:200]}
+    except Exception as exc:                    # noqa: BLE001
+        log.warning("faststart 失败 %s：%s", path, exc)
+        return {"ok": False, "error": f"重排失败：{str(exc)[:160]}"}
+    finally:
+        try:
+            local.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def play_url(link: str) -> str:
     """把云盘直链换成**同源**的播放地址。
 
@@ -3080,6 +3186,14 @@ class Handler(BaseHTTPRequestHandler):
                                    p.get("lock") or None, bool(p.get("resync")),
                                    bool(p.get("confirm")), p.get("unlock") or None,
                                    p.get("only") or None))
+            return
+        if path == "/api/cloud/faststart":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            p = self._payload()
+            self._json(faststart_archive(p.get("code") or ""))
             return
         if path == "/api/settings":
             if not self._authorized():
