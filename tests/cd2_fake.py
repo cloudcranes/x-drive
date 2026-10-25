@@ -59,6 +59,9 @@ class FakeCd2:
     land_after: float = 0.0
     offline_ok: bool = True          # False = 磁力无效：接口仍回 success，但永不出文件
     can_offline: bool = True
+    # 「任务还在跑」模式：设成 dict 后，上传不会立刻 Finished，
+    # 测试用 finish_pending_upload() 手动推进到完成。
+    pending_upload: dict | None = None
 
     # ── 生命周期
     def start(self) -> "FakeCd2":
@@ -225,6 +228,17 @@ class FakeCd2:
             self.uploads.append(pb.UploadFileInfo(key=str(handle), destPath=path, size=size,
                                                   statusEnum=pb.Status_Error,
                                                   errorMessage="cloud said no"))
+        elif self.pending_upload is not None:
+            # 「任务还在跑」模式：文件已按最终长度落盘（真机预分配），
+            # 但上传任务仍是进行中状态 —— 用来验证适配器不会把
+            # 「远端文件已出现且长度对得上」当成上传完成。
+            self.files[path] = size
+            self.pending_upload["path"] = path
+            self.pending_upload["size"] = size
+            self.pending_upload["handle"] = str(handle)
+            self.uploads.append(pb.UploadFileInfo(key=str(handle), destPath=path, size=size,
+                                                  transferedBytes=size,
+                                                  statusEnum=pb.Status_1_Transfer))
         else:
             self.dirs.update({d for d in ("/",)})       # 保持根目录
             self.files[path] = size
@@ -335,6 +349,26 @@ class FakeCd2:
     def can_offline_flag(self) -> None:
         """把「可离线下载」能力位挂到根目录上（供 offline_supported 读）。"""
         self.can_offline = True
+
+    def finish_pending_upload(self) -> None:
+        """把进行中的上传任务推进到 Finished（真机上的「下完了」）。"""
+        if not self.pending_upload:
+            return
+        for info in self.uploads:
+            if info.destPath == self.pending_upload["path"]:
+                info.statusEnum = pb.Status_Finished
+                info.transferedBytes = self.pending_upload["size"]
+        self.pending_upload = None
+
+    def fail_pending_upload(self, reason: str = "cloud said no") -> None:
+        """把进行中的上传任务变成 Error。"""
+        if not self.pending_upload:
+            return
+        for info in self.uploads:
+            if info.destPath == self.pending_upload["path"]:
+                info.statusEnum = pb.Status_Error
+                info.errorMessage = reason
+        self.pending_upload = None
 
     # ── 测试辅助
     def add_file(self, path: str, size: int = 1) -> None:
