@@ -1670,6 +1670,14 @@ async function playArchive(t, btn) {
     openPlayer(code, data, src, true);   // 开着播放器，把修复按钮摆出来
     return;
   }
+  if (data.playable === null) {
+    // 直链**探不通**（网络不通 / 云盘缓存没生效 / 被限流）——
+    // 这不是「文件不能播」，是「这条路现在走不通」。别让用户对着圈圈等。
+    alert(`取直链时没能读到文件（${code}）。\n\n`
+      + `可能是云盘缓存还没生效，或网络暂时不通 —— 稍后重试。\n`
+      + `如果一直这样，先点「修复可播性」确认文件本身是好的。`);
+    return;
+  }
   openPlayer(code, data, src);
 }
 

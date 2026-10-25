@@ -917,14 +917,17 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
     for cand in candidates:
         cand["play"] = play_url(cand["link"])
         playable = probe_playable(cand["link"])
-        cand["playable"] = playable if playable is not None else True
         if playable is None:
             # 这条路根本读不通（网络/缓存/限流）→ 换下一条
             log.info("直链 %s 探不通，换下一条", cand["via"])
+            cand["playable"] = None          # 如实说「不知道」，不谎称能播
             last = cand
             continue
         # 读到了字节：能用（True）或文件不能播（False）→ 就它了
+        cand["playable"] = playable
         return {"ok": True, **cand}
+    # 全都探不通：给最后一条，但 playable=None（前端会提示「直链暂时取不到」，
+    # 而不是让用户对着转圈发呆）
     return {"ok": True, **(last or candidates[0])}
 
 

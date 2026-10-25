@@ -284,6 +284,31 @@ def test_probe_playable_returns_none_when_unreachable(monkeypatch):
     assert web.probe_playable("http://cdn.local/a.mp4") is None
 
 
+def test_direct_link_reports_unknown_playable_when_all_unreachable(tmp_path, monkeypatch):
+    """两条路都探不通 → playable=None（如实说「不知道」），不谎称能播。
+
+    谎称能播的后果：前端以为文件没问题，用户对着转圈等 —— 而真因是
+    云盘缓存没生效 / 网络不通。
+    """
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(web.xunleipan, "configured", lambda: True)
+    monkeypatch.setattr(web.xunleipan, "direct_link", lambda p: {
+        "name": "a.mp4", "link": "https://cdn.local/a.mp4", "medias": []})
+    monkeypatch.setattr(web, "probe_playable",
+                        lambda link, probe_bytes=1 << 20: None)   # 全都探不通
+
+    class Backend:
+        kind = "clouddrive2"
+
+        def download_url(self, path):
+            return "http://cd2.local:19798/static/a.mp4"
+
+    monkeypatch.setattr(web, "storage_backend", lambda: Backend())
+    out = web.cloud_direct_link(path="迅雷云盘/X-Drive/MIMK-186/a.mp4")
+    assert out["ok"], out
+    assert out["playable"] is None, out
+
+
 def test_direct_link_falls_back_to_cd2_when_official_unreachable(tmp_path, monkeypatch):
     """迅雷外网直链探不通 → 换 CD2 那条。"""
     _env(tmp_path, monkeypatch)

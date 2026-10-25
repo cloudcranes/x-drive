@@ -765,3 +765,30 @@ def test_play_opens_player_with_fix_hint_when_unplayable():
       assert.ok(hint.textContent.includes("转圈"),hint.textContent);
       assert.ok(hint.querySelector("button"),"提示条里要有修复按钮");
     ''')
+
+
+def test_play_reports_when_direct_link_is_unreachable():
+    """直链探不通（playable=null）→ 明确说，别让用户对着转圈。
+
+    这跟 playable=false 是两回事：
+    · false = 文件本身不能播（索引在末尾）→ 该去「修复可播性」
+    · null  = 这条路现在走不通（网络/缓存/限流）→ 稍后重试
+    """
+    run_js(r'''
+      let alerted=null;
+      stubs.alerts.length=0;
+      stubs.fetch=async(url)=>{
+        if(String(url).includes("/api/cloud/directlink"))
+          return {ok:true,status:200,statusText:"OK",text:async()=>JSON.stringify({
+            ok:true,via:"clouddrive2",name:"a.mp4",
+            link:"http://cd2.local/a.mp4",play:"/videoproxy?u=x",
+            medias:[],playable:null})};          // ← 探不通
+        return {ok:true,status:200,statusText:"OK",text:async()=>"{}"};
+      };
+      await playArchive({code:"ABC-1",id:"ABC-1",files:["a.mp4"],meta:{}},null);
+      assert.ok(stubs.alerts.length,"应当提示而不是闷头转圈");
+      const msg=String(stubs.alerts[0]);
+      assert.ok(msg.includes("没能读到"),msg);
+      assert.ok(msg.includes("重试"),"要说清是稍后重试："+msg);
+      assert.ok(!document.getElementById("player-layer"),"不该开播放器");
+    ''')
