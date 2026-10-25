@@ -4448,26 +4448,44 @@ def _probe_remote_readable(code: str, record: dict) -> list[str]:
         probe = getattr(backend, "download_url", None)
         if not probe:
             return out, slow
-        url = probe(f"{rel}/{name}" if rel else name)
-        if not url:
+        # 两条路都试：CD2 内网路径与迅雷外网直链。
+        # 只试一条会漏 —— 实测坏掉的 MIMK-186 在 CD2 上是「超时」，在迅雷 CDN
+        # 上才是明确的 HTTP 500。两条都探，才分得清「暂时慢」还是「真坏了」。
+        urls: list[tuple[str, str]] = []
+        try:
+            u = probe(f"{rel}/{name}" if rel else name)
+            if u:
+                urls.append(("CD2", u))
+        except Exception:                       # noqa: BLE001
+            pass
+        if str(rel or "").startswith("迅雷云盘") and xunleipan.configured():
+            try:
+                info = xunleipan.direct_link(f"{rel}/{name}" if rel else name)
+                if info.get("link"):
+                    urls.append(("迅雷", info["link"]))
+            except Exception:                   # noqa: BLE001
+                pass
+        if not urls:
             return out, slow
         for label, start, end in (("头", 0, 65535),
                                   ("尾", max(0, size - 65536), max(0, size - 1))):
-            try:
-                req = urllib.request.Request(
-                    url, headers={"Range": f"bytes={start}-{end}"})
-                with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT * 4) as resp:
-                    if not resp.read(65536):
-                        out.append(f"{name}（{label}部读不到内容）")
-            except Exception as exc:            # noqa: BLE001
-                # **超时 ≠ 损坏**：CD2 的下载路径有时就是慢（实测读 64KB 要
-                # 13.6 秒，而同目录另一个文件只要 0.6 秒）。超时只说明「这会儿
-                # 读不到」，不能断言文件坏了 —— 否则会误报一片。
-                # 只有服务端明确报错（HTTP 4xx/5xx）才算内容坏。
-                if isinstance(exc, urllib.error.HTTPError):
-                    out.append(f"{name}（{label}部服务端报错：HTTP {exc.code}）")
-                else:
-                    slow.append(f"{name}（{label}部暂时读不到：{type(exc).__name__}）")
+            for via, url in urls:
+                try:
+                    req = urllib.request.Request(
+                        url, headers={"Range": f"bytes={start}-{end}"})
+                    with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT * 4) as resp:
+                        if not resp.read(65536):
+                            out.append(f"{name}（{via}{label}部读不到内容）")
+                        break                   # 这条路读到了，不用再试另一条
+                except Exception as exc:        # noqa: BLE001
+                    # **超时 ≠ 损坏**：CD2 的下载路径有时就是慢（实测读 64KB 要
+                    # 13.6 秒，而同目录另一个文件只要 0.6 秒）。超时只说明「这会儿
+                    # 读不到」，不能断言文件坏了 —— 否则会误报一片。
+                    # 只有服务端明确报错（HTTP 4xx/5xx）才算内容坏。
+                    if isinstance(exc, urllib.error.HTTPError):
+                        out.append(f"{name}（{via}{label}部服务端报错：HTTP {exc.code}）")
+                    else:
+                        slow.append(f"{name}（{via}{label}部暂时读不到：{type(exc).__name__}）")
     except Exception as exc:                    # noqa: BLE001 探不了不算异常
         log.info("探测远端可读性失败（跳过）：%s", exc)
     return out, slow
