@@ -17,12 +17,9 @@ def test_faststart_route_is_post():
     （test_webui_routes 有一道守卫，但这里再钉一次：这个接口要做重排，
     语义上就是「动东西」，不能是 GET。）
     """
-    from app import store as store_mod
-    import tempfile
-    tmp = tempfile.mkdtemp()
-    web.STATE = str(tmp + "/state.json")
-    web.STORE = store_mod.Store(str(tmp + "/jobs.db"))
-    # 路由表：POST 必须在
+    # 只查路由表 —— **不改 web.STATE / web.STORE**。
+    # 直接赋值（而不是 monkeypatch）会永久污染模块全局，让后面依赖
+    # web.STATE 的测试读到临时目录（实测会随机失败）。
     import inspect
     src = inspect.getsource(web.Handler.do_POST)
     assert '"/api/cloud/faststart"' in src

@@ -778,7 +778,12 @@ def xlp_auth_status(refresh: bool = False) -> dict:
     out = {"ok": False, "configured": xunleipan.configured(),
            "has_refresh": parts["XLPAN_REFRESH_TOKEN"],
            "parts": parts,
-           "expires_in": 0, "detail": "", "error": ""}
+           "expires_in": 0, "detail": "", "error": "",
+           # 主动续期的节奏：让界面上能看出「多久会主动续一次」
+           "refresh_interval": int(float(get_setting("XLPAN_REFRESH_INTERVAL")
+                                          or xunleipan.REFRESH_CHECK_INTERVAL)),
+           "refresh_lead": int(float(get_setting("XLPAN_REFRESH_LEAD")
+                                     or xunleipan.REFRESH_LEAD))}
     if not out["configured"]:
         out["detail"] = "缺 clientid 或 access_token"
         return out
@@ -1787,6 +1792,18 @@ def requeue_unfinished(reason: str = "进程重启") -> dict:
         if job["id"] in WAITING:
             out["held"] += 1
     return out
+
+
+def _xunlei_refresh_loop() -> None:
+    """定时主动续迅雷的 access_token（见 app/xunleipan.py 的 refresh_loop）。
+
+    单独包一层是为了：web 侧的日志/配置习惯与 xunleipan 那边一致，
+    而且启动失败不该拖垮整个 web 进程。
+    """
+    try:
+        xunleipan.refresh_loop()
+    except Exception as exc:                # noqa: BLE001 续期线程不能拖垮主进程
+        log.warning("迅雷凭据续期线程退出：%s", exc)
 
 
 def _resume_loop() -> None:
@@ -4844,6 +4861,9 @@ def main() -> None:
     threading.Thread(target=_defer_loop, daemon=True, name="defer").start()
     # 订阅轮询线程：定时查演员页，有新的自动提交
     threading.Thread(target=_subs_loop, daemon=True, name="subs").start()
+    # 迅雷凭据主动续期：过期前就续，不等「有人用到官方 API」才续
+    # （那时往往已经晚了 —— refresh_token 可能已被浏览器轮换掉）
+    threading.Thread(target=_xunlei_refresh_loop, daemon=True, name="xlp-refresh").start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -450,8 +450,78 @@ _REFRESH_FAILED_AT = 0.0
 REFRESH_COOLDOWN = float(os.getenv("XLPAN_REFRESH_COOLDOWN", "900") or 900)
 
 
+def _setting_float(key: str, fallback: float) -> float:
+    """读一个浮点设置项，读不出来就用默认值。"""
+    try:
+        value = settings_mod.hot(key, fallback, float)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
 def _refresh_failed_recently() -> bool:
     return time.time() - _REFRESH_FAILED_AT < REFRESH_COOLDOWN
+
+
+# 主动续期的检查间隔：多久看一次「access_token 快过期了」。
+#
+# 为什么要主动续（而不是等用到才续）：
+# 续期只在**用到官方 API** 时才触发（_get 里调 auto_refresh）。而直链走的是
+# CD2 的 gRPC、云添加落地判定走的是 CD2 目录指纹 —— 官方 API 可能**一整天
+# 都没人碰**。等到真要用（取直链）时才续，那时 access_token 早就过期了。
+#
+# 实测踩过（2026-10-25）：access_token 10-25 09:18 过期，直到 19:49 才
+# 第一次触发续期 —— 而 refresh_token 那时已经被**浏览器**轮换掉了
+# （服务端轮换后旧值作废），于是第一次续期就 invalid_grant。
+#
+# 12 小时的窗口，每 30 分钟看一次足够：能在过期前 11.5 小时就续上，
+# 留出充足余量，也不会给服务端添麻烦。
+REFRESH_CHECK_INTERVAL = float(os.getenv("XLPAN_REFRESH_INTERVAL", "1800") or 1800)
+# 提前多久续：过期前 1 小时动手，留足「续期请求慢/失败再重试」的余地
+REFRESH_LEAD = float(os.getenv("XLPAN_REFRESH_LEAD", "3600") or 3600)
+
+
+def refresh_loop(interval: float | None = None, lead: float | None = None,
+                 sleep=time.sleep) -> None:
+    """定时主动续期 access_token。
+
+    在过期前 `lead` 秒动手续，不等「有人用到官方 API」才续 ——
+    那时候往往已经晚了（refresh_token 可能已被别的客户端轮换掉）。
+
+    续期失败不致命：记日志、发通知（去重），等下一轮再试。
+    连续失败很久就在日志里点明「凭据可能已被作废，请重新抄一次」。
+    """
+    # 节奏可以调（设置面板 → 存储 → 迅雷凭据提前续期 / 续期检查间隔）
+    every = float(interval if interval is not None
+                  else _setting_float("XLPAN_REFRESH_INTERVAL", REFRESH_CHECK_INTERVAL))
+    margin = float(lead if lead is not None
+                    else _setting_float("XLPAN_REFRESH_LEAD", REFRESH_LEAD))
+    failed_rounds = 0
+    while True:
+        try:
+            if _needs_refresh(margin):
+                log.info("迅雷凭据临近过期，主动续期")
+                try:
+                    out = auto_refresh()
+                    if out.get("skipped"):
+                        log.info("主动续期跳过：%s", out.get("reason") or "")
+                    else:
+                        failed_rounds = 0
+                        log.info("主动续期成功，新 token 有效期 %s 秒",
+                                 out.get("expires_in", 0))
+                except Exception as exc:            # noqa: BLE001 续期失败不致命
+                    failed_rounds += 1
+                    log.warning("主动续期失败（第 %d 次）：%s", failed_rounds, exc)
+                    if failed_rounds >= 3:
+                        # 连着几轮都续不上：多半不是网络抖动，是凭据真的废了
+                        # （被别的客户端轮换掉了）—— 得说清楚，让人去处理
+                        log.error("迅雷凭据连续 %d 次续不上，多半已被作废"
+                                  "（浏览器登录同一账号会轮换 refresh_token）"
+                                  " —— 请到「设置 → 存储 → 迅雷登录」重新抄一次凭据",
+                                  failed_rounds)
+        except Exception as exc:                    # noqa: BLE001 循环本身不能死
+            log.warning("主动续期轮询出错：%s", exc)
+        sleep(every)
 
 
 def auto_refresh(*, client=None) -> dict:

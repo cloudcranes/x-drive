@@ -130,6 +130,18 @@ SETTINGS_SPEC: dict[str, dict] = {
                                     "一般不用手填"},
     # ── 存储：归档往哪儿放。默认还是 rclone；切到 openlist / clouddrive2 之后
     #    网页改完下一次上传就生效（连接实例会按配置指纹重建）。
+    # ── 迅雷凭据的主动续期节奏
+    #    access_token 只活 12 小时。续期以前是「用到官方 API 才续」—— 而直链走
+    #    CD2、云添加落地判定走 CD2 目录指纹，官方 API 可能一整天没人碰。等到
+    #    真要用时早就过期了，而 refresh_token 那时可能已被浏览器轮换掉（旧值作废），
+    #    第一次续期就 invalid_grant。改成**过期前主动续**。
+    "XLPAN_REFRESH_LEAD": {"type": "float", "default": 3600.0, "group": "存储",
+                          "label": "迅雷凭据提前续期 (秒)",
+                          "note": "access_token 过期前多久动手续。默认 3600（1 小时）；"
+                                  "调大更保险，调小怕续期请求慢"},
+    "XLPAN_REFRESH_INTERVAL": {"type": "float", "default": 1800.0, "group": "存储",
+                              "label": "迅雷凭据续期检查间隔 (秒)",
+                              "note": "多久看一次「快过期了」。默认 1800（30 分钟）"},
     "STORAGE_BACKEND": {"type": "str", "default": "rclone", "group": "存储",
                         "label": "存储后端",
                         "choices": ["rclone", "openlist", "clouddrive2"],
