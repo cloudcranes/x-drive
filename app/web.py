@@ -982,13 +982,29 @@ def faststart_archive(code: str) -> dict:
     except storage.StorageError as exc:
         return {"ok": False, "error": str(exc)[:200]}
 
-    probe = getattr(backend, "download_url", None)
-    if not probe:
-        return {"ok": False, "error": "这个后端取不到下载地址，重排做不了"}
+    # 下载地址优先用**迅雷外网直链**，退回 CD2 内网路径。
+    #
+    # 速度差得很远（实测 2026-10-25，5.25GB 的片子）：
+    #   迅雷外网直链：单连接 4.4 MB/s，4 并发 14.5 MB/s → 6 分钟
+    #   CD2 /static ：单连接 1.4~2.4 MB/s          → 40~60 分钟
+    # 外网直链还带 Range 支持，能分块并发拉。
+    link = ""
     try:
-        link = probe(path)
-    except Exception as exc:                    # noqa: BLE001
-        return {"ok": False, "error": f"取下载地址失败：{str(exc)[:120]}"}
+        if path.split("/", 1)[0] == "迅雷云盘" and xunleipan.configured():
+            info = xunleipan.direct_link(path)
+            link = str(info.get("link") or "")
+            if link:
+                log.info("faststart：改用迅雷外网直链下载 %s", code)
+    except Exception as exc:                    # noqa: BLE001 直链取不到就退回
+        log.warning("faststart：取迅雷外网直链失败，退回 CD2：%s", exc)
+    if not link:
+        probe = getattr(backend, "download_url", None)
+        if not probe:
+            return {"ok": False, "error": "这个后端取不到下载地址，重排做不了"}
+        try:
+            link = probe(path)
+        except Exception as exc:                # noqa: BLE001
+            return {"ok": False, "error": f"取下载地址失败：{str(exc)[:120]}"}
     if not link:
         return {"ok": False, "error": "取不到下载地址，重排做不了"}
 
@@ -1021,6 +1037,49 @@ def faststart_archive(code: str) -> dict:
             "message": "已开始修复，进度看任务队列"}
 
 
+def _parallel_download(job_id: str, link: str, local: Path) -> int:
+    """分块并发下载整片，带进度与心跳。
+
+    单连接拉 5GB 太慢（实测 CD2 路径 1.4~2.4 MB/s）。服务端支持 Range，
+    拆几段同时拉能快 6 倍（迅雷外网直链 4.4 → 14.5 MB/s）。
+
+    心跳：每 10 秒至少刷一次，带已下载量与速度 —— 慢的时候界面不该看着像死了。
+    """
+    from . import fastfetch
+
+    state = {"got": 0, "total": 0, "last": 0.0, "started": time.monotonic()}
+
+    def on_progress(got: int, total: int) -> None:
+        state["got"] = got
+        state["total"] = total
+        now = time.monotonic()
+        if now - state["last"] < 10 and got != total:
+            return
+        state["last"] = now
+        speed = got / max(now - state["started"], 0.001)
+        if total:
+            job_update(job_id, percent=round(got * 100 / total, 1),
+                       error=f"正在下载原片… {core.human_size(got)} / "
+                             f"{core.human_size(total)}"
+                             f"（{core.human_size(int(speed))}/s）")
+        else:
+            job_update(job_id, error=f"正在下载原片… {core.human_size(got)}"
+                                    f"（{core.human_size(int(speed))}/s）")
+
+    concurrency = int(float(get_setting("FASTFETCH_CONCURRENCY")
+                            or fastfetch.DEFAULT_CONCURRENCY))
+    try:
+        got = fastfetch.fetch(
+            link, local, concurrency=concurrency,
+            timeout=VIDEO_TIMEOUT, progress=on_progress)
+    except fastfetch.FetchError as exc:
+        log.warning("faststart：分块下载失败：%s", exc)
+        raise
+    # 最后再刷一次（100%）
+    on_progress(state["got"], state["total"] or state["got"])
+    return got
+
+
 def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> dict:
     """重排的真正干活部分：下载 → 重排 → 传回原位。
 
@@ -1043,38 +1102,10 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
     work.mkdir(parents=True, exist_ok=True)
     local = work / (Path(path).name + ".part")
     try:
-        # ① 下载
+        # ① 下载（分块并发）
         log.info("faststart：下载 %s", path)
         job_update(job_id, stage="downloading", error="正在下载原片…")
-        with urllib.request.urlopen(link, timeout=VIDEO_TIMEOUT * 4) as resp:
-            total = int(resp.headers.get("Content-Length") or 0)
-            got = 0
-            last_beat = 0.0
-            started = time.monotonic()
-            with open(local, "wb") as fh:
-                while True:
-                    blob = resp.read(VIDEO_CHUNK)
-                    if not blob:
-                        break
-                    fh.write(blob)
-                    got += len(blob)
-                    # 进度与心跳：慢的时候一个 16MB 块要等好几分钟，
-                    # 只在块结束时更新的话界面看起来像卡死了。
-                    # 每 10 秒至少刷一次，并带上已下载量与速度。
-                    now = time.monotonic()
-                    if now - last_beat < 10 and got != total:
-                        continue
-                    last_beat = now
-                    speed = got / max(now - started, 0.001)
-                    if total:
-                        job_update(job_id, percent=round(got * 100 / total, 1),
-                                   error=f"正在下载原片… {core.human_size(got)} / "
-                                         f"{core.human_size(total)}"
-                                         f"（{core.human_size(int(speed))}/s）")
-                    else:
-                        job_update(job_id, error=f"正在下载原片… {core.human_size(got)}"
-                                                    f"（{core.human_size(int(speed))}/s）")
-        size = local.stat().st_size
+        size = _parallel_download(job_id, link, local)
         if not size:
             return {"ok": False, "error": "下载到的文件是空的"}
         if not faststart.needs_faststart(local):

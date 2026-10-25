@@ -6,6 +6,9 @@ xl_index.html
 
 # 运行时与开发产物：不该进仓库
 .venv/
+# faststart 的临时目录（STATE_DIR/work，与仓库同目录时会误入）
+work/
+faststart/
 .data/
 .dsh-progress/
 __pycache__/

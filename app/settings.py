@@ -142,6 +142,15 @@ SETTINGS_SPEC: dict[str, dict] = {
     "XLPAN_REFRESH_INTERVAL": {"type": "float", "default": 1800.0, "group": "存储",
                               "label": "迅雷凭据续期检查间隔 (秒)",
                               "note": "多久看一次「快过期了」。默认 1800（30 分钟）"},
+    # ── 分块并发下载
+    #    「修复可播性」要下载整片（5GB）。单连接拉太慢（实测 CD2 路径
+    #    1.4~2.4 MB/s → 40~60 分钟；迅雷外网直链 4.4 MB/s）。服务端支持
+    #    Range，拆几段同时拉能快 6 倍。8 并发实测开始吃 503（CDN 限流），
+    #    默认取 4。
+    "FASTFETCH_CONCURRENCY": {"type": "int", "default": 4, "group": "存储",
+                             "label": "分块下载并发数",
+                             "note": "下载整片时同时拉几段。默认 4；调大更快但可能"
+                                     "触发迅雷 CDN 限流（503）"},
     "STORAGE_BACKEND": {"type": "str", "default": "rclone", "group": "存储",
                         "label": "存储后端",
                         "choices": ["rclone", "openlist", "clouddrive2"],
