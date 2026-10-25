@@ -64,12 +64,26 @@ def _normalize(name: str) -> str:
 class CloudDrive2(Backend):
     kind = "clouddrive2"
 
+    # CD2 的 gRPC 服务端把单条消息限制在 4MB，而上传是按 chunk 切的。
+    # chunk 恰好等于 4MB 时，protobuf 消息头（实测 14 字节）会把消息顶出上限，
+    # 服务端直接回 "SERVER: Received message larger than max (4194318 vs.
+    # 4194304)" —— **每一次上传都会失败**，而且是本地配置看起来完全正常的那种。
+    #
+    # 注意：抬客户端的 max_send_message_length 没用 —— 限制在服务端。
+    # 所以只能把 chunk 压到上限之下。留 1MB 余量，3MB 实测可用。
+    MAX_CHUNK_MB = 3.0
+
     def __init__(self, url: str, user: str = "", password: str = "", *,
                  tls: bool = False, ca_file: str = "", chunk_mb: float = 4,
                  call_timeout: float = 60.0, task_timeout: float = 7200.0,
                  link_mode: str = "none", link_template: str = "",
                  channel: Cd2Channel | None = None):
-        self.chunk = max(1, int(float(chunk_mb or 4) * 1024 * 1024))
+        wanted = float(chunk_mb or self.MAX_CHUNK_MB)
+        if wanted > self.MAX_CHUNK_MB:
+            log.warning("CD2_CHUNK_MB=%.1f 超过服务端单条消息上限，已压到 %.1fMB",
+                        wanted, self.MAX_CHUNK_MB)
+            wanted = self.MAX_CHUNK_MB
+        self.chunk = max(1, int(wanted * 1024 * 1024))
         self.link_mode = (link_mode or "none").strip().lower()
         self.link_template = (link_template or "").strip()
         resolved, self.note = netalias.resolve(url)

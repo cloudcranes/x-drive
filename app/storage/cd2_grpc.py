@@ -22,6 +22,14 @@ from .proto import CloudDrive_pb2 as pb
 SERVICE = "clouddrive.CloudDriveFileSrv"
 REFRESH_BEFORE = 300.0          # token 剩余不足 5 分钟就主动换
 
+# gRPC 单条消息的客户端上限。
+#
+# 注意：CD2 **服务端**自己把单条消息限制在 4MB，抬客户端上限解决不了
+# "Received message larger than max" —— 真正要管的是 chunk 大小
+# （见 clouddrive2.CloudDrive2.MAX_CHUNK_MB）。这里抬高只是为了让客户端
+# 不会先于服务端拒绝大响应（比如目录列表特别长时），不是上传能成的关键。
+MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+
 UNARY, STREAM_OUT, STREAM_IN = "unary", "stream_out", "stream_in"
 
 
@@ -56,12 +64,15 @@ class Cd2Channel:
         self._token = ""
         self._expire_at = 0.0
         grpc = _grpc()
+        options = [("grpc.max_send_message_length", MAX_MESSAGE_BYTES),
+                   ("grpc.max_receive_message_length", MAX_MESSAGE_BYTES)]
+        self._options = tuple(options)
         if self.tls:
             creds = (grpc.ssl_channel_credentials(open(self.ca_file, "rb").read())
                      if self.ca_file else grpc.ssl_channel_credentials())
-            self._channel = grpc.secure_channel(self.target, creds)
+            self._channel = grpc.secure_channel(self.target, creds, options=options)
         else:
-            self._channel = grpc.insecure_channel(self.target)
+            self._channel = grpc.insecure_channel(self.target, options=options)
 
     def close(self) -> None:
         if getattr(self, "_channel", None) is not None:
