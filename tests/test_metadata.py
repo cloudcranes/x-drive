@@ -402,3 +402,22 @@ def test_scrape_preview_matches_what_sync_writes(tmp_path, monkeypatch):
         assert rec["meta"].get(key) == change["to"], \
             f"{key}：预览说变成 {change['to']!r}，实际写成了 {rec['meta'].get(key)!r}"
     assert rec["meta"]["title"] == "SSIS-9 新标题", "写入的标题要带番号前缀"
+
+
+def test_merge_ignores_empty_to_empty_changes():
+    """空值不互相覆盖 —— 不产出「（空）→（空）」这种噪音变化。
+
+    实测：手动刮削的确认框列出一堆「原题：（空）→（空）」「简介：（空）→（空）」，
+    用户看了什么也没多知道。旧值空、新值也空时，保持原样。
+    """
+    from app import metadata
+    out = metadata.merge({"original_title": None, "summary": ""},
+                         {"original_title": "", "summary": None})
+    assert out["original_title"] is None
+    assert out["summary"] == ""
+    # 旧值有内容时，空的新值也不许覆盖
+    out2 = metadata.merge({"summary": "有简介"}, {"summary": ""})
+    assert out2["summary"] == "有简介"
+    # 有内容的新值照常写入
+    out3 = metadata.merge({"summary": ""}, {"summary": "新简介"})
+    assert out3["summary"] == "新简介"

@@ -118,7 +118,9 @@ def merge(old: dict, fresh: dict, locks: set[str] | None = None) -> dict:
     for key, value in (fresh or {}).items():
         if key in locks and key in out:
             continue
-        if _blank(value) and not _blank(out.get(key)):
+        if _blank(value):
+            # 新值是空的就一律不写：旧值有内容时保旧值，旧值也空时保持原样 ——
+            # 否则会写出「（空）→（空）」这种无意义的变化，用户看了白看
             continue
         out[key] = value
     return out
