@@ -304,20 +304,24 @@ def _save(info: dict, code: str, path: str | None = None) -> None:
 
 
 async def lookup(code: str, path: str | None = None, client: httpx.AsyncClient | None = None,
-                 timeout: float = TIMEOUT) -> dict | None:
+                 timeout: float = TIMEOUT, refresh: bool = False) -> dict | None:
     """按番号取元数据：先看缓存，没有再联网抓，抓到就写缓存。
 
     任何失败都返回 None，不抛异常 —— 调用方不该因为查不到信息而中断下载。
 
     查的名字按 _lookup_keys 依次试：归档目录名可能是磁力原名（`mimk-186ch`），
     直接拿去查会 404 —— 那样整条归档的元数据就没了。
+
+    refresh=True 时**跳过缓存**直接联网重抓 —— 手动刮削要用：
+    缓存里的旧记录可能缺字段（缓存是当年抓的），不重抓就永远补不上。
     """
     keys = _lookup_keys(code)
     if not keys:
         return None
-    hit = cached(code, path)
-    if hit:
-        return hit
+    if not refresh:
+        hit = cached(code, path)
+        if hit:
+            return hit
 
     own = client is None
     cli = client or httpx.AsyncClient(follow_redirects=True, timeout=timeout,

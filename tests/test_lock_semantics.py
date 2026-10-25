@@ -23,6 +23,12 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "JOBS", {})
     monkeypatch.setattr(web, "LEASES", {})
     monkeypatch.setattr(web, "_lease_live", {})
+    # 手动刮削走两个源（javbus 字段全、metatube 覆盖 provider 多）——
+    # 这里把 javbus 桩掉：不桩的话测试会真的联网，拿到真数据，断言就不准了。
+    async def no_javbus(code, path=None, client=None, timeout=0, refresh=False):
+        return None
+
+    monkeypatch.setattr(web.meta, "lookup", no_javbus)
     core.save_state(web.STATE, {})
     return core, web
 

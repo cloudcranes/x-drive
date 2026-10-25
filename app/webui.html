@@ -1379,26 +1379,37 @@ function showArchiveDetail(t) {
   panel.append(head);
 
   const top = el("div", "dtop");
-  if (m.cover) {
+  const coverUrl = m.cover || m.cover_url || "";
+  if (coverUrl) {
     const img = el("img", "dcover");
     img.alt = t.code || "";
     img.addEventListener("error", () => img.remove());
-    img.src = BASE + "/proxy?u=" + encodeURIComponent(m.cover);
+    img.src = BASE + "/proxy?u=" + encodeURIComponent(coverUrl);
     top.append(img);
   }
   const metaBox = el("div", "dmeta");
   if (m.title) metaBox.append(el("div", "dtitle", m.title));
+  // 字段名统一后优先读新键，老键兜底（归一之前的旧记录没写新键）
+  const pick = (...keys) => {
+    for (const k of keys) {
+      const v = m[k];
+      if (v !== null && v !== undefined && v !== "" && !(Array.isArray(v) && !v.length)) return v;
+    }
+    return "";
+  };
   const rows = [
     ["番号", t.code],
-    ["系列", t.series || m.series],
-    ["发行日期", m.date],
-    ["时长", m.duration],
-    ["片商", m.maker],
-    ["发行商", m.publisher],
-    ["导演", m.director],
-    ["演员", (m.actors || []).join(" / ")],
-    ["类别", (m.categories || []).join("、")],
-    ["评分", m.rating],
+    ["系列", t.series || pick("series")],
+    ["发行日期", pick("release_date", "date")],
+    ["时长", pick("runtime", "duration")],
+    ["片商", pick("maker")],
+    ["发行商", pick("publisher", "label")],
+    ["导演", pick("director")],
+    ["演员", (pick("actors") || []).join(" / ")],
+    ["类别", (pick("genres", "categories") || []).join("、")],
+    ["评分", pick("score", "rating")],
+    ["简介", pick("summary", "review")],
+    ["封面尺寸", pick("cover_size")],
     ["文件构成", t.kind],
     ["体积", t.size_text],
     ["文件数", t.count ? String(t.count) : ""],
@@ -1471,6 +1482,26 @@ const SCRAPE_FIELD_TEXT = {
   runtime: "时长", director: "导演", maker: "片商", label: "发行商",
   series: "系列", actors: "演员", genres: "类别", score: "评分",
 };
+// javbus 那一路的字段（比 metatube 多得多）
+const SCRAPE_EXTRA_TEXT = {
+  cover: "封面", cover_url: "封面", cover_size: "封面尺寸", previews: "预览图",
+  publisher: "发行商", date: "发行日期", duration: "时长", rating: "评分",
+  review: "简介", categories: "类别", actor_ids: "演员ID", series_id: "系列ID",
+  gid: "影片ID", url: "原页", source_url: "源地址", want: "想看数", liked: "收藏数",
+  uc: "?", provider: "来源", scraped_from: "抓取来源", fetched_at: "抓取时间",
+  code: "番号", source: "数据源",
+};
+// 差异里的值：空值说人话，长文本截断，数组用 / 连接
+function fmtScrapeVal(v) {
+  if (v === null || v === undefined || v === "") return "（空）";
+  if (Array.isArray(v)) return v.length ? v.join(" / ") : "（空）";
+  if (typeof v === "object") {
+    const s = JSON.stringify(v);
+    return s.length > 60 ? s.slice(0, 60) + "…" : s;
+  }
+  const s = String(v);
+  return s.length > 80 ? s.slice(0, 80) + "…" : s;
+}
 
 async function manualScrape(t, closeLayer, btn) {
   const code = t.code || t.id || "";
@@ -1498,12 +1529,11 @@ async function manualScrape(t, closeLayer, btn) {
   // 把差异摆给用户看：哪些字段会变、变成什么
   const lines = keys.map(k => {
     const c = changes[k] || {};
-    const name = SCRAPE_FIELD_TEXT[k] || k;
-    const from = (c.from === null || c.from === undefined || c.from === "") ? "（空）" : String(c.from);
-    const to = (c.to === null || c.to === undefined || c.to === "") ? "（空）" : String(c.to);
-    return `${name}：${from} → ${to}`;
+    const name = SCRAPE_FIELD_TEXT[k] || SCRAPE_EXTRA_TEXT[k] || k;
+    return `${name}：${fmtScrapeVal(c.from)} → ${fmtScrapeVal(c.to)}`;
   });
-  if (!confirm(`${code}\n\n写入这些改动？\n\n` + lines.join("\n")
+  const provider = data.provider ? `\n（来源：${data.provider}）` : "";
+  if (!confirm(`${code}\n\n写入这些改动？${provider}\n\n` + lines.join("\n")
     + `\n\n（已锁定的字段不会被覆盖；不动云盘文件）`)) return;
 
   if (btn) btn.disabled = true;

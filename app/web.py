@@ -3420,31 +3420,88 @@ def scrape_preview(code: str) -> dict:
     record = _find_archive_record(state, code)
     old = metadata.normalize_meta(record.get("meta") or {})
     locks = set(record.get("locked") or [])
-    fresh = {}
-    if metatube.configured():
-        try:
-            fresh = asyncio.run(metatube.scrape(code))
-        except Exception as exc:
-            return {"ok": False, "code": code, "error": str(exc)[:200]}
-    if fresh and not metatube.matches(code, fresh):
-        return {"ok": False, "code": code,
-                "error": f"服务返回的是 {fresh.get('code')}，不是 {code}"}
-    # 与 scrape_sync 完全一致的处理：标题补番号前缀
-    # （预览说一套、写入做另一套，就是骗用户）
-    if fresh.get("title"):
-        fresh = {**fresh, "title": metadata.with_code_prefix(fresh["title"], code)}
+    fresh, why = _scrape_fresh(code)
+    if why:
+        return {"ok": False, "code": code, "error": why}
     changes = {}
     # 预览必须走**和真正写入完全一样**的判定，否则会出现「预览说不会覆盖、实际却覆盖了」。
     # 以前这里自己写了一套跳过逻辑（无条件跳过锁字段），而 scrape_sync 走
     # metadata.merge —— 两处判据一旦分叉，用户看到的就是假话。
     merged = metadata.merge(old, fresh, locks=locks) if fresh else dict(old)
-    for key in metadata.LOCKABLE:
+    # 报**所有**会变的字段，不只是 LOCKABLE 里的 ——
+    # 手动刮削的价值就在补全字段（演员/封面/预览图/发行商…），
+    # 只报 12 个 LOCKABLE 字段的话，用户根本看不到补到了什么。
+    for key in sorted(set(old) | set(merged)):
         before, after = old.get(key), merged.get(key)
         if before == after:
             continue
         changes[key] = {"from": before, "to": after}
     return {"ok": True, "code": code, "locked": sorted(locks), "changes": changes,
-            "found": bool(fresh), "provider": fresh.get("provider") or ""}
+            "found": bool(fresh), "provider": fresh.get("scraped_from") or ""}
+
+
+def _scrape_fresh(code: str) -> tuple[dict, str]:
+    """去源站重抓一次元数据，返回 (两个源合并的结果, 错误说明)。
+
+    两个源给的东西不一样，缺一不可：
+    · **javbus**（meta.lookup）：22 个字段 —— 导演、片商、发行商、系列、精确时长、
+      演员、类别、封面、8 张预览图。这是**主力**。
+    · **metatube**：字段少但覆盖的 provider 多（35 个，含 FC2、HEYZO 等 javbus
+      没有的），给的是 title / release_date。
+
+    只用 metatube 的话，手动刮削基本补不上什么（实测同一番号：metatube 给 2 个
+    字段，javbus 给 22 个）。所以两个都抓，javbus 优先。
+
+    合并规则：javbus 的值优先（更全），metatube 补 javbus 没有的。
+
+    **源站返回别的番号时整条放弃** —— 宁可什么都不写，也不能把别人的元数据
+    写进这条归档（这条守则原本只在 metatube 那路上，现在两个源都要守）。
+    """
+    out: dict = {}
+    providers: list[str] = []
+    errors: list[str] = []
+
+    # ① javbus：主力源，字段最全
+    try:
+        info = asyncio.run(meta.lookup(code, refresh=True))
+    except Exception as exc:
+        log.warning("javbus 重抓 %s 失败：%s", code, exc)
+        info = None
+        errors.append(f"javbus：{exc}")
+    if info:
+        got = (info.get("code") or "").strip().upper()
+        if got and got != code.upper():
+            return {}, f"源站返回的是 {info.get('code')}，不是 {code}"
+        out.update(info)
+        providers.append("javbus")
+
+    # ② metatube：补 javbus 没有的（它支持更多 provider）
+    if metatube.configured():
+        try:
+            fresh = asyncio.run(metatube.scrape(code))
+        except Exception as exc:
+            log.warning("metatube 重抓 %s 失败：%s", code, exc)
+            fresh = None
+            errors.append(f"metatube：{exc}")
+        if fresh:
+            if not metatube.matches(code, fresh):
+                return {}, f"服务返回的是 {fresh.get('code')}，不是 {code}"
+            for key, value in fresh.items():
+                if key not in out or not out.get(key):
+                    out[key] = value
+            if "metatube" not in providers:
+                providers.append("metatube")
+
+    if not out:
+        # 两个源都没给出东西：报出原因（两个都失败时才是真失败）
+        if errors:
+            return {}, "；".join(errors)[:200]
+        return {}, ""
+    # 标题统一带番号前缀（metatube 的标题不带前缀）
+    if out.get("title"):
+        out["title"] = metadata.with_code_prefix(out["title"], code)
+    out["scraped_from"] = "+".join(providers)
+    return out, ""
 
 
 def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = None,
@@ -3478,16 +3535,10 @@ def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = 
     locks |= set(lock)
     locks -= set(unlock)
     merged = dict(old)
-    if resync and metatube.configured():
-        try:
-            fresh = asyncio.run(metatube.scrape(code))
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)[:200]}
-        if fresh and not metatube.matches(code, fresh):
-            return {"ok": False, "error": f"服务返回的是 {fresh.get('code')}，不是 {code}"}
-        # 标题统一带番号前缀：metatube 的标题不带前缀，直接用会让番号从标题里消失
-        if fresh.get("title"):
-            fresh = {**fresh, "title": metadata.with_code_prefix(fresh["title"], code)}
+    if resync:
+        fresh, why = _scrape_fresh(code)
+        if why:
+            return {"ok": False, "error": why}
         merged = metadata.merge(old, fresh, locks=locks)
     if fields:
         for key, value in fields.items():

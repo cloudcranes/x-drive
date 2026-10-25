@@ -469,3 +469,30 @@ def test_manual_scrape_reports_when_source_has_nothing():
       await manualScrape({code:"ABC-1",id:"ABC-1"},()=>{},null);
       assert.deepEqual(calls,["/api/scrape/preview"],"查不到就不该发写入请求");
     ''')
+
+
+def test_manual_scrape_shows_all_changed_fields_with_readable_names():
+    """确认框要列出**所有**会变的字段（不止 LOCKABLE 那几个），且有中文名。"""
+    run_js(r'''
+      const calls=[];
+      let confirmed=null;
+      stubs.confirm=(msg)=>{confirmed=msg;return true;};
+      stubs.metaApi=async(path,body)=>{
+        calls.push(path);
+        if(path==="/api/scrape/preview")return {ok:true,found:true,provider:"javbus",changes:{
+          title:{from:"旧",to:"新"},
+          director:{from:null,to:"导演甲"},
+          actors:{from:[],to:["演员乙","演员丙"]},
+          previews:{from:[],to:["http://x/1.jpg"]},
+          cover:{from:null,to:"http://x/c.jpg"}}};
+        if(path==="/api/scrape/sync")return {ok:true,changed:{title:"新"}};
+        return {};};
+      await manualScrape({code:"ABC-1",id:"ABC-1"},()=>{},null);
+      assert.ok(confirmed,"应当弹确认框");
+      for(const name of ["标题","导演","演员","预览图","封面"])
+        assert.ok(confirmed.includes(name),"确认框里应有「"+name+"」");
+      // 数组要连成人看得懂的
+      assert.ok(confirmed.includes("演员乙 / 演员丙"),"数组值要能读");
+      // 标出数据来源
+      assert.ok(confirmed.includes("javbus"),"确认框要标出来源");
+    ''')

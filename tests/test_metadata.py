@@ -114,7 +114,11 @@ def test_scrape_rejects_mismatched_number(tmp_path, monkeypatch):
 
 
 def test_scrape_failure_keeps_record_and_marks_pending(tmp_path, monkeypatch):
-    """刮不到就登记待补刮：归档记录照旧，不被清空。"""
+    """两个源都挂了就报错：归档记录照旧，不被清空。
+
+    手动刮削走两个源（javbus 字段全、metatube 覆盖 provider 多）——
+    **一个源失败不算失败**（另一个还能给出东西），两个都失败才是真失败。
+    """
     core, web = _scrape_env(tmp_path, monkeypatch)
     core.save_state(web.STATE, {"SSIS-999": {"code": "SSIS-999", "files": ["SSIS999.mp4"],
                                            "scrape_pending": True}})
@@ -124,12 +128,40 @@ def test_scrape_failure_keeps_record_and_marks_pending(tmp_path, monkeypatch):
         raise RuntimeError("服务不可达")
 
     monkeypatch.setattr(web.metatube, "scrape", boom)
+
+    async def boom_javbus(code, path=None, client=None, timeout=0, refresh=False):
+        raise RuntimeError("javbus 不可达")
+
+    monkeypatch.setattr(web.meta, "lookup", boom_javbus)
     out = web.scrape_sync("SSIS-999", resync=True, confirm=True)
 
     assert out["ok"] is False
     rec = core.load_state(web.STATE)["SSIS-999"]
     assert rec["files"] == ["SSIS999.mp4"], "视频条目不能被丢掉"
     assert rec["scrape_pending"] is True, "附件不全要能看见"
+
+
+def test_one_source_failing_still_uses_the_other(tmp_path, monkeypatch):
+    """一个源挂掉，另一个照样能用 —— 不因为一个源不可用就整条放弃。"""
+    core, web = _scrape_env(tmp_path, monkeypatch)
+    core.save_state(web.STATE, {"SSIS-7": {"code": "SSIS-7", "meta": {}}})
+    monkeypatch.setattr(web.metatube, "configured", lambda: True)
+
+    async def boom(code, provider="", client=None):
+        raise RuntimeError("服务不可达")
+
+    monkeypatch.setattr(web.metatube, "scrape", boom)
+
+    async def fake_javbus(code, path=None, client=None, timeout=0, refresh=False):
+        return {"code": "SSIS-7", "title": "javbus 给的标题", "director": "导演甲"}
+
+    monkeypatch.setattr(web.meta, "lookup", fake_javbus)
+    out = web.scrape_sync("SSIS-7", resync=True, confirm=False)
+
+    assert out["ok"] is True, out
+    rec = core.load_state(web.STATE)["SSIS-7"]
+    assert rec["meta"]["director"] == "导演甲", "另一个源的数据要留下"
+    assert rec["meta"]["title"] == "SSIS-7 javbus 给的标题"
 
 
 def test_manual_fields_get_locked_and_survive_resync(tmp_path, monkeypatch):
@@ -421,3 +453,30 @@ def test_merge_ignores_empty_to_empty_changes():
     # 有内容的新值照常写入
     out3 = metadata.merge({"summary": ""}, {"summary": "新简介"})
     assert out3["summary"] == "新简介"
+
+
+def test_scrape_preview_reports_fields_beyond_lockable(tmp_path, monkeypatch):
+    """预览要报**所有**会变的字段，不只是 LOCKABLE 那 12 个。
+
+    手动刮削的价值就在补全字段（演员/封面/预览图/发行商/时长…），
+    只报 LOCKABLE 字段的话，用户根本看不到补到了什么 —— 实测同一番号
+    javbus 给 22 个字段，metatube 只给 2 个（都在 LOCKABLE 里），
+    差别全在 LOCKABLE 之外。
+    """
+    core, web = _scrape_env(tmp_path, monkeypatch)
+    core.save_state(web.STATE, {"SSIS-8": {"code": "SSIS-8", "meta": {}}})
+    monkeypatch.setattr(web.metatube, "configured", lambda: False)
+
+    async def fake_javbus(code, path=None, client=None, timeout=0, refresh=False):
+        return {"code": "SSIS-8", "title": "SSIS-8 标题", "director": "导演甲",
+                "publisher": "发行商乙", "actors": ["演员丙"], "cover": "http://x/c.jpg",
+                "previews": ["http://x/1.jpg", "http://x/2.jpg"], "duration": "120 分钟"}
+
+    monkeypatch.setattr(web.meta, "lookup", fake_javbus)
+    out = web.scrape_preview("SSIS-8")
+
+    assert out["ok"] is True
+    for key in ("director", "publisher", "actors", "cover", "previews", "duration"):
+        assert key in out["changes"], f"预览漏报了 {key}"
+    assert out["changes"]["actors"]["to"] == ["演员丙"]
+    assert out["changes"]["previews"]["to"] == ["http://x/1.jpg", "http://x/2.jpg"]
