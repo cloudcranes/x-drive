@@ -192,7 +192,7 @@ def subs_env(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "JOBS", {})
     monkeypatch.setattr(web, "WAITING", {})
     monkeypatch.setattr(web, "_queued_at", {})
-    monkeypatch.setattr(web, "diskspace_room_ok", lambda: True)
+    monkeypatch.setattr(web, "cloud_ready", lambda: (True, "ok"))
     calls = {"discover": [], "best": []}
 
     async def fake_discover(sub_id, cursor, client=None, kind="actor", pages=2):
@@ -306,9 +306,8 @@ def test_run_subscriptions_dedupes_archived(subs_env, monkeypatch):
     assert started == [], "已归档的番号必须跳过"
 
 
-def test_run_subscriptions_skips_when_disk_short(tmp_path, monkeypatch):
-    """空间不够时整轮跳过，不要硬下。"""
-    from app import diskspace as ds
+def test_run_subscriptions_skips_when_cloud_unavailable(tmp_path, monkeypatch):
+    """云添加不可用时整轮跳过，不要硬投。"""
     from app import web
 
     monkeypatch.setattr(web, "SUBS", str(tmp_path / "subs.json"))
@@ -316,15 +315,14 @@ def test_run_subscriptions_skips_when_disk_short(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
     monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
     web.add_sub("YnZ1K")
-    monkeypatch.setattr(web, "DISK_RESERVE_GB", 100)
-    monkeypatch.setattr(ds, "free_bytes", lambda _: 1 * 1024**3)
+    monkeypatch.setattr(web, "cloud_ready", lambda: (False, "未启用「云添加」"))
     called = []
     async def fake_check(*a, **kw):
         called.append(1)
         return {"new": [], "cursor": "", "error": ""}
     monkeypatch.setattr(subscribe, "check", fake_check)
     out = web.run_subscriptions()
-    assert not out["ok"] and "磁盘空间不足" in out["error"]
+    assert not out["ok"] and "云添加不可用" in out["error"]
     assert called == []
 
 
@@ -664,7 +662,7 @@ def _iso_env(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "WAITING", {})
     monkeypatch.setattr(web, "_queued_at", {})
     monkeypatch.setattr(web, "run_web_job", lambda *a: None)
-    monkeypatch.setattr(web, "diskspace_room_ok", lambda: True)
+    monkeypatch.setattr(web, "cloud_ready", lambda: (True, "ok"))
     monkeypatch.setattr(web, "series_median", lambda code, state: 0)
     core.save_state(web.STATE, {})
     return bl, web

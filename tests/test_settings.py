@@ -23,23 +23,23 @@ def _s(tmp_path):
 # ─────────────────────────────────────────── 读取优先级
 
 def test_default_when_nothing_set(tmp_path, monkeypatch):
-    monkeypatch.delenv("DAILY_UPLOAD_GB", raising=False)
+    monkeypatch.delenv("CLOUD_LAND_TIMEOUT", raising=False)
     s = _s(tmp_path)
-    assert s.get("DAILY_UPLOAD_GB") == 0          # 默认 0
+    assert s.get("CLOUD_LAND_TIMEOUT") == 7200       # 默认 2 小时
     assert s.get("SCRAPE") is True                 # 默认 True
 
 
 def test_env_overrides_default(tmp_path, monkeypatch):
-    monkeypatch.setenv("DAILY_UPLOAD_GB", "3")
+    monkeypatch.setenv("CLOUD_LAND_TIMEOUT", "3")
     s = _s(tmp_path)
-    assert s.get("DAILY_UPLOAD_GB") == 3
+    assert s.get("CLOUD_LAND_TIMEOUT") == 3
 
 
 def test_state_overrides_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("DAILY_UPLOAD_GB", "3")
-    _store(tmp_path).state_put({"settings": {"DAILY_UPLOAD_GB": 9}})
+    monkeypatch.setenv("CLOUD_LAND_TIMEOUT", "3")
+    _store(tmp_path).state_put({"settings": {"CLOUD_LAND_TIMEOUT": 9}})
     s = _s(tmp_path)
-    assert s.get("DAILY_UPLOAD_GB") == 9           # state 表 > env
+    assert s.get("CLOUD_LAND_TIMEOUT") == 9           # state 表 > env
 
 
 # ─────────────────────────────────────────── 类型转换
@@ -54,28 +54,28 @@ def test_bool_coercion(tmp_path, monkeypatch):
 
 
 def test_int_float_coercion(tmp_path, monkeypatch):
-    monkeypatch.setenv("RETRIES", "7")
-    monkeypatch.setenv("RETRY_BASE_DELAY", "2.5")
+    monkeypatch.setenv("CLOUD_POLL", "2.5")
+    monkeypatch.setenv("CLOUD_LAND_STABLE", "7")
     s = _s(tmp_path)
-    assert s.get("RETRIES") == 7 and isinstance(s.get("RETRIES"), int)
-    assert s.get("RETRY_BASE_DELAY") == 2.5 and isinstance(s.get("RETRY_BASE_DELAY"), float)
+    assert s.get("CLOUD_POLL") == 2.5 and isinstance(s.get("CLOUD_POLL"), float)
+    assert s.get("CLOUD_LAND_STABLE") == 7 and isinstance(s.get("CLOUD_LAND_STABLE"), int)
 
 
 # ─────────────────────────────────────────── 写
 
 def test_set_writes_and_invalidates_cache(tmp_path):
     s = _s(tmp_path)
-    assert s.get("RETRIES") == 2                   # 默认，进缓存
-    assert s.set("RETRIES", 5) is True
-    assert s.get("RETRIES") == 5                   # 缓存失效，读到新值
+    assert s.get("CLOUD_POLL") == 10.0                # 默认 10 秒，进缓存
+    assert s.set("CLOUD_POLL", 5) is True
+    assert s.get("CLOUD_POLL") == 5                   # 缓存失效，读到新值
     # 落库：另一个 Settings 实例（模拟 bot 进程）也读到
-    assert _s(tmp_path).get("RETRIES") == 5
+    assert _s(tmp_path).get("CLOUD_POLL") == 5
 
 
 def test_set_rejects_bad_type(tmp_path):
     s = _s(tmp_path)
-    assert s.set("RETRIES", "not-a-number") is False   # 转换失败
-    assert s.get("RETRIES") == 2
+    assert s.set("CLOUD_POLL", "not-a-number") is False   # 转换失败
+    assert s.get("CLOUD_POLL") == 10.0
 
 
 def test_set_rejects_unknown_key(tmp_path):
@@ -85,22 +85,22 @@ def test_set_rejects_unknown_key(tmp_path):
 
 def test_set_many_reports_failures(tmp_path):
     s = _s(tmp_path)
-    out = s.set_many({"RETRIES": 5, "SCRAPE": False, "BAD_KEY": 1, "DAILY_UPLOAD_GB": "x"})
+    out = s.set_many({"CLOUD_POLL": 5, "SCRAPE": False, "BAD_KEY": 1, "CLOUD_LAND_TIMEOUT": "x"})
     assert out["ok"] is False                       # 有失败项
-    assert set(out["saved"]) == {"RETRIES", "SCRAPE"}
-    assert set(out["failed"]) == {"BAD_KEY", "DAILY_UPLOAD_GB"}
+    assert set(out["saved"]) == {"CLOUD_POLL", "SCRAPE"}
+    assert set(out["failed"]) == {"BAD_KEY", "CLOUD_LAND_TIMEOUT"}
 
 
 # ─────────────────────────────────────────── 快照与来源标注
 
 def test_snapshot_marks_source(tmp_path, monkeypatch):
-    monkeypatch.delenv("DAILY_UPLOAD_GB", raising=False)
-    monkeypatch.setenv("RETRIES", "7")
+    monkeypatch.delenv("CLOUD_LAND_TIMEOUT", raising=False)
+    monkeypatch.setenv("CLOUD_POLL", "7")
     _store(tmp_path).state_put({"settings": {"SCRAPE": False}})
     s = _s(tmp_path)
     snap = s.snapshot()
-    assert snap["DAILY_UPLOAD_GB"]["source"] == "default"
-    assert snap["RETRIES"]["source"] == "env"
+    assert snap["CLOUD_LAND_TIMEOUT"]["source"] == "default"
+    assert snap["CLOUD_POLL"]["source"] == "env"
     assert snap["SCRAPE"]["source"] == "settings"
     assert snap["SCRAPE"]["value"] is False
 
@@ -153,23 +153,28 @@ def test_cache_serves_within_ttl(tmp_path, monkeypatch):
     这是刻意的：bot 进程靠 TTL 到期读到新值，所以这里验证「不主动失效」，
     而不是验证「立刻生效」。web 进程 set 时会主动失效（test_set 已覆盖）。
     """
-    monkeypatch.setenv("RETRIES", "2")
+    monkeypatch.setenv("CLOUD_POLL", "2")
     s = _s(tmp_path)
-    assert s.get("RETRIES") == 2                   # 首次读，进缓存
-    monkeypatch.setenv("RETRIES", "99")            # 改 env（模拟别的进程改了）
+    assert s.get("CLOUD_POLL") == 2                   # 首次读，进缓存
+    monkeypatch.setenv("CLOUD_POLL", "99")            # 改 env（模拟别的进程改了）
     # TTL 内仍读到旧值（缓存未过期）
-    assert s.get("RETRIES") == 2
+    assert s.get("CLOUD_POLL") == 2
+    monkeypatch.setenv("CLOUD_POLL", "99")
+    # 直接把缓存项标成过期，验证过期后会重新读
+    with s._lock:
+        s._cache["CLOUD_POLL"] = (s._cache["CLOUD_POLL"][0], 0)   # fetched_at 归零 = 过期
+    assert s.get("CLOUD_POLL") == 99
 
 
 def test_ttl_expiry_rereads(tmp_path, monkeypatch):
-    monkeypatch.setenv("RETRIES", "2")
+    monkeypatch.setenv("CLOUD_POLL", "2")
     s = _s(tmp_path)
-    assert s.get("RETRIES") == 2
-    monkeypatch.setenv("RETRIES", "99")
+    assert s.get("CLOUD_POLL") == 2
+    monkeypatch.setenv("CLOUD_POLL", "99")
     # 直接把缓存项标成过期，验证过期后会重新读
     with s._lock:
-        s._cache["RETRIES"] = (s._cache["RETRIES"][0], 0)   # fetched_at 归零 = 过期
-    assert s.get("RETRIES") == 99
+        s._cache["CLOUD_POLL"] = (s._cache["CLOUD_POLL"][0], 0)   # fetched_at 归零 = 过期
+    assert s.get("CLOUD_POLL") == 99
 
 
 # ─────────────────────────────────────────── web.py 接线
@@ -178,17 +183,17 @@ def test_web_get_setting_wiring(tmp_path, monkeypatch):
     from app import web
     monkeypatch.setattr(web, "STORE", _store(tmp_path))
     web._settings = None
-    monkeypatch.delenv("RETRIES", raising=False)
-    assert web.get_setting("RETRIES") == 2
+    monkeypatch.delenv("CLOUD_POLL", raising=False)
+    assert web.get_setting("CLOUD_POLL") == 10.0
 
 
 def test_web_set_settings_wiring(tmp_path, monkeypatch):
     from app import web
     monkeypatch.setattr(web, "STORE", _store(tmp_path))
     web._settings = None
-    out = web.set_settings({"RETRIES": 5})
+    out = web.set_settings({"CLOUD_POLL": 5})
     assert out["ok"] is True
-    assert web.get_setting("RETRIES") == 5
+    assert web.get_setting("CLOUD_POLL") == 5
 
 
 # ─────────────────────────────────────────── 存储后端（新增分组）

@@ -40,13 +40,10 @@ def replace(st):
 
 def test_old_progress_failure_finish_and_release_leave_b_intact(env, monkeypatch, tmp_path):
     st, a = env
-    callback = a.run(web._upload_progress, "j")
     b = replace(st)
     before = st.get("j")
     assert not a.run(web.job_update, "j", stage="failed", error="A late")
     assert not a.run(web.job_update, "j", stage="done", percent=100)
-    with pytest.raises(web.LossOfLease):
-        b.run(callback, 0.9)
     with pytest.raises(web.LossOfLease):
         a.run(web._finish_cloud, "j", "magnet:a", {"records": [
             {"folder": "AB-1", "path": "clouddrive2:dest/AB-1", "files": [], "size": 0}]})
@@ -84,10 +81,8 @@ def test_re_admission_mints_new_token_without_reusing_registry(env, monkeypatch)
     monkeypatch.setattr(web, "WAITING", {"j": ("magnet:a", "AB-1")})
     monkeypatch.setattr(web, "_queued_at", {})
     monkeypatch.setattr(web, "scheduling_open", lambda: True)
-    monkeypatch.setattr(web, "_guess_size", lambda code: 0)
+
     monkeypatch.setattr(web, "get_setting", lambda key: 0)
-    monkeypatch.setattr(web.diskspace, "free_bytes", lambda path: 10**12)
-    monkeypatch.setattr(web.diskspace, "reserved_by", lambda jobs: 0)
     class DormantThread:
         def __init__(self, *args, **kw):
             pass

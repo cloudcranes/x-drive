@@ -55,43 +55,6 @@ def test_snapshot_on_missing_file(store):
     assert snap["attempts"] == 0 and snap["success_rate"] is None
 
 
-def test_usage_quota(tmp_path, monkeypatch):
-    from app import main, store
-
-    cfg = main.Config(
-        token="x", allowed={1},
-        remote="gdrive", drive_root="X", max_mb=10, concurrency=1,
-        state_path=str(tmp_path / "s.json"), tmp_root=str(tmp_path / "dl"),
-        rclone_config="/dev/null",
-        pending_dir=str(tmp_path / "data" / "pending"),
-        jobs_db=str(tmp_path / "jobs.db"),
-    )
-    monkeypatch.setattr(main, "_STORE", None)
-    store.Store(cfg.jobs_db).state_put({"settings": {"DAILY_UPLOAD_GB": 1}})
-    assert main.today_bytes(cfg) == 0
-    main.add_usage(cfg, 600 * 1024**2)
-    assert main.today_bytes(cfg) == 600 * 1024**2
-    assert main.quota_exceeded(cfg, 300 * 1024**2) is False   # 900MB < 1GB
-    assert main.quota_exceeded(cfg, 500 * 1024**2) is True    # 1.1GB > 1GB
-
-
-def test_usage_resets_next_day(tmp_path, monkeypatch):
-    from app import main, store
-
-    cfg = main.Config(
-        token="x", allowed={1},
-        remote="gdrive", drive_root="X", max_mb=10, concurrency=1,
-        state_path=str(tmp_path / "s.json"), tmp_root=str(tmp_path / "dl"),
-        rclone_config="/dev/null",
-        pending_dir=str(tmp_path / "data" / "pending"),
-        jobs_db=str(tmp_path / "jobs.db"),
-    )
-    monkeypatch.setattr(main, "_STORE", None)
-    store.Store(cfg.jobs_db).state_put({"settings": {"DAILY_UPLOAD_GB": 1}})
-    path = main.usage_file(cfg)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"date": "2000-01-01", "bytes": 10**12}))
-    assert main.today_bytes(cfg) == 0, "跨天必须清零"
 
 
 def test_record_timing_accumulates_and_averages(tmp_path):

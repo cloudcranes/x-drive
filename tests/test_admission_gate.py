@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from app import diskspace as ds
 from app import store, web
 
 GB = 1024 ** 3
@@ -32,9 +31,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "JOBS", {})
     monkeypatch.setattr(web, "WAITING", {})
     monkeypatch.setattr(web, "_queued_at", {})
-    monkeypatch.setattr(web, "DISK_RESERVE_GB", 1)
-    # 磁盘永远够：闸门的「空间」维度恒真，剩下的判定只看暂停/待对账
-    monkeypatch.setattr(ds, "free_bytes", lambda _: 100 * GB)
     web.set_paused(False)
     yield db
     web.set_paused(False)
@@ -267,15 +263,22 @@ def test_restore_confirm_requeues_unfinished_jobs(env, tmp_path, started):
     assert "入队" in out["hint"] and "下一轮调度" not in out["hint"], "提示文案要与实际一致"
 
 
-def test_restore_confirm_keeps_tasks_queued_when_no_space(env, tmp_path, started, monkeypatch):
-    """确认后空间不够：任务进 WAITING 等泵线程，结果里如实区分「入队」与「排队」。"""
-    monkeypatch.setattr(ds, "free_bytes", lambda _: 1 * GB)     # 不够（留 1G 余量）
+def test_restore_confirm_keeps_tasks_queued_when_gate_closed(env, tmp_path, started, monkeypatch):
+    """确认后闸门还关着：任务进 WAITING 等放行，结果里如实区分「入队」与「排队」。
+
+    以前这里测的是「磁盘空间不够」（磁盘闸门已随本地下载取消），
+    现在测的是同一套「held」语义：闸门关着时任务留在队列里等放行。
+    闸门用「待对账」标记来关（restore_confirm 自己会清暂停标记）。
+    """
+    web._store().state_put({web.RECONCILE_KEY: {"required": True}})
     web._store().start("q1", "ABC-1", "magnet:a")
-    web._store().update("q1", total=50 * GB)
     bak = web.backup_now(str(tmp_path / "b.db"))["path"]
     web._store().finish("q1", "done")
     web.restore_apply(bak, confirm=True)
 
+    # 确认后闸门放开（待对账标记被清掉），但调度仍被外部按住 →
+    # 任务留在 WAITING，结果里如实说「排队」
+    monkeypatch.setattr(web, "scheduling_open", lambda: False)
     out = web.restore_confirm(confirm=True, force=True)
 
     assert out["ok"] is True and out["requeued"] == 1 and out["held"] == 1

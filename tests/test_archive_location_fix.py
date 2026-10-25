@@ -80,16 +80,22 @@ def test_cloud_finish_preserves_actual_location(env, monkeypatch):
     assert web.archive_locator(saved) == "cloud-dest/AB-1"
 
 
-def test_local_finish_uses_actual_backend_root_not_rclone_constants(env, monkeypatch, tmp_path):
-    monkeypatch.setattr(storage, "kind", lambda: "clouddrive2")
-    monkeypatch.setattr(storage, "root", lambda: "actual-root")
-    monkeypatch.setattr(storage, "real_folder", lambda name: name)
-    web._finish("j", tmp_path, "AB-1", [], 0, "", "magnet:a",
-                {"download": 0, "organize": 0, "upload": 0}, SimpleNamespace(attempts=0))
+def test_cloud_finish_uses_actual_destination_not_global_root(env, monkeypatch):
+    """云添加的归档位置用**实际目的地**，不是全局 STORAGE_ROOT。
+
+    云添加落在 CLOUD_DEST（迅雷云盘/X-Drive），而全局根可能是另一个 ——
+    记账必须按实际去的地方写，否则之后的核验/补刮/改名会找错目录。
+    """
+    monkeypatch.setattr(storage, "root", lambda: "other-root")
+    rec = record()
+    rec["root"] = "cloud-dest"
+    rec["rel"] = "cloud-dest/AB-1"
+    rec["path"] = "clouddrive2:cloud-dest/AB-1"
+    web._finish_cloud("j", "magnet:a", {"records": [rec]})
     saved = core.load_state(web.STATE)["AB-1"]
     assert saved["backend"] == "clouddrive2"
-    assert saved["root"] == "actual-root" and saved["rel"] == "actual-root/AB-1"
-    assert saved["path"] == "clouddrive2:actual-root/AB-1"
+    assert saved["root"] == "cloud-dest" and saved["rel"] == "cloud-dest/AB-1"
+    assert saved["path"] == "clouddrive2:cloud-dest/AB-1"
 
 
 def test_cleanup_unknowns_remain_done_and_pending_is_persistent(env, monkeypatch):
@@ -97,14 +103,14 @@ def test_cleanup_unknowns_remain_done_and_pending_is_persistent(env, monkeypatch
     backend = SimpleNamespace(kind="clouddrive2")
     plan = SimpleNamespace(source="incoming", target="AB-1")
     out = {"records": [record()], "_backend": backend,
-           "cleanup": [(plan, "inbox", "cloud-dest")]}
+           "cleanup": [{"plan": plan, "src_root": "inbox", "dst_root": "cloud-dest"}]}
     monkeypatch.setattr(web, "_cloud_run", lambda *args: out)
     # Any attempt to fetch a newly configured client after run would be a bug.
     monkeypatch.setattr(storage, "get", lambda: pytest.fail("cleanup replaced actual backend"))
     def unknown(got, *args):
         assert got is backend
         raise cloudorganize.OrganizeError("inbox/incoming contains unknown late.mp4")
-    monkeypatch.setattr(cloudorganize, "cleanup_source", unknown)
+    monkeypatch.setattr(cloudorganize, "cleanup_source", unknown)  # 共享模块内部调用
     web.run_web_job("j", "magnet:a", "AB-1")
     row = env.get("j")
     assert row["stage"] == "done"
@@ -146,17 +152,13 @@ def test_changed_backend_blocks_read_delete_rename_and_attachment_sync(env, monk
     assert core.load_state(web.STATE)["AB-1"] == saved
 
 
-@pytest.mark.parametrize("cloud", [True, False])
-def test_terminal_cas_failure_does_not_notify_or_report_success(env, monkeypatch, tmp_path, cloud):
+def test_terminal_cas_failure_does_not_notify_or_report_success(env, monkeypatch):
+    """终态写不进去（失租）时不发通知、不报成功。"""
     notices = []
     monkeypatch.setattr(web.notify, "job_done", lambda *a: notices.append(a))
     monkeypatch.setattr(env, "update_cas", lambda *a, **kw: False)
     with pytest.raises(web.LossOfLease):
-        if cloud:
-            web._finish_cloud("j", "magnet:a", {"records": [record()]})
-        else:
-            web._finish("j", tmp_path, "AB-1", [], 0, "", "magnet:a",
-                        {"download": 0, "organize": 0, "upload": 0}, SimpleNamespace(attempts=0))
+        web._finish_cloud("j", "magnet:a", {"records": [record()]})
     assert notices == []
 
 
@@ -179,39 +181,3 @@ def test_actual_cloud_run_carries_client_and_destination_into_archive(env, monke
     saved = core.load_state(web.STATE)["AB-1"]
     assert saved["backend"] == "clouddrive2"
     assert saved["rel"] == "chosen-dest/AB-1" and saved["root"] == "chosen-dest"
-
-
-def test_upload_takes_one_consistent_root_snapshot(env, monkeypatch, tmp_path):
-    roots = []
-    def changing_root():
-        roots.append(True)
-        return "original-root" if len(roots) == 1 else "changed-root"
-    sent = []
-    backend = SimpleNamespace(kind="clouddrive2", ensure_dir=lambda rel: None,
-                              upload_dir=lambda work, rel, **kw: sent.append(rel) or 0,
-                              link=lambda rel: "")
-    monkeypatch.setattr(web, "storage_backend", lambda: backend)
-    monkeypatch.setattr(storage, "root", changing_root)
-    web.upload_folder(tmp_path, "AB-1")
-    assert len(roots) == 1
-    assert sent == ["original-root/AB-1"]
-    assert web._UPLOAD_PROGRESS.location["rel"] == sent[0]
-    assert web._UPLOAD_PROGRESS.location["root"] == "original-root"
-
-
-def test_upload_location_survives_settings_change_before_finish(env, monkeypatch, tmp_path):
-    sent = []
-    backend = SimpleNamespace(kind="clouddrive2", ensure_dir=lambda rel: None,
-                             upload_dir=lambda work, rel, **kw: sent.append(rel) or 0,
-                             link=lambda rel: "", real_folder=lambda rel: "AB-1")
-    monkeypatch.setattr(web, "storage_backend", lambda: backend)
-    monkeypatch.setattr(storage, "root", lambda: "original-root")
-    web.upload_folder(tmp_path, "AB-1")
-    monkeypatch.setattr(storage, "root", lambda: "changed-root")
-    monkeypatch.setattr(storage, "kind", lambda: "rclone")
-    web._finish("j", tmp_path, "AB-1", [], 0, "", "magnet:a",
-                {"download": 0, "organize": 0, "upload": 0}, SimpleNamespace(attempts=0))
-    saved = core.load_state(web.STATE)["AB-1"]
-    assert sent == ["original-root/AB-1"]
-    assert saved["backend"] == "clouddrive2" and saved["root"] == "original-root"
-    assert saved["path"] == "clouddrive2:original-root/AB-1"

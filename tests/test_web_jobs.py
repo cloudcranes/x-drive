@@ -1,4 +1,9 @@
-"""网页后台的下载任务接口：提交、进度、鉴权。"""
+"""网页后台的任务接口：提交、进度、鉴权（云添加链路）。
+
+2026-10-25 取消本地下载后，网页的任务只有一条路：磁力投给迅雷云盘 →
+落地 → 远端整理 → 记账。原来测「下载重试/上传重试/断点续跑/工作区清理」
+的用例随本地下载一起删掉了（那些逻辑在已删除的 app/pipeline.py 里）。
+"""
 import base64
 import contextlib
 import http.client
@@ -10,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from app import core, meta, pipeline, store, web, workspace
+from app import core, meta, store, web, workspace
 
 _INJECTED = {}
 
@@ -249,17 +254,16 @@ def test_job_records_phase_timing(monkeypatch, tmp_path):
     monkeypatch.setattr(web, "METRICS", str(mpath))
 
     web.record_timing("j1", "SSIS-123", 100 * 1048576,
-                      {"download": 10.0, "organize": 0.5, "upload": 5.0}, "ok", started=0.0)
+                      {"land": 10.0, "organize": 0.5, "clean": 5.0}, "ok", started=0.0)
     snap = metrics.timing_snapshot(str(mpath))
-    assert snap["phases"]["download"]["avg"] == 10.0
-    assert snap["phases"]["upload"]["avg"] == 5.0
-    assert snap["upload_mbps"] == 20.0
+    assert snap["phases"]["land"]["avg"] == 10.0
+    assert snap["phases"]["clean"]["avg"] == 5.0
 
 
 def test_job_timing_failure_does_not_break_job(monkeypatch):
     """统计写不进去也不能让任务本身失败。"""
     monkeypatch.setattr(web, "METRICS", "/nonexistent-root-dir/blocked/m.json")
-    web.record_timing("j1", "X-1", 1, {"download": 1.0}, "ok", started=0.0)
+    web.record_timing("j1", "X-1", 1, {"land": 1.0}, "ok", started=0.0)
 
 
 def test_metrics_api_exposes_timing(server, monkeypatch, tmp_path):
@@ -267,7 +271,7 @@ def test_metrics_api_exposes_timing(server, monkeypatch, tmp_path):
     d = tempfile.mkdtemp()
     monkeypatch.setattr(web, "METRICS", os.path.join(d, "m.json"))
     monkeypatch.setattr(web, "PENDING_DIR", os.path.join(d, "pending"))
-    web.record_timing("j", "A-1", 50 * 1048576, {"download": 2.0, "upload": 5.0}, "ok", 0.0)
+    web.record_timing("j", "A-1", 50 * 1048576, {"land": 2.0, "organize": 5.0}, "ok", 0.0)
     base, _ = server
     host, port = base.removeprefix("http://").split(":")
     c = http.client.HTTPConnection(host, int(port), timeout=10)
@@ -276,130 +280,7 @@ def test_metrics_api_exposes_timing(server, monkeypatch, tmp_path):
     data = json.loads(r.read())
     c.close()
     assert "timing" in data
-    assert data["timing"]["phases"]["download"]["count"] >= 1
-
-
-# ---------------------------------------------------------------- 失败自动重试
-
-@contextlib.contextmanager
-def run_job_env(monkeypatch, tmp_path, *, download_fails=0, upload_fails=0, fatal=""):
-    """把 run_web_job 的外部依赖全部替换掉，只测重试编排逻辑。"""
-    work = tmp_path / "work"
-    (work / "sub").mkdir(parents=True)
-    (work / "sub" / "SSIS-1.mp4").write_bytes(b"x" * (2 << 20))
-
-    calls = {"download": 0, "upload": 0, "sleep": 0}
-
-    monkeypatch.setattr(web, "TMP_ROOT", str(tmp_path))
-    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
-    monkeypatch.setattr(web, "METRICS", str(tmp_path / "m.json"))
-    monkeypatch.setattr(web, "JOBS", {})
-    monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
-    # 任务表要有这条记录，延期/去重才有对象；调度器放行时会一并授予执行租约
-    web.STORE.start("j1", "SSIS-1", "magnet:?xt=urn:btih:aa")
-    web.STORE.claim_owner("j1", web.lease_owner("j1"))
-    monkeypatch.setattr(web, "CANCEL", {})
-    monkeypatch.setattr(web, "RETRIES", 2)
-    monkeypatch.setattr(web, "RETRY_BASE_DELAY", 0)
-    monkeypatch.setattr(pipeline, "job_dir", lambda root, key: work)
-
-    async def fake_download(xl, client, source, dest, progress=None, **opts):
-        calls["download"] += 1
-        if calls["download"] <= download_fails:
-            raise RuntimeError(fatal or "连接超时")
-        return {"task": "T1", "dir": dest, "waited": 0.0, "reused": False}
-
-    async def fake_client(*a, **kw):
-        return None
-
-    monkeypatch.setattr(pipeline, "download", fake_download)
-
-    def fake_stage(source_dir, target_dir, key):
-        target_dir.mkdir(parents=True, exist_ok=True)
-        (target_dir / "SSIS-1.mp4").write_bytes(b"x" * (2 << 20))
-        return [target_dir / "SSIS-1.mp4"]
-
-    monkeypatch.setattr(pipeline, "stage_copy", fake_stage)
-
-    class FakeAsyncClient:
-        def __init__(self, *a, **kw):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(web.httpx, "AsyncClient", FakeAsyncClient)
-    monkeypatch.setattr(web.pipeline, "cleanup", lambda p: None)
-
-    def fake_upload(path, folder):
-        calls["upload"] += 1
-        if calls["upload"] <= upload_fails:
-            raise RuntimeError(fatal or "rclone 上传失败：connection reset")
-        return "https://drive.google.com/x", 0
-
-    monkeypatch.setattr(web, "upload_folder", fake_upload)
-    # 退避不真等
-    monkeypatch.setattr(web.retry, "backoff_sleep",
-                        lambda policy, cancel_check=None, sleep=None, **kw: calls.__setitem__(
-                            "sleep", calls["sleep"] + 1) or True)
-    yield calls, work
-
-
-def test_download_retries_then_succeeds(monkeypatch, tmp_path):
-    with run_job_env(monkeypatch, tmp_path, download_fails=2) as (calls, _):
-        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
-    assert calls["download"] == 3, "失败 2 次后第 3 次应成功"
-    assert web.JOBS["j1"]["stage"] == "done"
-    assert web.JOBS["j1"]["retries"] == 2
-
-
-def test_download_gives_up_after_limit(monkeypatch, tmp_path):
-    with run_job_env(monkeypatch, tmp_path, download_fails=99) as (calls, _):
-        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
-    assert calls["download"] == 3, "RETRIES=2 表示总共 3 次尝试"
-    assert web.JOBS["j1"]["stage"] == "failed"
-
-
-def test_fatal_download_error_is_not_retried(monkeypatch, tmp_path):
-    with run_job_env(monkeypatch, tmp_path, download_fails=99,
-                     fatal="下载完成但没有找到视频文件") as (calls, _):
-        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
-    assert calls["download"] == 1, "决定性错误不该重试"
-    assert "没有找到视频文件" in web.JOBS["j1"]["error"]
-
-
-def test_upload_retries_then_succeeds(monkeypatch, tmp_path):
-    with run_job_env(monkeypatch, tmp_path, upload_fails=1) as (calls, _):
-        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
-    assert calls["upload"] == 2
-    assert web.JOBS["j1"]["stage"] == "done"
-
-
-def test_quota_error_on_upload_is_not_retried(monkeypatch, tmp_path):
-    with run_job_env(monkeypatch, tmp_path, upload_fails=99,
-                     fatal="rclone 上传失败：uploadLimitExceeded") as (calls, _):
-        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
-    assert calls["upload"] == 1, "配额用完重试没有意义"
-    job = web.JOBS["j1"]
-    assert job["stage"] == "deferred", "配额类是等待，不是失败"
-    # 定到次日自动重跑，且延期中仍占着这个番号
-    deferred = web.STORE.get("j1")["extra"].get("defer_until")
-    assert deferred and deferred > time.time(), "配额类要延期而不是丢弃"
-    assert "SSIS-1" in web.active_codes()
-
-
-def test_cancel_interrupts_retry_wait(monkeypatch, tmp_path):
-    """重试等待期间点停止，必须立刻收尾而不是等满退避时间。"""
-    with run_job_env(monkeypatch, tmp_path, download_fails=99) as (calls, _):
-        monkeypatch.setattr(web.retry, "backoff_sleep",
-                            lambda policy, cancel_check=None, sleep=None, **kw: False)
-        web.run_web_job("j1", "magnet:?xt=urn:btih:aa", "SSIS-1")
-    assert calls["download"] == 1
-    assert web.JOBS["j1"]["error"] == "已停止"
+    assert data["timing"]["phases"]["land"]["count"] >= 1
 
 
 # ---------------------------------------------------------------- 归档回收
@@ -902,85 +783,6 @@ def test_recover_jobs_returns_unfinished_with_task_id(tmp_path, monkeypatch):
     assert rows == [{"id": "j1", "code": "SSIS-1", "source": "magnet:a",
                      "stage": "downloading", "xunlei_task": "T77"}]
 
-# ---------------------------------------------------------------- 端到端（离线）
-
-def _e2e_env(tmp_path, monkeypatch, upload_fails=False):
-    from app import workspace as ws
-    monkeypatch.setenv("TMP_ROOT", str(tmp_path / "dl"))
-    monkeypatch.setattr(web, "TMP_ROOT", str(tmp_path / "dl"))
-    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))
-    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
-    monkeypatch.setattr(web, "METRICS", str(tmp_path / "m.json"))
-    monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
-    monkeypatch.setattr(web, "JOBS", {})
-    monkeypatch.setattr(web, "CANCEL", {})
-    monkeypatch.setattr(web, "RETRIES", 0)
-    core.save_state(web.STATE, {})
-
-    async def fake_download(xl, client, source, dest, progress=None, on_task=None, **opts):
-        real = Path(str(dest) + "-1")        # 迅雷因重名改了目录名
-        real.mkdir(parents=True, exist_ok=True)
-        (real / "v.mp4").write_bytes(b"x" * (2 << 20))
-        (real / "ad.txt").write_bytes(b"ad")
-        # 真实 fetcher 在这一步校验路径并补标记（带任务证据）；桩要复现同一契约
-        workspace.claim(dest, workspace.key_of(dest.name), source)
-        workspace.adopt(real, workspace.key_of(dest.name), source, task_id="T1")
-        if on_task:
-            on_task("T1", {"reused": False})
-        return {"task": "T1", "dir": real, "waited": 0.0, "reused": False}
-
-    async def fake_lookup(code, path=None, client=None):
-        return {"code": code, "title": "标题"}
-
-    monkeypatch.setattr(pipeline, "download", fake_download)
-    monkeypatch.setattr(meta, "lookup", fake_lookup)
-    if upload_fails:
-        monkeypatch.setattr(web, "upload_folder",
-                            lambda p, f: (_ for _ in ()).throw(RuntimeError("上传失败")))
-    else:
-        monkeypatch.setattr(web, "upload_folder", lambda p, f: ("https://d/" + f, 0))
-    monkeypatch.setattr(web, "series_median", lambda code, state: 2 << 20)
-
-    def fake_admit(job_id):
-        # 与真实 admit() 一致：放行时用 lease_owner() 铸的 token 真正领取
-        web.STORE.claim_owner(job_id, web.lease_owner(job_id))
-        return True
-
-    monkeypatch.setattr(web, "admit", fake_admit)
-    return ws
-
-def test_end_to_end_success_cleans_up(tmp_path, monkeypatch):
-    ws = _e2e_env(tmp_path, monkeypatch)
-    # 相邻有一个名字近似的外部目录：清理不许碰它
-    neighbour = tmp_path / "dl" / "SSIS999OTHER"
-    neighbour.mkdir(parents=True)
-    (neighbour / "keep.mp4").write_bytes(b"keep")
-    job_id = web.start_job("magnet:?xt=urn:btih:e1", "SSIS-999", {"size": 2 << 20})
-    web.run_web_job(job_id, "magnet:?xt=urn:btih:e1", "SSIS-999")
-    job = web.STORE.get(job_id)
-    state = core.load_state(web.STATE)
-    assert job["stage"] == "done" and job["folder"] == "SSIS-999"
-    # 取的是迅雷上报的 -1 目录里的视频；刮削附件（nfo/manifest 等）一并进归档清单
-    assert "SSIS-999.mp4" in state["SSIS-999"]["files"], "取的是迅雷上报的 -1 目录"
-    assert state["SSIS-999"]["files"][0] == "SSIS-999.mp4", "视频排在清单首位"
-    assert state["SSIS-999"]["meta"]["title"] == "标题"
-    assert not (tmp_path / "dl" / "SSIS999").exists(), "成功后清下载原件"
-    assert not (tmp_path / "dl" / "SSIS999-1").exists(), "真实落盘目录（-1）也要清掉"
-    assert not (tmp_path / "work" / "state" / "SSIS999").exists(), "成功后清工作区"
-    assert (neighbour / "keep.mp4").exists(), "名字近似的外部目录不能删"
-
-def test_end_to_end_failure_keeps_files(tmp_path, monkeypatch):
-    """上传失败必须保留原件与工作区，否则续传和排查都没了。"""
-    _e2e_env(tmp_path, monkeypatch, upload_fails=True)
-    job_id = web.start_job("magnet:?xt=urn:btih:e2", "ABP-777", {"size": 2 << 20})
-    web.run_web_job(job_id, "magnet:?xt=urn:btih:e2", "ABP-777")
-    assert web.STORE.get(job_id)["stage"] == "failed"
-    # 迅雷把目录改成了 ABP777-1，原件在那里
-    assert (tmp_path / "dl" / "ABP777-1" / "v.mp4").exists()
-    assert (tmp_path / "work" / "state" / "ABP777").exists()
-    assert web.STORE.get(job_id)["keep_dir"].endswith("ABP777-1"), "保留路径指向真实目录"
-    assert "ABP-777" not in core.load_state(web.STATE)
-
 # ---------------------------------------------------------------- 统一入队（B 包）
 
 def test_requeue_goes_through_disk_gate(tmp_path, monkeypatch):
@@ -1019,57 +821,6 @@ def test_due_job_claim_prevents_double_enqueue(tmp_path, monkeypatch):
     assert web.STORE.claim_due("j1") is True
     assert web.STORE.claim_due("j1") is False
 
-def test_resume_upload_only_reuses_work_dir(tmp_path, monkeypatch):
-    """整理已完成、只剩上传：不该再下载一次。"""
-    calls = {"download": 0, "upload": 0}
-    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))
-    monkeypatch.setattr(web, "TMP_ROOT", str(tmp_path / "dl"))
-    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
-    monkeypatch.setattr(web, "METRICS", str(tmp_path / "m.json"))
-    monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
-    monkeypatch.setattr(web, "JOBS", {})
-    monkeypatch.setattr(web, "CANCEL", {})
-    core.save_state(web.STATE, {})
-
-    work = tmp_path / "work" / "state" / "SSIS555"
-    work.mkdir(parents=True)
-    (work / "SSIS555.mp4").write_bytes(b"x" * (2 << 20))
-
-    async def fake_download(*a, **kw):
-        calls["download"] += 1
-        raise AssertionError("不该重新下载")
-
-    def fake_upload(path, folder):
-        calls["upload"] += 1
-        return f"https://d/{folder}", 0
-
-    monkeypatch.setattr(pipeline, "download", fake_download)
-    monkeypatch.setattr(web, "upload_folder", fake_upload)
-    monkeypatch.setattr(web.meta, "lookup", lambda code, path=None, client=None: {})
-
-    web.STORE.start("j1", "SSIS-555", "magnet:a")
-    # 续跑判据是 resume_from + 落盘清单，不是 stage（入队会把 stage 改回 queued）
-    web.STORE.update("j1", stage="queued", folder="SSIS-555", total=2 << 20,
-                     resume_from="upload", extra={"files": ["SSIS555.mp4"]})
-    web.STORE.claim_owner("j1", web.lease_owner("j1"))     # 放行时授予租约
-    web.run_web_job("j1", "magnet:a", "SSIS-555")
-
-    job = web.STORE.get("j1")
-    assert calls == {"download": 0, "upload": 1}, "只补上传"
-    assert job["stage"] == "done" and job["link"] == "https://d/SSIS-555"
-    assert "SSIS-555" in core.load_state(web.STATE)
-
-
-def test_resume_ignores_unorganised_work_dir(tmp_path, monkeypatch):
-    """工作区里还是原始文件名：说明整理没做完，必须重跑而不是当作已完成。"""
-    work = tmp_path / "work" / "state" / "SSIS556"
-    work.mkdir(parents=True)
-    (work / "random_name.mp4").write_bytes(b"x" * (2 << 20))
-    job = {"stage": "organizing", "folder": "SSIS-556"}
-    assert web._resume_stage(job, work, "SSIS556") is None, "没写 resume_from 就不续跑"
-    job = {**job, "resume_from": "upload"}
-    assert web._resume_stage(job, work, "SSIS556") is None, "文件名不是规范名也不续跑"
-
 # ---------------------------------------------------------------- 重启续跑闭环（批次3）
 
 def _restart_env(tmp_path, monkeypatch):
@@ -1098,55 +849,6 @@ def _restart_env(tmp_path, monkeypatch):
     return work
 
 
-def test_restart_requeue_keeps_resume_stage(tmp_path, monkeypatch):
-    """重启入队会把 stage 改回 queued，但 resume_from 与体积必须还在，闸门才看得见。"""
-    _restart_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(web, "admit", lambda job_id: False)   # 空间不够，先停在队列
-    assert web.requeue("j1", "magnet:a", "SSIS-600") is True
-    job = web.STORE.get("j1")
-    assert job["stage"] == "queued"
-    assert job["resume_from"] == "upload", "续跑证据不能被入队抹掉"
-    assert job["total"] == 2 << 20, "体积要给闸门用"
-
-def test_restart_then_upload_only_without_redownload(tmp_path, monkeypatch):
-    """完整闭环：重启 → 入队 → 放行 → 只补上传。"""
-    work = _restart_env(tmp_path, monkeypatch)
-    calls = {"download": 0, "upload": 0}
-
-    async def fake_download(*a, **kw):
-        calls["download"] += 1
-        raise AssertionError("不该重新下载")
-
-    def fake_upload(path, folder):
-        calls["upload"] += 1
-        assert path == work
-        return f"https://d/{folder}", 0
-
-    monkeypatch.setattr(pipeline, "download", fake_download)
-    monkeypatch.setattr(web, "upload_folder", fake_upload)
-    monkeypatch.setattr(web.meta, "lookup", lambda code, path=None, client=None: {})
-    started = []
-
-    def fake_admit(job_id):
-        # 真实 admit() 放行时会一并抢执行租约，这里照做
-        web.STORE.claim_owner(job_id, web.lease_owner(job_id))
-        started.append(job_id)
-        return True
-
-    monkeypatch.setattr(web, "admit", fake_admit)
-
-    assert web.requeue("j1", "magnet:a", "SSIS-600") is True
-    web.run_web_job("j1", "magnet:a", "SSIS-600")
-    assert started == ["j1"], "恢复也要过空间闸门"
-    assert calls == {"download": 0, "upload": 1}
-    job = web.STORE.get("j1")
-    assert job["stage"] == "done" and job["resume_from"] == "", "完成后清掉续跑标记"
-
-def test_resume_refuses_when_manifest_file_missing(tmp_path, monkeypatch):
-    work = _restart_env(tmp_path, monkeypatch)
-    (work / "SSIS600.mp4").unlink()
-    assert web._resume_stage(web.STORE.get("j1"), work, "SSIS600") is None
-
 # ---------------------------------------------------------------- 订阅调度闭环（批次4）
 
 def _subs_env(tmp_path, monkeypatch):
@@ -1162,7 +864,8 @@ def _subs_env(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "WAITING", {})
     monkeypatch.setattr(web, "_queued_at", {})
     monkeypatch.setattr(web, "admit", lambda job_id: True)
-    monkeypatch.setattr(web, "diskspace_room_ok", lambda: True)
+    # 订阅轮询现在检查「云添加能不能用」（不再判磁盘空间）
+    monkeypatch.setattr(web, "cloud_ready", lambda: (True, "ok"))
     core.save_state(web.STATE, {})
     sub = subscribe.new_sub("w5a", "测试演员", "2020-01-01", max_per_run=1,
                             kind="actor", source="javbus")
@@ -1249,9 +952,13 @@ def test_job_snapshot_exposes_name_position_and_defer(tmp_path, monkeypatch):
 
 
 def test_cancelling_a_queued_job_removes_it_from_queue(tmp_path, monkeypatch):
-    """排队中的任务没有线程：以前点停止毫无反应，空间够了照样开下。"""
-    monkeypatch.setattr(web.diskspace, "free_bytes", lambda _path: 0)  # 真实经过磁盘闸门排队
-    monkeypatch.setattr(web, "run_web_job", lambda *a: None)   # 别真的去连迅雷
+    """排队中的任务没有线程：以前点停止毫无反应，空间够了照样开下。
+
+    现在没有磁盘闸门了（云添加不占本地磁盘），所以要显式把任务放回队列里
+    再点停止 —— 测的是「排队中被停掉会落 cancelled」这件事本身。
+    """
+    monkeypatch.setattr(web, "run_web_job", lambda *a: None)   # 别真的去连云盘
+    monkeypatch.setattr(web, "admit", lambda job_id: False)   # 不放行，留着排队
     monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
     monkeypatch.setattr(web, "JOBS", {})
     monkeypatch.setattr(web, "WAITING", {})

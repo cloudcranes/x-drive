@@ -1,12 +1,13 @@
-"""归档记账：_finish 要把刮削结果带进归档记录（manifest/infohash/locked/scrape_pending）。"""
+"""归档记账：云添加落地的记录要带齐 manifest/scrape_pending 与定位三元组。
+
+2026-10-25 取消本地下载后，本地链路那个 `_finish` 没有了（它带工作区、
+带附件生成），云添加走的是 `_finish_cloud`：文件本来就在云盘里，没有工作区，
+清单大小直接用落地时读到的那份。
+"""
 import json
 from pathlib import Path
 
 from app import metadata
-
-
-class _Policy:
-    attempts = 0
 
 
 def _env(tmp_path, monkeypatch):
@@ -36,59 +37,64 @@ def _no_lookup(web, monkeypatch):
     monkeypatch.setattr(web.meta, "lookup", none)
 
 
-def _finish(web, job_id, work, folder, files, size=100):
-    web._finish(job_id, work, folder, files, size, "http://link", "magnet:a",
-                {"download": 1.0, "organize": 1.0, "upload": 1.0}, _Policy())
+def _record(folder, files, size=100, detail=None):
+    """一条云添加的落地记录（形状见 app/cloudadd.organize_landed 的返回）。
+
+    files 是**整理后**的文件名（按番号重命名过），files_detail 是落地时
+    读到的原始文件名与大小 —— 记账靠它把大小回填到清单上。
+    """
+    names = [f.name if hasattr(f, "name") else str(f) for f in files]
+    return {"folder": folder,
+            "path": f"clouddrive2:dest/{folder}",
+            "backend": "clouddrive2", "root": "dest", "rel": f"dest/{folder}",
+            "files": names,
+            "files_detail": detail or [{"name": n, "size": size} for n in names],
+            "size": size, "inbox": "inbox/task"}
+
+
+def _finish(web, job_id, folder, files, size=100, detail=None):
+    """走云添加的记账入口。"""
+    web._finish_cloud(job_id, "magnet:a",
+                      {"records": [_record(folder, files, size, detail)]})
 
 
 def test_finish_writes_scrape_fields_from_extra(tmp_path, monkeypatch):
     """上传前刮好的结果、infohash、locked、待补刮标记都要落进归档记录。"""
     core, web = _env(tmp_path, monkeypatch)
     _no_lookup(web, monkeypatch)
-    work = tmp_path / "work" / "SSIS123"
-    work.mkdir(parents=True)
-    video = work / "SSIS123.mp4"
-    video.write_bytes(b"x" * 100)
     web.STORE.start("j1", "SSIS-123", "magnet:a")
     _hold(web, "j1")
-    web.job_update("j1", extra={
-        "infohash": "ab" * 20, "locked": ["title"], "scrape_pending": False,
-        "scraped": {"code": "SSIS-123", "title": "标题", "provider": "JavBus"},
-        "files": ["SSIS123.mp4", "movie.nfo"]})
 
-    _finish(web, "j1", work, "SSIS-123", [video])
+    _finish(web, "j1", "SSIS-123", ["SSIS-123.mp4"], size=100)
 
     rec = core.load_state(web.STATE)["SSIS-123"]
-    assert rec["infohash"] == "ab" * 20
-    assert rec["locked"] == ["title"]
-    assert rec["scrape_pending"] is False
-    assert rec["meta"]["title"] == "标题", "查不到元数据时用刮好的结果，不能留空"
+    assert rec["scrape_pending"] is True, "云添加暂不推附件，标成待补"
     names = [e["name"] for e in rec["manifest"]["files"]]
-    assert "SSIS123.mp4" in names, "清单要含视频"
-    assert rec["manifest"]["files"][0]["size"] == 100, "大小取自工作区实际文件"
+    assert "SSIS-123.mp4" in names, "清单要含视频（云端整理按番号重命名过）"
+    assert rec["manifest"]["files"][0]["size"] == 100, "大小取自落地时读到的那份"
     assert rec["manifest"]["code"] == "SSIS-123"
     assert "manifest.json" not in names, "清单不自引用"
+    # 定位三元组：之后的核验/补刮/改名/删除都按它找目录
+    assert rec["backend"] == "clouddrive2"
+    assert rec["rel"] == "dest/SSIS-123"
+    assert rec["root"] == "dest"
 
 
 def test_finish_falls_back_to_extra_files_when_workspace_gone(tmp_path, monkeypatch):
     """工作区已被清空也不能抛异常：用 extra 里的文件名兜底，大小留 0（不编）。"""
     core, web = _env(tmp_path, monkeypatch)
     _no_lookup(web, monkeypatch)
-    work = tmp_path / "gone"                 # 不存在
     web.STORE.start("j2", "SSIS-456", "magnet:a")
     _hold(web, "j2")
-    web.job_update("j2", extra={"files": ["SSIS456.mp4", "movie.nfo"],
-                                "scrape_pending": True})
-    video = tmp_path / "SSIS456.mp4"         # 传进来的路径也不在了
-    video.write_bytes(b"x" * 50)
-    video.unlink()
 
-    _finish(web, "j2", work, "SSIS-456", [video])
+    # 落地清单里有个 0 字节的文件（迅雷侧还没写完）—— 大小如实记 0，不编造
+    _finish(web, "j2", "SSIS-456", ["SSIS456.mp4"],
+            size=0, detail=[{"name": "SSIS456.mp4", "size": 0}])
 
     rec = core.load_state(web.STATE)["SSIS-456"]
-    assert rec["files"] == ["SSIS456.mp4", "movie.nfo"]
+    assert rec["files"] == ["SSIS456.mp4"]
     entries = {e["name"]: e["size"] for e in rec["manifest"]["files"]}
-    assert entries == {"SSIS456.mp4": 0, "movie.nfo": 0}
+    assert entries == {"SSIS456.mp4": 0}, "没读到的字节数就记 0"
     assert rec["scrape_pending"] is True
     assert "infohash" not in rec and "locked" not in rec, "缺数据就不写，不编造"
 
@@ -97,14 +103,8 @@ def test_finish_keeps_record_when_extra_unreadable(tmp_path, monkeypatch):
     """extra 读不出来（序列化损坏）也要把已上传的记录写下去。"""
     core, web = _env(tmp_path, monkeypatch)
     _no_lookup(web, monkeypatch)
-    work = tmp_path / "w"
-    work.mkdir()
-    video = work / "AB-1.mp4"
-    video.write_bytes(b"y" * 7)
-
     web.STORE.start("j3", "AB-1", "magnet:a")
     _hold(web, "j3")
-    web.job_update("j3", extra={"files": []})
     real = web._store()
 
     class _BadExtra:
@@ -119,7 +119,7 @@ def test_finish_keeps_record_when_extra_unreadable(tmp_path, monkeypatch):
 
     monkeypatch.setattr(web, "_store", lambda: _BadExtra())
 
-    _finish(web, "j3", work, "AB-1", [video], size=7)
+    _finish(web, "j3", "AB-1", ["AB-1.mp4"], size=7)
 
     rec = core.load_state(web.STATE)["AB-1"]
     assert rec["size"] == 7 and rec["files"] == ["AB-1.mp4"]
@@ -134,19 +134,14 @@ def test_finish_lookup_failure_keeps_scraped_record(tmp_path, monkeypatch):
         raise RuntimeError("JavBus 不可达")
 
     monkeypatch.setattr(web.meta, "lookup", boom)
-    work = tmp_path / "w2"
-    work.mkdir()
-    video = work / "SSIS-789.mp4"
-    video.write_bytes(b"z" * 3)
     web.STORE.start("j4", "SSIS-789", "magnet:a")
     _hold(web, "j4")
-    web.job_update("j4", extra={"scraped": {"title": "有"}, "files": ["SSIS-789.mp4"]})
 
-    _finish(web, "j4", work, "SSIS-789", [video], size=3)
+    _finish(web, "j4", "SSIS-789", ["SSIS-789.mp4"], size=3)
 
     rec = core.load_state(web.STATE)["SSIS-789"]
-    assert rec["meta"]["title"] == "有"
-    assert rec["link"] == "http://link"
+    assert rec["meta"] == {}, "查不到元数据就留空，不编造"
+    assert rec["link"] == "", "云添加没有分享链接这一说"
 
 
 # ---------------------------------------------------------------- 补刮不丢视频项

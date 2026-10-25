@@ -30,28 +30,6 @@ import time
 # 每一项：key=state 表里的键（也是环境变量名），后面跟 type/默认值/分组/说明。
 # 类型用字符串标记，读写时据此转换，避免每个值手写一段 if。
 SETTINGS_SPEC: dict[str, dict] = {
-    # ── 配额
-    "DAILY_UPLOAD_GB": {"type": "int", "default": 0, "group": "下载",
-                        "label": "每日上传上限 (GB)", "note": "0 = 不限"},
-    # ── 重试
-    "RETRY_BASE_DELAY": {"type": "float", "default": 3.0, "group": "下载",
-                         "label": "重试基础退避 (秒)", "note": "指数增长，封顶 60s"},
-    "RETRIES": {"type": "int", "default": 2, "group": "下载",
-                "label": "失败重试次数", "note": "网络给满、死种只给一次"},
-    "STALL_TIMEOUT": {"type": "float", "default": 900.0, "group": "下载",
-                      "label": "死种判定 (秒)", "note": "连续多久无新字节判死种，0=不检测"},
-    "MAGNET_TIMEOUT": {"type": "float", "default": 7200.0, "group": "下载",
-                       "label": "单任务总超时 (秒)", "note": "默认 2 小时"},
-    # ── 上传
-    "UPLOAD_CHUNK": {"type": "str", "default": "64M", "group": "下载",
-                     "label": "上传分片", "note": "实测 64M 最优"},
-    "UPLOAD_TRANSFERS": {"type": "int", "default": 4, "group": "下载",
-                         "label": "上传并发数", "note": "实测 4 最优"},
-    # ── 磁盘
-    "DISK_RESERVE_GB": {"type": "float", "default": 5.0, "group": "下载",
-                        "label": "磁盘预留 (GB)", "note": "永远不参与分配的空间"},
-    "DISK_QUEUE_TIMEOUT": {"type": "float", "default": 0.0, "group": "下载",
-                           "label": "排队最久等待 (秒)", "note": "0 = 一直等"},
     # ── 刮削
     "SCRAPE": {"type": "bool", "default": True, "group": "刮削",
                "label": "刮削元数据", "note": "关掉就只传视频不生成 NFO/封面"},
@@ -67,11 +45,8 @@ SETTINGS_SPEC: dict[str, dict] = {
     "CLEANUP_OLDER_DAYS": {"type": "float", "default": 0.0, "group": "内容",
                            "label": "回收只考虑多久前的", "note": "0 = 关闭"},
     # ── 面板
-    "PANEL_CLEAN_DAYS": {"type": "float", "default": 0.0, "group": "下载",
+    "PANEL_CLEAN_DAYS": {"type": "float", "default": 0.0, "group": "内容",
                          "label": "面板失败记录保留天数", "note": "0 = 不自动清"},
-    # ── 其它
-    "DEFAULT_SIZE_GB": {"type": "float", "default": 4.0, "group": "下载",
-                        "label": "默认体积估算 (GB)", "note": "体积查不到时的兜底"},
     # ── 数据源：MetaTube（刮削后端）。地址/代理/超时改完下一次请求就生效。
     "METATUBE_URL": {"type": "str", "default": "", "group": "内容",
                      "label": "MetaTube 地址",
@@ -113,7 +88,7 @@ SETTINGS_SPEC: dict[str, dict] = {
     "CLOUD_INGEST": {"type": "bool", "default": False, "group": "存储",
                      "label": "启用云添加",
                      "note": "开：磁力直接进云盘离线下载，落地后远端整理（不占本地盘）。"
-                             "关：还是本地下载 → 整理 → 上传"},
+                             "关：不接受新任务（本地下载已取消，没有第二条路）"},
     "CLOUD_INBOX": {"type": "str", "default": "", "group": "存储",
                     "label": "离线落地目录",
                     "note": "云盘里的目录，例如 迅雷云盘/我的资源；留空则不允许启用云添加"},

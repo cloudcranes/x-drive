@@ -165,11 +165,12 @@ def test_resource_results_hidden_outside_archive():
 
 
 def test_resource_rows_offer_explicit_download():
-    """搜到候选不等于开下：必须点「下载」才进队列。"""
+    """搜到候选不等于开下：必须点「提交云添加」才进队列。"""
     js = script(html())
     body = js[js.index("async function searchResources"):js.index("// ── 顶栏类型切换")]
-    assert "downloadCandidate(" in body, "每条候选要有下载入口"
-    assert "点「下载」才进队列" in js, "提示要说明搜索本身不落任务"
+    assert "downloadCandidate(" in body, "每条候选要有提交入口"
+    assert "点「提交云添加」才进队列" in js, "提示要说明搜索本身不落任务"
+    assert "下载" not in body, "候选的入口不该再叫「下载」（本地下载已取消）"
 
 
 def test_code_of_query_normalizes():
@@ -319,15 +320,26 @@ def test_maintenance_tabs_keep_their_actions():
     assert "askNormalize" not in js, "旧的一键动作应已移除"
 
 
-def test_settings_has_four_tabs():
-    """设置页子标签 12 → 6 → 4：存储 / 下载 / 刮削 / 内容。
+def test_settings_has_three_tabs():
+    """设置页子标签 12 → 6 → 3：存储 / 刮削 / 内容。
 
     「归档回收」与「数据源」合成「内容」（内容从哪来、留多久）；
-    「面板」「其它」那两项本来就与界面无关，归位到「下载」。
+    「面板」那项归位到「内容」；
+    原来的「下载」整组没了 —— 2026-10-25 取消本地下载，配额/重试/磁盘预留
+    这些只服务本地下载的项随之删除（云添加不占本地磁盘，也没有「今日上传量」）。
     """
     from app import settings as settings_mod
     groups = {spec.get("group", "其它") for spec in settings_mod.SETTINGS_SPEC.values()}
-    assert groups == {"存储", "下载", "刮削", "内容"}, groups
+    assert groups == {"存储", "刮削", "内容"}, groups
+
+
+def test_no_local_download_settings_remain():
+    """只服务本地下载的设置项必须删干净 —— 留着会让用户以为还有第二条路。"""
+    from app import settings as settings_mod
+    for key in ("DAILY_UPLOAD_GB", "RETRIES", "RETRY_BASE_DELAY", "STALL_TIMEOUT",
+                "MAGNET_TIMEOUT", "UPLOAD_CHUNK", "UPLOAD_TRANSFERS",
+                "DISK_RESERVE_GB", "DISK_QUEUE_TIMEOUT", "DEFAULT_SIZE_GB"):
+        assert key not in settings_mod.SETTINGS_SPEC, f"{key} 只服务本地下载，应删掉"
 
 
 def test_xunlei_credentials_are_not_shown_as_settings_rows():

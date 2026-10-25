@@ -16,7 +16,7 @@
     --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
     --sans:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;
     --side:264px;        /* 侧栏宽度 */
-    --bar-w:302px;       /* 下载队列宽度 */
+    --bar-w:302px;       /* 任务队列宽度 */
     --pad:24px;          /* 内容区左右内边距 */
     --gap:16px;
     --radius:12px;
@@ -317,7 +317,7 @@
   .empty b{display:block; color:var(--text-2); font-size:15px; margin-bottom:6px}
   .empty span{font-size:12.5px; color:var(--dim)}
 
-  /* ───────────────────────── 新建下载面板 */
+  /* ───────────────────────── 提交区（搜索框里粘磁力时出现） */
   .panel{margin:14px var(--pad) 0; padding:13px 14px; border:1px solid rgba(62,186,244,.28);
     border-radius:var(--radius); background:linear-gradient(160deg,rgba(16,20,22,.95),rgba(9,9,9,.96));
     box-shadow:0 18px 40px -30px rgba(62,186,244,.8)}
@@ -390,7 +390,7 @@
   .shots img{width:92px; height:52px; object-fit:cover; border-radius:5px;
     border:1px solid var(--line); background:#0a0a0a}
 
-  /* ───────────────────────── 下载队列（主内容区的一个视图）
+  /* ───────────────────────── 任务队列（主内容区的一个视图）
      以前是右侧抽屉：桌面上挤压卡片、窄屏上盖住整页，还得管理开合与遮罩。
      现在和「设置 / 元数据」一样是整块视图，点侧栏切换，不再从右边弹出。 */
   .queuepanel{margin-top:14px}
@@ -759,7 +759,7 @@
   </div>
 
   <!-- 功能导航：所有操作入口收进侧栏，顶部工具条只留搜索与筛选。
-       按「下载 / 维护 / 配置」分组，图标 + 完整词组，不再靠悬停猜。 -->
+       按「归档 / 维护 / 配置」分组，图标 + 完整词组，不再靠悬停猜。 -->
   <div class="side-block navmain">
     <div class="side-h">操作</div>
     <nav class="nav" id="nav-main">
@@ -770,13 +770,13 @@
       <button class="it" id="queuebtn" type="button" title="查看进行中 / 排队 / 失败的任务">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 6h11M3 12h11M3 18h7"/><path d="m16 12 3 3 3-3"/><path d="M19 15V6"/></svg>
-        <span class="t">下载队列</span><span class="n" id="queue-n"></span></button>
+        <span class="t">任务队列</span><span class="n" id="queue-n"></span></button>
       <button class="it" id="subs-open" type="button" title="订阅演员 / 系列，自动追新">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
         <span class="t">订阅</span></button>
-      <button class="it" id="settings-open" type="button" title="设置：配额、重试、并发、刮削开关等，改了立即生效">
+      <button class="it" id="settings-open" type="button" title="设置：云添加、存储、刮削开关等，改了立即生效">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -1016,7 +1016,7 @@
     <span class="sub" id="result-sub"></span>
     <span class="right">
       <button class="pill" id="resbtn" type="button" hidden
-              title="拿这个番号去网上找磁力（不下载，先看候选）">搜资源</button>
+              title="拿这个番号去网上找磁力（不提交，先看候选）">搜资源</button>
       <select class="sortsel" id="sortsel" aria-label="排序">
         <option value="new">最新优先</option>
         <option value="old">最早优先</option>
@@ -1026,10 +1026,10 @@
     </span>
   </div>
 
-  <!-- 搜索框里粘贴磁力 / 直链时的提交区（原「新建下载」面板的功能并入搜索框） -->
-  <section class="panel" id="submit-slot" hidden aria-label="提交下载"></section>
+  <!-- 搜索框里粘贴磁力 / 直链时的提交区 -->
+  <section class="panel" id="submit-slot" hidden aria-label="提交云添加"></section>
 
-  <!-- 搜索框直接搜网络资源的结果：本地没有这条番号时的出口 -->
+  <!-- 搜索框直接搜网络资源的结果：站内没有这条番号时的出口 -->
   <section class="panel res" id="resource-slot" hidden aria-label="网络资源"></section>
 
   <!-- 搜索框输入关键词（MIMK / SSIS 这类前缀、标题里的词）回车的结果 -->
@@ -1041,10 +1041,10 @@
   <div class="grid" id="feed"></div>
   <div id="empty-slot"></div>
 
-  <!-- ───────── 下载队列：主内容区的视图（不再从右侧滑出） -->
-  <section class="panel wide queuepanel" id="queue" hidden aria-label="下载队列">
+  <!-- ───────── 任务队列：主内容区的视图（不再从右侧滑出） -->
+  <section class="panel wide queuepanel" id="queue" hidden aria-label="任务队列">
     <div class="queue-head">
-      <h3>下载队列</h3>
+      <h3>任务队列</h3>
       <span class="badge" id="queue-stat"></span>
       <span class="hint" id="queue-hint"></span>
       <span class="hint" id="queue-flash"></span>
@@ -1052,7 +1052,7 @@
         <button class="ghostbtn" id="queue-clear" type="button" title="清掉已完成 / 已停止的任务记录（不动文件）">
           清空已完成
         </button>
-        <button class="ghostbtn" id="queue-clear-failed" type="button" title="清掉所有失败的任务记录（不动下载目录）">
+        <button class="ghostbtn" id="queue-clear-failed" type="button" title="清掉所有失败的任务记录（不动云盘文件）">
           清空失败
         </button>
         <button class="ghost" id="queue-close" type="button" title="回到归档列表">返回归档</button>
@@ -1131,7 +1131,7 @@ function matches(t) {
     if (!v.includes(view.series)) return false;
   }
   if (view.month && t.month !== view.month) return false;
-  // 搜索框里粘的是磁力 / 直链时，那不是「筛选词」：别拿整串 URL 去比本地文本
+  // 搜索框里粘的是磁力 / 直链时，那不是「筛选词」：别拿整串 URL 去比站内文本
   const qk = queryKind(view.q);
   const qtext = (qk.kind === "magnet" || qk.kind === "link") ? "" : view.q;
   const q = norm(qtext);
@@ -1679,7 +1679,7 @@ function applyFilter() {
     ? `${tasks.length} / ${total} 个番号 · ${bytes(size)}`
     : `${total} 个番号`;
 
-  // 输入像番号时，结果条右侧给「搜资源」：本地没有也能直接去网上找
+  // 输入像番号时，结果条右侧给「搜资源」：站内没有也能直接去网上找
   const resCode = codeOfQuery(view.q);
   if ($("resbtn")) $("resbtn").hidden = !resCode;
   // 上方资源面板已经给出这个番号的候选，就别在空态里再摆一个同样的按钮
@@ -1701,18 +1701,18 @@ function applyFilter() {
     if (!total) {
       box.append(el("b", null, "还没有归档记录"));
       box.append(el("span", null, resShown
-        ? "上面的网络资源就是搜到的候选：点「下载」才会进队列。"
+        ? "上面的网络资源就是搜到的候选：点「提交云添加」才会进队列。"
         : "在上面搜索框输入番号搜资源，或直接粘贴磁力 / 直链；也可以让 Telegram 机器人收。"));
       if (!resShown) {
         if (resCode) cta("搜网络资源", () => searchResources(resCode));
       }
     } else if (resCode && resShown) {
       box.append(el("b", null, "站内没有 " + resCode));
-      box.append(el("span", null, "上面的网络资源就是搜到的候选：点「下载」才会进队列。"));
+      box.append(el("span", null, "上面的网络资源就是搜到的候选：点「提交云添加」才会进队列。"));
     } else if (resCode) {
-      // 站内没有这条番号：直接在原地给「去网上找」的出口，不用再进「新建下载」
+      // 站内没有这条番号：直接在原地给「去网上找」的出口，不用再进提交区
       box.append(el("b", null, "站内没有 " + resCode));
-      box.append(el("span", null, `本地 ${total} 个番号里没有它。搜一下网络资源，找到磁力再决定下不下。`));
+      box.append(el("span", null, `站内 ${total} 个番号里没有它。搜一下网络资源，找到磁力再决定下不下。`));
       cta("搜网络资源", () => searchResources(resCode));
     } else {
       box.append(el("b", null, "没有匹配的番号"));
@@ -1723,8 +1723,8 @@ function applyFilter() {
 }
 
 // ───────────────────────────────── 搜索框 → 网络资源
-// 顶部搜索框默认只筛本地归档（秒出、离线可用）。输入完整番号后，结果条右侧
-// 出现「搜资源」；站内查不到时，空态直接给按钮。搜到的是候选磁力，点「下载」
+// 顶部搜索框默认只筛站内归档（秒出、离线可用）。输入完整番号后，结果条右侧
+// 出现「搜资源」；站内查不到时，空态直接给按钮。搜到的是候选磁力，点「提交云添加」
 // 才进队列 —— 搜索本身不落任何任务。
 const RES_CODE_RE = /^(?:FC2[-_ ]?PPV[-_ ]?\d{6,8}|[A-Za-z]{2,6}[-_ ]?\d{2,5})$/;
 
@@ -1775,7 +1775,7 @@ function resMetaCard(code, info) {
   return box;
 }
 
-// 提交一条候选：与「新建下载 / 用这条」同一条 /api/download 通道，按番号去重
+// 提交一条候选：与搜索框的提交同一条 /api/download 通道，按番号去重
 async function downloadCandidate(code, item, btn) {
   if (btn) btn.disabled = true;
   setResHint(`提交 ${item.size_text || "这条"}…`);
@@ -1887,7 +1887,7 @@ async function searchResources(code) {
   }
   resState.items = items.length;
   applyFilter();              // 有结果就把空态里那个重复的按钮收掉
-  setResHint(`${got} 找到 ${items.length} 条候选 · 点「下载」才进队列`, "ok");
+  setResHint(`${got} 找到 ${items.length} 条候选 · 点「提交云添加」才进队列`, "ok");
   // 排序选择：默认「推荐」（有种子优先）。0 种子的永远垫底且标红。
   const sortSel = el("select", "res-sort");
   for (const [k, v] of Object.entries(RES_SORTS)) {
@@ -1936,8 +1936,8 @@ function renderCandidates(items, got, info) {
     pv.title = "查这条磁力的文件名 / 体积 / 截图（按 infohash 缓存）";
     pv.addEventListener("click", () => showMagnetPreview(item, pv));
     acts.append(pv);
-    const dl = el("button", null, "下载");
-    dl.title = "提交到下载队列（按番号去重）";
+    const dl = el("button", null, "提交云添加");
+    dl.title = "提交到任务队列（磁力直接进迅雷云盘，按番号去重）";
     dl.addEventListener("click", () => downloadCandidate(got, item, dl));
     acts.append(dl);
     row.append(acts);
@@ -2037,7 +2037,7 @@ document.addEventListener("keydown", e => {
 // ── 侧栏 / 队列开合
 function openSide() { $("side").classList.add("open"); syncScrim(); }
 function closeSide() { $("side").classList.remove("open"); syncScrim(); }
-// 下载队列是一个视图（不是右侧抽屉）：打开 = 切到队列界面，关闭 = 回归档。
+// 任务队列是一个视图（不是右侧抽屉）：打开 = 切到队列界面，关闭 = 回归档。
 // 这样桌面上不再挤压卡片、窄屏上也不再盖住整页，少一套开合/遮罩状态。
 function openQueue() { showView("queue"); loadJobs(); }
 function closeQueue() { if (currentView === "queue") showView("archive"); }
@@ -2109,7 +2109,7 @@ $("logout").addEventListener("click", async () => {
   location.replace("/");
 });
 
-// ── 新建下载
+// ── 提交区
 // ── 订阅自动化
 let subKind = "actor";
 const KIND_NAME = {actor: "演员", series: "系列"};
@@ -2207,7 +2207,7 @@ async function renderSubs() {
   box.textContent = "";
   const subs = (data && data.subs) || [];
   renderSuggest(box, (data && data.suggest) || {}, subs);
-  // 待办与订阅是同一条链路（订阅发现 → 待办 → 下载），所以跟着 /api/subs
+  // 待办与订阅是同一条链路（订阅发现 → 待办 → 提交），所以跟着 /api/subs
   // 一起渲染；放在「没有订阅」的提前返回之前，免得没订阅就看不到待办。
   renderBacklog((data && data.backlog) || null);
   if (!subs.length) {
@@ -2413,7 +2413,7 @@ $("sub-run").addEventListener("click", async () => {
 // ───────────────────────────────── 视图切换
 // 主内容区整块切换：点侧栏某项，中间区域整个换成那个界面，归档列表暂时隐藏。
 // 以前各功能是弹层（section.panel 浮在归档列表上），多个可以叠在一起；
-// 同一时刻只显示一个视图（归档 / 下载队列 / 订阅 / 归档维护 / 设置）。
+// 同一时刻只显示一个视图（归档 / 任务队列 / 订阅 / 归档维护 / 设置）。
 function showView(name) {
   const isArchive = name === "archive";
   const resBox = $("resource-slot");
@@ -2442,7 +2442,7 @@ function showView(name) {
     }
   }
   // 侧栏导航高亮：只有当前视图那一项 on（add/remove，不用 toggle，兼容假 DOM）
-  // queuebtn（下载队列抽屉）单独维护 on，切视图时一并清掉，避免双高亮
+  // queuebtn（任务队列）单独维护 on，切视图时一并清掉，避免双高亮
   const navOn = [
     ["archive-open", isArchive],
     ["subs-open", name === "subs"],
@@ -2466,7 +2466,7 @@ function showArchive() { showView("archive"); }
 $("archive-open").addEventListener("click", showArchive);
 
 // ── 搜索框的三种输入：番号 / 磁力 / 直链
-// 「新建下载」面板已并入搜索框：粘贴磁力或直链就地出提交区，不再另开一页。
+// 提交区已并入搜索框：粘贴磁力或直链就地出提交区，不再另开一页。
 function queryKind(text) {
   const t = (text || "").trim();
   const magnet = t.match(/magnet:\?[^\s"']+/i);
@@ -2499,7 +2499,7 @@ function clearSubmit() {
   slot.textContent = "";
 }
 
-// 提交区：显示待提交的链接 + 「提交下载 / 预览信息（磁力）」
+// 提交区：显示待提交的链接 + 「提交云添加 / 预览信息（磁力）」
 function renderSubmit(text, kind, code) {
   const slot = $("submit-slot");
   slot.hidden = false;
@@ -2519,8 +2519,9 @@ function renderSubmit(text, kind, code) {
   const txt = el("div", "submit-text", text);
   txt.title = text;
   row.append(txt);
-  const submit = el("button", "primary", "提交下载");
+  const submit = el("button", "primary", "提交云添加");
   submit.type = "button";
+  submit.title = "磁力直接进迅雷云盘离线下载，落地后远端整理，不占本地磁盘";
   submit.addEventListener("click", () => submitDownload(text, submit));
   row.append(submit);
   if (kind === "magnet") {
@@ -2538,7 +2539,7 @@ function renderSubmit(text, kind, code) {
   slot.append(pv);
 }
 
-// 预览信息：沿用原来「新建下载 → 预览信息」的能力，渲染在提交区里
+// 预览信息：提交前先看看这条磁力是什么，渲染在提交区里
 function showProbePreview(info) {
   const box = $("submit-preview");
   if (!box) return;
@@ -2586,7 +2587,7 @@ async function peekMagnet(text, btn) {
   }
 }
 
-// 提交到下载队列：与资源候选的「下载」同一条 /api/download，按番号去重
+// 提交到任务队列：与资源候选的「提交云添加」同一条 /api/download，按番号去重
 async function submitDownload(text, btn) {
   if (btn) btn.disabled = true;
   setSubmitHint("提交中…");
@@ -2617,7 +2618,7 @@ async function submitDownload(text, btn) {
 }
 
 // ── 任务队列
-const STAGE_TEXT = {queued: "等空间", downloading: "下载中", organizing: "整理中",
+const STAGE_TEXT = {queued: "排队中", downloading: "准备中", organizing: "整理中",
   uploading: "上传中", cloud: "云端落地中", deferred: "额度等待", done: "完成",
   cancelled: "已停止", failed: "失败"};
 const ACTIVE = new Set(["queued", "downloading", "organizing", "uploading", "cloud", "deferred"]);
@@ -2661,7 +2662,7 @@ function jobNode(j) {
   if (DONE_STAGES.has(j.stage)) {
     const rm = el("button", "jstop", "删记录");
     rm.type = "button";
-    rm.title = "删掉这条任务记录（不动下载目录与已归档文件）";
+    rm.title = "删掉这条任务记录（不动云盘文件与已归档内容）";
     rm.addEventListener("click", async () => {
       if (!confirm(`删除任务记录？\n\n${j.code || j.id}\n\n只删记录，不动文件。`)) return;
       rm.disabled = true;
@@ -2727,7 +2728,7 @@ function jobNode(j) {
     showTl();
     tl.classList.add("on");
   }
-  // 进度条与那行字就地刷新：下载中的任务每 3 秒都有新数字，
+  // 进度条与那行字就地刷新：进行中的任务每 3 秒都有新数字，
   // 但**不该因此重建整张卡**（重建就会闪）
   const update = next => {
     if (next) j = next;              // 复用节点，但所有动作与展示都读最新快照
@@ -2998,7 +2999,7 @@ async function showMagnetPreview(item, btn) {
 
 async function panelControl(id, action, btn) {
   const label = {pause: "暂停", resume: "继续", delete: "删除任务记录"}[action] || action;
-  if (action === "delete" && !confirm(`删除迅雷任务记录？\n\n只删任务条目，已下载的文件留在下载目录里。`)) return;
+  if (action === "delete" && !confirm(`删除迅雷任务记录？\n\n只删任务条目，已下载的文件留在迅雷那边不动。`)) return;
   if (btn) btn.disabled = true;
   try {
     const r = await fetch(BASE + "/api/xunlei/control", authInit({
@@ -3136,7 +3137,7 @@ function renderQueueBlock(box, items, scope, after) {
     let entry;
     if (old && old.sig === item.sig) {
       // 结构没变：复用节点。进度/速度这类「只改内容」的字段交给 update 原地改，
-      // 不重建 —— 否则下载中的任务每 3 秒换一个新节点，看着就是整块在闪。
+      // 不重建 —— 否则进行中的任务每 3 秒换一个新节点，看着就是整块在闪。
       entry = old;
       if (item.update) item.update(entry.node);
     } else {
@@ -3208,7 +3209,7 @@ async function loadJobs(force = false) {
           build: () => {
             const empty = el("div", "queue-empty");
             empty.append(el("div", null, "队列是空的"));
-            empty.append(el("div", null, "新建下载后进度会显示在这里"));
+            empty.append(el("div", null, "提交云添加后进度会显示在这里"));
             return empty;
           },
         });
@@ -3218,7 +3219,7 @@ async function loadJobs(force = false) {
             key: "job:" + j.id,
             // 签名只放「会改变卡片结构」的字段（阶段、番号、有没有链接、有没有错误行）。
             // percent / speed / downloaded 只改文字与进度条宽度，走 update 原地刷新 ——
-            // 把它们放进签名会让下载中的卡片每 3 秒重建一次，那就是「一直在闪」。
+            // 把它们放进签名会让进行中的卡片每 3 秒重建一次，那就是「一直在闪」。
             sig: queueSig([j.stage, j.code, j.name, j.link, j.error ? 1 : 0,
                            j.stage === "queued" ? (j.queued_position ? 1 : 0) : 0,
                            tlOpen.has(j.id) ? 1 : 0]),
@@ -3398,7 +3399,7 @@ function setFindHint(text, kind) {
   h.className = "hint" + (kind ? " " + kind : "");
 }
 
-// ── 任务时间线（下载队列里的「时间线」展开）
+// ── 任务时间线（任务队列里的「时间线」展开）
 // 数据源：/api/jobs 里每条任务的 events（后端 job_events 表，按时间升序）。
 // 有事件就按事件画完整时间线（入队→领取→重试/延期→阶段切换→终态），
 // 事件为空（老任务、迁移前入库的）就回退到下面这套「只用已有字段」的渲染，不猜、不编。
@@ -3411,7 +3412,7 @@ function setFindHint(text, kind) {
 //   retries      → 已发生的重试次数（只是计数，没有逐次时间）
 //   resume_from  → 记录里的续传标记（upload = 从上传阶段续跑）；但后端不写「何时恢复」，
 //                  所以只作为「当前状态」的一句话，不冒充成一个带时间的节点。
-//   kept         → 任务中止时保留的下载目录（同样只有值，没有时间）
+//   kept         → 任务中止时保留的目录（同样只有值，没有时间）
 //   owner/stage  → 发起方与当前阶段
 //
 // 缺口（本批次没有、所以这里不画）：阶段迁移历史（queued→downloading→organizing→uploading
@@ -3419,8 +3420,8 @@ function setFindHint(text, kind) {
 // 单任务阶段耗时与吞吐（timing/throughput 只落在 metrics.json，没进 /api/jobs 字段表）。
 const JOB_OWNER_TEXT = {web: "网页提交", bot: "Telegram 机器人"};
 const JOB_STAGE_WHY = {
-  queued: "等磁盘空间或排队位置",
-  downloading: "下载中",
+  queued: "排队等放行",
+  downloading: "准备中",
   organizing: "整理文件名与目录",
   uploading: "上传到 Drive",
   deferred: "额度等待，到点自动重跑",
@@ -3451,7 +3452,7 @@ function jobEventTone(kind) {
 }
 // 阶段名（事件 detail 里可能带番号/目录）→ 中文说明，只翻译能确认的那几个词
 const JOB_STAGE_WORD = {
-  downloading: "下载", organizing: "整理", uploading: "上传",
+  downloading: "准备", organizing: "整理", uploading: "上传",
   queued: "排队", deferred: "延期", done: "完成", failed: "失败", cancelled: "取消",
 };
 function jobEventWhy(kind, detail) {
@@ -4331,7 +4332,7 @@ $("norm-refresh").addEventListener("click", loadNormPlan);
 $("norm-adopt-run").addEventListener("click", () => runNorm("adopt", $("norm-adopt-run")));
 $("norm-rename-run").addEventListener("click", () => runNorm("rename", $("norm-rename-run")));
 
-// 面板里多天前的失败任务：只删任务记录，不动下载目录
+// 面板里多天前的失败任务：只删任务记录，不动迅雷那边的文件
 $("panel-clean").addEventListener("click", async () => {
   let plan = null;
   try {
@@ -4351,7 +4352,7 @@ $("panel-clean").addEventListener("click", async () => {
     return;
   }
   const names = list.slice(0, 10).map(i => i.name).join("\n");
-  if (!confirm(`删除迅雷面板里 ${list.length} 条失败任务记录？\n\n${names}\n\n只删任务条目，已下载的文件留在下载目录里。`)) return;
+  if (!confirm(`删除迅雷面板里 ${list.length} 条失败任务记录？\n\n${names}\n\n只删任务条目，已下载的文件留在迅雷那边不动。`)) return;
   try {
     const r2 = await fetch(BASE + "/api/xunlei/cleanup", authInit({
       method: "POST", headers: {"Content-Type": "application/json"},
@@ -4383,7 +4384,7 @@ function queueFlash(msg, isError) {
 async function clearJobs(stage, label) {
   const n = lastJobs.filter(j => (stage ? j.stage === stage : DONE_STAGES.has(j.stage))).length;
   if (!n) { queueFlash(`没有可清的${label}任务`); return; }
-  if (!confirm(`清掉 ${n} 条${label}任务记录？\n\n只删记录，不动下载目录与已归档文件。`)) return;
+  if (!confirm(`清掉 ${n} 条${label}任务记录？\n\n只删记录，不动云盘文件与已归档内容。`)) return;
   try {
     const r = await fetch(BASE + "/api/jobs/clear", authInit({
       method: "POST", headers: {"Content-Type": "application/json"},

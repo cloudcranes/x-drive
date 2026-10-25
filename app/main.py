@@ -28,8 +28,8 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import (codes, core, diskspace, fetcher, meta, metadata, metrics, metatube, storage,
-               pipeline, retry, settings as settings_mod, sources, store, whatslink,
+from . import (cloudadd, codes, core, meta, metadata, metrics, metatube, storage,
+               retry, settings as settings_mod, sources, store, whatslink,
                workspace, xunlei)
 
 log = logging.getLogger("x-drive")
@@ -55,9 +55,7 @@ class Config:
     xunlei_token: str = ""
     xunlei_poll: float = 10.0
     xunlei_settle: float = 30.0
-    # 可热更新参数（daily_upload_gb / magnet_timeout / stall_timeout /
-    # upload_transfers / upload_chunk / retries / retry_base_delay /
-    # scrape / scrape_nfo / scrape_poster）不再是 dataclass 字段，
+    # 可热更新参数（scrape / scrape_nfo / scrape_poster）不再是 dataclass 字段，
     # 改成下面的 property 每次从 state 表读，网页改了立即生效、不必重启。
 
     @property
@@ -79,9 +77,9 @@ class Config:
         except Exception:
             return settings_mod.SETTINGS_SPEC.get(key, {}).get("default")
 
-    @property
-    def daily_upload_gb(self) -> int:
-        return self._get("DAILY_UPLOAD_GB")
+    def get(self, key: str):
+        """读一个可热更新参数（供 app/cloudadd.py 这样的共享模块用）。"""
+        return self._get(key)
 
     @property
     def magnet_timeout(self) -> float:
@@ -98,14 +96,6 @@ class Config:
     @property
     def upload_chunk(self) -> str:
         return self._get("UPLOAD_CHUNK")
-
-    @property
-    def retries(self) -> int:
-        return self._get("RETRIES")
-
-    @property
-    def retry_base_delay(self) -> float:
-        return self._get("RETRY_BASE_DELAY")
 
     @property
     def scrape(self) -> bool:
@@ -198,45 +188,6 @@ async def rclone(cfg: Config, *args: str, timeout: float = 180.0) -> tuple[int, 
         await proc.communicate()
         return 124, "", f"rclone {' '.join(args[:2])} 超时"
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
-
-
-def usage_file(cfg: Config) -> Path:
-    return Path(cfg.pending_dir).parent / "usage.json"
-
-
-def today_bytes(cfg: Config) -> int:
-    try:
-        data = json.loads(usage_file(cfg).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return 0
-    if data.get("date") != datetime.now().strftime("%Y-%m-%d"):
-        return 0
-    return int(data.get("bytes") or 0)
-
-
-def add_usage(cfg: Config, size: int) -> None:
-    path = usage_file(cfg)
-    today = datetime.now().strftime("%Y-%m-%d")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("date") != today:
-            data = {"date": today, "bytes": 0}
-    except (OSError, json.JSONDecodeError):
-        data = {"date": today, "bytes": 0}
-    data["bytes"] = int(data.get("bytes") or 0) + max(0, size)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data), encoding="utf-8")
-    except OSError:
-        pass
-
-
-def quota_exceeded(cfg: Config, incoming: int) -> bool:
-    """按 DAILY_UPLOAD_GB 预判；0 表示不限制。"""
-    if cfg.daily_upload_gb <= 0:
-        return False
-    limit = cfg.daily_upload_gb * 1024**3
-    return today_bytes(cfg) + incoming > limit
 
 
 async def folder_link(cfg: Config, target: str) -> str | None:
@@ -520,44 +471,6 @@ async def deliver(ctx: ContextTypes.DEFAULT_TYPE, url: str, status: Message, for
     return text
 
 
-async def scrape_bot_attachments(cfg: Config, work: Path, folder: str,
-                                 files: list[Path], job_id: str = "") -> dict:
-    """bot 侧的刮削附件：核心逻辑与网页共用 metadata.build_attachments。
-
-    这里只做 bot 独有的事：读 cfg 开关、按任务 extra 的 locked 保住手改字段、
-    把结果登记回任务 extra。刮削失败只记待补刮，绝不阻断上传。
-    """
-    if not cfg.scrape:
-        return {"record": {}, "files": files, "written": [], "failed": [], "pending": False}
-
-    code = codes.canonical(folder) or folder
-    store_ = task_store(cfg)
-    extra = (store_.get(job_id) or {}).get("extra") or {} if job_id else {}
-    locks = set(extra.get("locked") or [])
-
-    # 这里在 bot 的事件循环里：必须 await，不能在协程里 asyncio.run
-    # （那样会抛「cannot be called from a running event loop」，刮削永远失败）。
-    found: dict = {}
-    try:
-        found = await metatube.scrape(code) if metatube.configured() else {}
-    except Exception as exc:                 # 刮削是可选环节
-        log.info("刮 %s 失败（不影响上传）：%s", code, exc)
-        found = {}
-    # 番号对不上就不用：宁可留待补刮，也不把别人的元数据塞进归档
-    if found and not metatube.matches(code, found):
-        log.warning("MetaTube 返回 %s 与 %s 不符，丢弃", found.get("code"), code)
-        found = {}
-
-    out = metadata.build_attachments(work, code, files, lambda _c: found, locks=locks,
-                                     old=extra.get("scraped") or {},
-                                     want_nfo=cfg.scrape_nfo,
-                                     want_poster=cfg.scrape_poster)
-    if job_id:
-        task_update(cfg, job_id, extra={**(store_.get(job_id).get("extra") or {}),
-                                     "scraped": out["record"],
-                                     "scrape_pending": out["pending"],
-                                     "scrape_failed": out["failed"]})
-    return out
 
 
 async def next_candidate_magnet(code: str, tried_btih: set[str],
@@ -584,6 +497,13 @@ async def next_candidate_magnet(code: str, tried_btih: set[str],
     return ""
 
 
+async def _probe_source(client: httpx.AsyncClient, source: str) -> dict:
+    """提交前查元信息（只有磁力会查，直链直接跳过）。"""
+    if not source.lower().startswith("magnet:"):
+        return {}
+    return await whatslink.lookup(client, source)
+
+
 async def run_task(
     cfg: Config,
     client: httpx.AsyncClient,
@@ -594,17 +514,24 @@ async def run_task(
     chat_id: int | None = None,
     resume_id: str = "",
 ) -> str:
-    """番号 → 下载（磁力/直链都投给迅雷）→ 整理 → 按番号上传 Drive。
+    """磁力 → 迅雷云盘离线下载 → 远端整理 → 归档。
+
+    2026-10-25 起这是**唯一**的下载链路（本地下载已取消）：文件全程在云盘里，
+    不落本地磁盘，所以没有下载目录、也没有工作区。Bot 与网页共用
+    app/cloudadd.py 里的同一套实现，两边行为不会漂移。
 
     resume_id：恢复已有任务时沿用原 job_id（不新建），重启续跑同一条记录。
     """
-    xl = xunlei.Xunlei(cfg.xunlei_url, cfg.xunlei_parent, cfg.tmp_root, cfg.xunlei_token)
-    sources = fetcher.sources(text)
+    sources = core.extract_urls(text)
     if not sources:
         return (
             "❌ 没找到可以下载的链接。\n发磁力或直链给我，例如：\n"
             "`magnet:?xt=urn:btih:...`\n`https://example.com/SSIS-123.mp4`"
         )
+
+    ok, why = cloudadd.ready(cfg.get)
+    if not ok:
+        return f"❌ 云添加不可用：{why}\n请到网页「设置 → 存储」启用云添加并填好离线落地目录。"
 
     # 番号与链接配对：`SSIS-123 magnet:a ABP-456 magnet:b` 里每个番号各归其后那个链接。
     # 不能对整条消息只 detect 一次 —— 那样只会拿到第一个番号，
@@ -640,7 +567,7 @@ async def run_task(
                 failures.append(f"{key} 正在下载（任务表里已有未结束任务），跳过重复提交")
                 continue
 
-        info = await pipeline.probe(client, source) if fetcher.is_magnet(source) else None
+        info = await _probe_source(client, source)
         hint = ""
         if info:
             hint = "\n" + whatslink.describe(info)
@@ -649,13 +576,11 @@ async def run_task(
                 if guessed:
                     code = key = guessed
                     hint += f"\n（从文件名识别到番号 {guessed}）"
-            if info.get("size") and quota_exceeded(cfg, int(info["size"])):
-                until = defer_task(
-                    cfg, job_id, f"体积超过今日剩余配额：{core.human_size(info['size'])}")
-                failures.append(
-                    f"{source[:40]}…: 体积超过今日剩余配额，"
-                    f"{time.strftime('%m-%d %H:%M', time.localtime(until))} 自动重试")
-                continue
+        if not code:
+            # 识别不出番号：用带时间戳的兜底目录名。网页端的「自愈」按
+            # `unclassified-` 前缀找这些记录，事后用文件名再认一次番号 ——
+            # 名字要跟那边一致，两端才能互相看见。
+            code = key = f"unclassified-{int(time.time())}"
 
         # 与网页端同一套执行租约：领不到就说明已有执行者在跑，绝不进同一目录
         if not lease_begin(cfg, job_id):
@@ -663,248 +588,146 @@ async def run_task(
             continue
         task_event(cfg, job_id, "claimed", LEASES.get(job_id) or "")
 
-        # 下载目录（迅雷建）与工作区（我们整理）分开，失败不动原件
-        # 投递时用的键：下载目录按它建（迅雷已按它落盘），失败路径的日志也靠它
         key_safe = workspace.key_of(key)
-        download_dir = workspace.staging(cfg.tmp_root, key_safe)
-        work = workspace.workspace(cfg.state_dir, key_safe)
-        # 清理用的键：以最终归档目录名为准。整理后 folder 可能与投递时的 key 不同
-        # （投递时没给番号、从文件名或磁力信息里才认出来），那时仍按旧键清理，
-        # 工作区名对不上、下载目录标记也对不上，原件会永远留在盘上。
-        clean_key = key_safe
-        uploaded = False          # 上传是否真的完成（只在这里置真，不再被文件清单覆盖）
-        archived = False          # 归档记录是否已成功落盘；与 uploaded 同时成立才允许清原件
-        outcome_ok = False        # 整条链路是否无异常走完；只决定 metrics 口径，不参与清理
+        outcome_ok = False        # 整条链路是否无异常走完；只决定 metrics 口径
         clock = {"download": 0.0, "organize": 0.0, "upload": 0.0}
-        retried = {"download": 0, "upload": 0}
         job_size = 0
         job_started = time.monotonic()
-        # 迅雷任务 id：失败时要在面板里一并清掉，否则僵尸任务越积越多
-        handle: dict[str, str] = {}
-        meta_info: dict = {}
         try:
-            async def on_progress(percent, speed, status, _p=progress, _i=index):
-                require_lease(cfg, job_id)
-                mb = (speed or 0) / 1048576
-                await _p(f"⏳ 下载 {_i}/{len(sources)} · {percent * 100:.1f}% · {mb:.1f}MB/s")
+            await progress(f"⏳ 云添加 {index}/{len(sources)}…{hint or '（磁力可能较慢）'}")
 
-            await progress(f"⏳ 下载 {index}/{len(sources)}…{hint or '（磁力可能较慢）'}")
+            backend = storage.get()
+            inbox, dest = cloudadd.destinations(cfg.get)
+            my_inbox = cloudadd.task_inbox(inbox, key_safe or job_id)
 
-            # 换源重试的状态：cur["magnet"] 是当前要下的磁力（死种时会换成候选池里的
-            # 下一条），tried_btih 记下已试过并失败的**infohash**（换源时跳过同一种子，
-            # 避免 infohash 相同、tracker 参数不同被当成「新候选」反复撞同一条死种）。
-            cur = {"magnet": source}
-            tried_btih = {h for h in (xunlei.info_hash_of(source),) if h}
+            # 提交（或续接）：同一链接已有提交记录时不重复投
+            prev_extra = task_store(cfg).get(job_id).get("extra") or {}
+            prev = prev_extra.get("cloud_submit") or {}
+            if prev.get("url") == source and prev.get("inbox") == my_inbox \
+                    and prev.get("before") is not None:
+                before = dict(prev.get("before") or {})
+                task_event(cfg, job_id, "stage", f"cloud 续接（有提交记录，不重复提交）到 {my_inbox}")
+            else:
+                task_event(cfg, job_id, "stage", f"cloud 提交到 {my_inbox}")
+                before = cloudadd.submit(backend, source, my_inbox)["before"]
+                task_update(cfg, job_id, extra={
+                    **prev_extra, "cloud_inbox": my_inbox, "cloud_url": source,
+                    "cloud_submit": {"url": source, "inbox": my_inbox,
+                                     "before": before, "at": time.time()}})
 
-            async def do_download():
-                # 同上：带本任务上次投递的证据，重试时识别自己的任务而不是拒绝
-                prev = task_store(cfg).get(job_id) or {}
-                got = await pipeline.download(
-                    xl, client, cur["magnet"], download_dir, progress=on_progress,
-                    poll=cfg.xunlei_poll, timeout=cfg.magnet_timeout,
-                    stall_timeout=cfg.stall_timeout, settle=cfg.xunlei_settle,
-                    on_task=lambda task_id, meta=None: handle.update(
-                        id=task_id, ours=not (meta or {}).get("reused")),
-                    session={"task": handle.get("id") or prev.get("xunlei_task") or "",
-                             "infohash": str((prev.get("extra") or {}).get("infohash") or "")},
-                )
-                handle["dir"] = str(got.get("dir") or download_dir)
-                return got
-
-            async def on_dl_retry(attempt, error, wait):
-                kind = retry.classify(error)
-                label = {"transient": "网络", "dead": "疑似死种"}.get(kind, kind)
-                await progress(f"↻ 下载失败（{label}），{round(wait)} 秒后重试（第 {attempt} 次）\n{error[:120]}")
-                task_event(cfg, job_id, "retry",
-                           f"下载第 {attempt} 次 · {round(wait)}s 后重试 · {first_line(error)}")
-
-            policy = retry.RetryPolicy(retries=cfg.retries, base_delay=cfg.retry_base_delay)
             phase = time.monotonic()
-            # 下载 + 死种换源：先按 policy 重试当前磁力；若是死种（不是网络抖动），
-            # 反复撞同一条没有意义，去候选池换一条全新的重下，直到候选耗尽才放弃。
+
+            def on_progress(count: int, total: int, rounds: int) -> None:
+                job_size = total
+                require_lease(cfg, job_id)
+                task_update(cfg, job_id, downloaded=total, total=total,
+                            error="" if not count else f"云端落地中：{count} 个文件")
+
+            # 死种换源：迅雷解析失败（0 个做种）时换候选池里的下一条，
+            # 而不是反复撞同一条。按 infohash 判同源 —— 同一种子换不同 tracker
+            # 参数不该被当成「新候选」反复撞。
+            tried_btih = {b for b in (xunlei.info_hash_of(source),) if b}
+            cur = source
             while True:
                 try:
-                    await retry.run_with_retry(do_download, policy, on_retry=on_dl_retry)
-                    break                      # 下载成功
-                except Exception as exc:
-                    if retry.classify(str(exc)) != retry.DEAD or not code:
+                    landed = await cloudadd.wait_landing(
+                        backend, my_inbox, before, cur, get=cfg.get,
+                        progress=on_progress,
+                        check_cancel=lambda: cancel_requested(cfg, job_id),
+                        lease_check=lambda: require_lease(cfg, job_id))
+                    break
+                except RuntimeError as exc:
+                    if "迅雷侧拒绝" not in str(exc) or not code:
                         raise
                     new_magnet = await next_candidate_magnet(code, tried_btih, client)
                     if not new_magnet:
-                        raise                      # 没有可换的候选了，按死种收尾
-                    new_btih = xunlei.info_hash_of(new_magnet)
-                    if new_btih:
-                        tried_btih.add(new_btih)
-                    cur["magnet"] = new_magnet
-                    policy.reset()               # 换源后重试计数重新开始
+                        raise              # 没有可换的候选了，按死种收尾
+                    btih = xunlei.info_hash_of(new_magnet)
+                    if btih:
+                        tried_btih.add(btih)
+                    cur = new_magnet
                     task_event(cfg, job_id, "stage",
                                f"死种换源：换一条候选重下（已试 {len(tried_btih)} 个种子）")
                     await progress(f"↻ {code} 疑似死种，已换一条候选重下（第 {len(tried_btih)} 个）")
+                    # 换源要重新提交：清掉旧链接的提交记录，走一次新的 submit
+                    before = cloudadd.submit(backend, cur, my_inbox)["before"]
+                    task_update(cfg, job_id, extra={
+                        **(task_store(cfg).get(job_id).get("extra") or {}),
+                        "cloud_url": cur,
+                        "cloud_submit": {"url": cur, "inbox": my_inbox,
+                                         "before": before, "at": time.time()}})
             clock["download"] = time.monotonic() - phase
-            retried["download"] = policy.attempts
+            if not landed:
+                raise RuntimeError("云添加没有落地任何内容")
 
             phase = time.monotonic()
-            require_lease(cfg, job_id)          # downloading→organizing 前
-            task_event(cfg, job_id, "stage", "organizing 整理文件名与目录")
-            require_lease(cfg, job_id)
-            workspace.drop_workspace(work, key_safe, "整理前清空")
-            pipeline.stage_copy(Path(handle.get("dir") or download_dir), work, key_safe)
-            found = fetcher.media_files(work) or fetcher.media_files(work, types=fetcher.MEDIA_EXT)
-            final_code = code or codes.detect(found[0].name if found else "")
-            folder, files = pipeline.organize(work, final_code or "")
-            total = pipeline.total_size(files)
-            # 清理按最终归档目录名走；下载目录仍是投递时那个（迅雷已按它建好）
-            clean_key = workspace.key_of(folder)
+            records, pending = cloudadd.organize_landed(
+                landed, backend, my_inbox, dest, code,
+                lease_check=lambda: require_lease(cfg, job_id),
+                event=lambda kind, detail: task_event(cfg, job_id, kind, detail))
             clock["organize"] = time.monotonic() - phase
-            job_size = total
+            job_size = int(records[0].get("size") or 0) if records else 0
 
-            if quota_exceeded(cfg, total):
-                raise RuntimeError(
-                    f"今日上传量已达 {cfg.daily_upload_gb}GB 上限，文件留在 /downloads 可明天重试"
-                )
-
-            # ── 刮削并生成附件（失败不阻断）：NFO/JSON/封面/清单跟视频一起传
-            scraped = await scrape_bot_attachments(cfg, work, folder, files, job_id)
-            if scraped["written"]:
-                task_update(cfg, job_id, extra={
-                    **(task_store(cfg).get(job_id).get("extra") or {}),
-                    "files": [f.name for f in scraped["files"]]})
-
-            require_lease(cfg, job_id)          # organizing→uploading 前
-            task_event(cfg, job_id, "stage", f"uploading {folder}")
-            backend = storage.get()
-            target = (f"{cfg.remote}:{cfg.drive_root.strip('/')}/{folder}"
-                      if backend.kind == "rclone" else f"{backend.kind}:{storage.rel(folder)}")
-            await progress(f"⏳ 上传 {folder}（{core.human_size(total)}）…（含附件）"
-                           if scraped["files"] != files else
-                           f"⏳ 上传 {folder}（{core.human_size(total)}）…")
-
-            upload_rel = target.split(":", 1)[1]
-
-            async def do_upload():
-                require_lease(cfg, job_id)
-                if backend.kind != "rclone":
-                    # 适配器是同步实现（网页在后台线程用），这里丢到线程里跑
-                    rel = upload_rel
-                    await asyncio.to_thread(backend.ensure_dir, rel)
-                    await asyncio.to_thread(
-                        lambda: backend.upload_dir(work, rel,
-                                                   transfers=cfg.upload_transfers,
-                                                   chunk=cfg.upload_chunk))
-                    return
-                await rclone(cfg, "mkdir", target, timeout=120.0)
-                rc, _, err = await rclone(
-                    cfg, "copy", str(work), target,
-                    "--transfers", str(cfg.upload_transfers),
-                    "--drive-chunk-size", cfg.upload_chunk,
-                    "--retries", "2", "--timeout", "30m",
-                    "--drive-stop-on-upload-limit",
-                    timeout=7200.0,
-                )
-                if rc != 0:
-                    if "uploadLimitExceeded" in err or "quota" in err.lower():
-                        raise RuntimeError("Drive 上传配额已用完，明日再试")
-                    raise RuntimeError(f"rclone 上传失败：{err.strip()[:300]}")
-
-            async def on_up_retry(attempt, error, wait):
-                await progress(f"↻ 上传失败，{round(wait)} 秒后重试（第 {attempt} 次）\n{error[:120]}")
-                task_event(cfg, job_id, "retry",
-                           f"上传第 {attempt} 次 · {round(wait)}s 后重试 · {first_line(error)}")
-
-            up_policy = retry.RetryPolicy(retries=cfg.retries, base_delay=cfg.retry_base_delay)
-            phase = time.monotonic()
-            await retry.run_with_retry(do_upload, up_policy, on_retry=on_up_retry)
-            clock["upload"] = time.monotonic() - phase
-            retried["upload"] = up_policy.attempts
-            require_lease(cfg, job_id)
-            add_usage(cfg, total)
-
-            if backend.kind != "rclone":
-                # CD2 会归一化目录名（全角替换、削尾部空白/点号），记账得按真实名
-                probe = getattr(backend, "real_folder", None)
-                actual = await asyncio.to_thread(probe, upload_rel) if probe else folder
-                if actual and actual != folder:
-                    log.info("远端目录名被归一化：%s → %s", folder, actual)
-                    folder = actual
-                    upload_rel = f"{upload_rel.rsplit('/', 1)[0]}/{folder}"
-                    target = f"{backend.kind}:{upload_rel}"
-                try:
-                    link = await asyncio.to_thread(backend.link, upload_rel)
-                except Exception as exc:
-                    log.warning("取 %s 的分享链接失败：%s", folder, exc)
-                    link = None
-            else:
-                link = await folder_link(cfg, target)
-            # 兜底元数据（与网页 _finish 的 meta.lookup 同语义）：查不到/出异常都不影响记账
-            try:
-                meta_info = await meta.lookup(folder)
-            except Exception as exc:
-                log.warning("查 %s 的元数据失败：%s", folder, exc)
             require_lease(cfg, job_id)          # 写归档前
-            # 与网页 _finish 同一份字段契约（metadata.archive_record）：
-            # 以前 bot 写出的记录没有 meta/manifest/infohash/locked/scrape_pending，
-            # 之后的补刮、去重、校验对着它就无据可依。
-            # 两个语义分开的变量：uploaded_paths 只是「本次上传清单」（只读，给 names 用，
-            # 绝不拿它当成功标志：以前 uploaded 被这份清单覆盖成真值，记账一步抛异常也会
-            # 走到清理分支，把失败任务的原件删掉）。
-            uploaded_paths = scraped["files"]
-            task_extra = task_store(cfg).get(job_id).get("extra") or {} \
-                if job_id else {}
-            names = [f.name for f in uploaded_paths]
-            state[folder] = metadata.archive_record(
-                folder, target, link, names, total, source, work,
-                scraped=meta_info or scraped["record"] or task_extra.get("scraped") or {},
-                manifest_files=names,
-                infohash=str(task_extra.get("infohash") or ""),
-                locks=task_extra.get("locked") or (),
-                pending=bool(scraped["pending"] or task_extra.get("scrape_pending")),
-                at=datetime.now().isoformat(timespec="seconds"),
-                backend=backend.kind,
-                root=target.split(":", 1)[1].rsplit("/", 1)[0],
-                rel=target.split(":", 1)[1],
-                remote=target.split(":", 1)[0] if backend.kind == "rclone" else "",
-            )
-            require_lease(cfg, job_id)
-            core.update_state(cfg.state_path, {folder: state[folder]})
-            # 「归档记录已落盘」：必须放在所有落盘动作（写状态文件）之后。
-            # finish_task 在库坏了时会抛，那时记录已经写进 state.json，原件清掉是对的；
-            # 但 update_state 抛异常时这份记录没落盘，archived 保持 False → 原件留下可续传。
-            archived = True
-            uploaded = True        # 上传确实成功了：到这里才置真（记账已落盘，顺序固定）
-            # 任务表记账失败不影响归档结果（记录已落盘），但它返回 False 说明
-            # 面板里这条任务会停在旧状态；所以要如实告诉用户，不能只报 ✅。
+            for rec in records:
+                folder = rec["folder"]
+                try:
+                    info = await meta.lookup(folder)
+                except Exception as exc:        # 元数据只是锦上添花
+                    log.warning("查 %s 的元数据失败：%s", folder, exc)
+                    info = {}
+                record = cloudadd.build_record(rec, scraped=info)
+                record["source"] = source
+                core.update_state(cfg.state_path, {folder: record})
+                state[folder] = record
+                task_event(cfg, job_id, "done",
+                           f"{folder} · {core.human_size(int(rec.get('size') or 0))} · 云盘")
+
+            last = records[-1]
             task_done = finish_task(cfg, job_id, "done")
             if not task_done and not lease_alive(cfg, job_id):
                 raise LeaseLost("归档终态写入前已被其他执行者接手")
-            task_event(cfg, job_id, "done",
-                       " · ".join(x for x in (folder, core.human_size(total), link or "") if x))
-            line = f"✅ {folder} · {core.human_size(total)}" + (
-                f"\n📁 {link}" if link else "")
+
+            # 清理源目录（归档已落盘才做）：失败只挂账，不影响归档成功
+            leftover = cloudadd.clean_sources(
+                backend, pending,
+                lease_check=lambda: require_lease(cfg, job_id),
+                event=lambda kind, detail: task_event(cfg, job_id, kind, detail))
+            if leftover:
+                task_update(cfg, job_id, extra={
+                    **(task_store(cfg).get(job_id).get("extra") or {}),
+                    "cleanup_pending": leftover})
+
+            link = ""
+            try:
+                from . import xunleipan
+                info2 = xunleipan.direct_link(last["rel"])
+                link = info2.get("link") or ""
+            except Exception as exc:            # 直链只是锦上添花
+                log.info("取 %s 的直链失败：%s", last["folder"], exc)
+
+            line = f"✅ {last['folder']} · {core.human_size(job_size)} · 云盘"
+            if link:
+                line += f"\n📁 {link}"
+            if leftover:
+                line += f"\n⚠️ 源目录还有 {len(leftover)} 项没清干净，需要人工核对"
             if not task_done:
+                # 归档成功但任务表没写进去：如实说，不能让用户以为一切正常
+                # （面板里这条会停在进行中，「清空已完成」也清不掉它）。
                 line += "\n⚠️ 已归档，但任务表没写进去（面板里可能仍显示进行中）"
             results.append(line)
-            # 统计口径与清理口径**分开**：archived 决定「记录已落盘、可以清原件」，
-            # outcome_ok 决定「这条链路是否完整走完」。任务表没落库时统计记 fail，
-            # 与给用户的 ⚠️ 保持一致 —— 同一任务不能一边说失败一边记 ok。
             outcome_ok = task_done
         except JobCancelled as exc:
-            # 用户在 Web 上点了停止（跨进程取消标记）：正常收尾成 cancelled，
-            # 不是失败。只停我们自己的迅雷任务，留给重试的证据不动。
+            # 用户在 Web 上点了停止（跨进程取消标记）：正常收尾成 cancelled，不是失败。
             log.info("任务 %s 被用户取消：%s", job_id, exc)
             finish_task(cfg, job_id, "cancelled", "已停止")
             task_event(cfg, job_id, "cancelled", first_line(str(exc)) or "已停止")
-            if lease_alive(cfg, job_id) and handle.get("id") and handle.get("ours", True):
-                try:
-                    await xl.remove(client, handle["id"])
-                except Exception as exc2:      # noqa: BLE001 停止流程不崩
-                    log.warning("取消时删除迅雷任务 %s 失败：%s", handle.get("id"), exc2)
         except LeaseLost as exc:
-            # 失租只退出：任务已归新执行者。不能写 failed（会覆盖接管者的状态），
-            # 也不能删迅雷任务 —— handle 里那个 id 现在可能正被接管者续接。
+            # 失租只退出：任务已归新执行者。不能写 failed（会覆盖接管者的状态）。
             log.info("任务 %s 失租，旧线程安静退出：%s", job_id, exc)
             task_event(cfg, job_id, "lease_lost", first_line(str(exc)))
         except Exception as exc:
-            log.exception("下载失败 %s", source[:80])
+            log.exception("云添加失败 %s", source[:80])
             if not lease_alive(cfg, job_id):
                 continue
             if retry.classify(str(exc)) == retry.QUOTA:
@@ -917,8 +740,6 @@ async def run_task(
                 failures.append(f"{source[:40]}…: {str(exc)[:160]}")
                 finish_task(cfg, job_id, "failed", str(exc)[:200])
                 task_event(cfg, job_id, "failed", first_line(str(exc)))
-            if lease_alive(cfg, job_id) and handle.get("id") and handle.get("ours", True):
-                await xl.remove(client, handle["id"])
         finally:
             try:
                 task_store(cfg).clear_cancel(job_id, owner=execution_owner(cfg, job_id))   # 抹掉取消标记，重试不会被卡住
@@ -927,36 +748,14 @@ async def run_task(
             metrics.record_timing(cfg.metrics_path, {
                 "code": key,
                 "size": job_size,
-                # 只有真正成功（上传完成、记录落盘、且没有走到 except）才算 ok
+                # 只有真正成功（归档落盘、且没有走到 except）才算 ok
                 "outcome": "ok" if outcome_ok else "fail",
-                "retries": retried["download"] + retried["upload"],
+                "retries": 0,
                 "download": clock["download"],
                 "organize": clock["organize"],
                 "upload": clock["upload"],
                 "total": time.monotonic() - job_started,
             })
-            # 只看「这一个任务」是否成功：之前用累计的 failures 判断，
-            # 前面失败过一次，后面成功任务的目录就再也不会被清，磁盘一路涨。
-            # 失败时保留目录，方便 /retry 续传，但整体有容量上限。
-            # 清理前必须确认目录仍归自己：失租时另一个执行者可能正在用同一目录。
-            if uploaded and archived and outcome_ok and lease_alive(cfg, job_id):
-                workspace.drop_workspace(work, clean_key, "上传成功")
-                # 下载目录的归属标记写的是投递时的键，必须按 key_safe 校验
-                if lease_alive(cfg, job_id):
-                    workspace.drop(download_dir, key_safe, "上传成功")
-                # 迅雷重名时真实目录是 <键>-N，预设的 dest 删了也不代表原件清掉了
-                real_dir = Path(handle.get("dir") or "")
-                if real_dir and real_dir != download_dir and lease_alive(cfg, job_id):
-                    workspace.drop(real_dir, key_safe, "上传成功")
-            elif uploaded and archived:
-                log.warning("任务 %s 已失租，跳过目录清理：%s %s", job_id, work, download_dir)
-            elif uploaded:
-                # 传上去了但归档没落盘（记账抛异常）：任务记为失败，原件留着续传排错
-                log.warning("任务 %s 已上传但归档记录未落盘，保留原件：%s %s",
-                            job_id, handle.get("dir") or download_dir, work)
-            else:
-                # 失败两份都留着：原件可续传，工作区便于排查
-                log.info("失败任务保留在原地：%s", handle.get("dir") or download_dir)
             lease_end(cfg, job_id)
 
     parts = results + [f"⚠️ {len(failures)} 项失败：" + "；".join(failures)] if failures else results
@@ -999,15 +798,15 @@ async def on_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     pending: dict = ctx.application.bot_data["pending"]
 
     text = " ".join(ctx.args or "")
-    if not fetcher.sources(text) and message.reply_to_message:
+    if not core.extract_urls(text) and message.reply_to_message:
         text = message.reply_to_message.text or message.reply_to_message.caption or ""
-    if not fetcher.sources(text):
+    if not core.extract_urls(text):
         latest = sorted(pending.values(), key=lambda p: p.get("ts", 0), reverse=True)
         if not latest:
             await message.reply_text("没有待重试的任务。用法：`/retry <磁力或直链>`，或回复一条含链接的消息")
             return
         text = latest[0].get("url") or ""
-    if not fetcher.sources(text):
+    if not core.extract_urls(text):
         await message.reply_text("⛔ 需要磁力链接或直链")
         return
 
@@ -1153,19 +952,13 @@ async def on_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     total = snap.get("total") or {}
     done = int(total.get("ok", 0)) + int(total.get("partial", 0))
     failed = sum(int(v) for k, v in total.items() if k not in ("ok", "partial"))
-    used = today_bytes(cfg)
-    free = diskspace.free_bytes(cfg.tmp_root)
+    cloud_ok, cloud_why = cloudadd.ready(cfg.get)
 
     lines = ["📊 状态"]
     lines.append(f"· 进行中 {len(active)} 个"
                  + ("（含等额度的）" if any(j.get("stage") == "deferred" for j in active) else ""))
     lines.append(f"· 今日完成 {done} · 失败 {failed}")
-    if cfg.daily_upload_gb:
-        cap = cfg.daily_upload_gb * 1024 ** 3
-        lines.append(f"· 今日上传 {core.human_size(used)} / {cfg.daily_upload_gb}GB")
-    else:
-        lines.append(f"· 今日上传 {core.human_size(used)}（不限额）")
-    lines.append("· 磁盘剩余 " + (core.human_size(free) if free is not None else "无法探测"))
+    lines.append("· 云添加 " + ("可用" if cloud_ok else f"不可用（{cloud_why}）"))
     lines.append(f"· 待补跑 {len(load_pending(cfg))} 条")
     if not gate["open"]:
         lines.append(f"⛔ 调度闸门关闭：{gate['reason']}")
@@ -1242,7 +1035,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"⛔ 未授权。你的 user id：{user.id}，把它加进 ALLOWED_USER_IDS 后重启。"
         )
         return
-    if not fetcher.sources(text):
+    if not core.extract_urls(text):
         # 只发番号也认：自动按番号搜磁力，挑一条最像样的再走原流程
         code = codes.detect(text)
         found = await auto_magnet(code) if code else None
@@ -1482,26 +1275,15 @@ async def self_check(cfg: Config) -> bool:
     try:
         async with xl.client() as client:
             await xl.alive(client)
-        print(f"迅雷: OK {cfg.xunlei_url} parent={cfg.xunlei_parent} tmp={cfg.tmp_root}")
+        print(f"迅雷面板: OK {cfg.xunlei_url}（只读查看用）")
     except Exception as exc:
-        print(f"迅雷: 不可用 {cfg.xunlei_url} ({exc})")
-        ok = False
+        print(f"迅雷面板: 不可用 {cfg.xunlei_url} ({exc})")
 
-    # 容器里最容易出的两类错：面板地址写成 127.0.0.1（连的是自己），
-    # 以及迅雷下载目录没挂进容器（任务成功但看不见文件）。这两项必须在容器内自测。
-    if not cfg.tmp_root or not Path(cfg.tmp_root).is_dir():
-        print(f"下载目录: 不存在 {cfg.tmp_root}（检查 XUNLEI_DOWNLOADS_HOST 挂载）")
+    # 云添加是唯一的下载链路：它能不能用必须在这里说清楚
+    cloud_ok, cloud_why = cloudadd.ready(cfg.get)
+    print(f"云添加: {'OK' if cloud_ok else cloud_why}")
+    if not cloud_ok:
         ok = False
-    elif not os.access(cfg.tmp_root, os.W_OK | os.X_OK):
-        print(f"下载目录: 没有写权限 {cfg.tmp_root}")
-        ok = False
-    else:
-        print(f"下载目录: OK {cfg.tmp_root}")
-    if not Path(cfg.state_dir).is_dir() or not os.access(cfg.state_dir, os.W_OK):
-        print(f"工作区: 不可写 {cfg.state_dir}（检查 ./work:/work 挂载与权限）")
-        ok = False
-    else:
-        print(f"工作区: OK {cfg.state_dir}")
 
     try:
         backend = storage.get()

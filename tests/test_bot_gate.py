@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import main, store, workspace
+from app import cloudadd, cloudorganize, main, storage, store, workspace
 
 
 def cfg_for(tmp_path):
@@ -121,40 +121,47 @@ def test_resume_pending_runs_when_gate_open(tmp_path, monkeypatch):
 # ─────────────────────────────────────────── outcome 与 cleaned 分开
 
 def _stub_success_path(monkeypatch, tmp_path, calls):
-    """最小可用的成功链路：假下载 / 假整理 / 假上传 / 假刮削。"""
+    """最小可用的成功链路：假云添加（落地 / 远端整理 / 远端清理 / 假刮削）。"""
 
-    async def fake_download(xl, client, source, dest, progress=None, **opts):
-        dest.mkdir(parents=True, exist_ok=True)
-        # 必须打归属标记：workspace.drop 只清「有标记」的目录，没有标记会静默跳过，
-        # 「成功路径确实清理了」就变成空断言。
-        # 目录在建之前可能已被上层创建，用 adopt（专为「目录已存在」的重名/预建
-        # 场景设计）补标记；drop() 只认带标记的目录，缺了它清理断言就是空的。
-        workspace.adopt(dest, workspace.key_of(dest.name), source, task_id="T")
-        (dest / "raw.mp4").write_bytes(b"\x00" * (1 << 20))
-        return {"task": "T", "dir": dest, "waited": 0.0, "reused": False}
+    class _Landing:
+        folder = "SEED-1"
+        total = 1 << 20
+        files = [{"name": "SSIS-777.mp4", "size": 1 << 20}]
 
-    def fake_stage(source_dir, work, key):
-        work.mkdir(parents=True, exist_ok=True)
-        for p in source_dir.glob("*"):
-            if p.is_file():
-                (work / p.name).write_bytes(p.read_bytes())
-        return list(work.glob("*"))
+    monkeypatch.setattr(cloudadd, "ready", lambda get: (True, "ok"))
+    monkeypatch.setattr(cloudadd, "destinations", lambda get: ("inbox", "dest"))
+    monkeypatch.setattr(cloudadd, "task_inbox", lambda inbox, key: f"{inbox}/{key}")
+    monkeypatch.setattr(storage, "kind", lambda: "clouddrive2")
+    monkeypatch.setattr(storage, "get", lambda: SimpleNamespace(
+        kind="clouddrive2", ensure_dir=lambda rel: rel, list_dirs=lambda rel: [],
+        list_files=lambda rel: [], move_file=lambda *a: None,
+        purge=lambda rel: calls.setdefault("purged", []).append(rel) or "已删除",
+        link=lambda rel: "", offline_add=lambda *a: None,
+        real_folder=lambda rel: rel.rsplit("/", 1)[-1]))
 
-    async def fake_rclone(cfg, *args, timeout=180.0):
-        if args[0] == "copy":
-            calls["copied"] = sorted(p.name for p in os.scandir(args[1]) if p.is_file())
-        return 0, "", ""
+    def fake_submit(backend, source, my_inbox):
+        return {"before": {}, "inbox": my_inbox}
 
-    async def fake_link(cfg, target):
-        return "https://drive.example/x"
+    monkeypatch.setattr(cloudadd, "submit", fake_submit)
+
+    async def fake_wait(backend, my_inbox, before, source, **kw):
+        return [_Landing()]
+
+    monkeypatch.setattr(cloudadd, "wait_landing", fake_wait)
+    monkeypatch.setattr(cloudorganize, "plan",
+                        lambda source, files, folder_code="": SimpleNamespace(
+                            source=source, target=folder_code,
+                            move=[f"{folder_code}.mp4"], drop=[], size=1 << 20))
+    monkeypatch.setattr(cloudorganize, "apply",
+                        lambda backend, src_root, plan, folder_code, dst_root="": {
+                            "target": folder_code, "files": [f"{folder_code}.mp4"],
+                            "size": 1 << 20})
+    monkeypatch.setattr(cloudorganize, "cleanup_source",
+                        lambda backend, src_root, plan, dst_root="": "已清理")
 
     async def fake_scrape(code, provider="", client=None):
         return {"code": code, "title": "标题"}
 
-    monkeypatch.setattr(main.pipeline, "download", fake_download)
-    monkeypatch.setattr(main.pipeline, "stage_copy", fake_stage)
-    monkeypatch.setattr(main, "rclone", fake_rclone)
-    monkeypatch.setattr(main, "folder_link", fake_link)
     monkeypatch.setattr(main.metatube, "configured", lambda: True)
     monkeypatch.setattr(main.metatube, "scrape", fake_scrape)
     monkeypatch.setattr(main, "_STORE", None)
@@ -204,6 +211,3 @@ def test_outcome_is_fail_when_task_bookkeeping_raises(tmp_path, monkeypatch):
 
     assert "⚠️" in reply, f"应当如实报失败：{reply}"
     assert _last_outcome(cfg) == "fail", "同一任务不能一边记 failed 一边记 ok"
-    key = workspace.key_of("SSIS-777")
-    assert workspace.staging(cfg.tmp_root, key).is_dir(), "任务记账失败应保留原件"
-    assert workspace.workspace(cfg.state_dir, key).is_dir(), "任务记账失败应保留工作区"

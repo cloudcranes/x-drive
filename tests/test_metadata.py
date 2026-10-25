@@ -91,63 +91,45 @@ def _scrape_env(tmp_path, monkeypatch):
     return core, web
 
 
-def test_scrape_attachments_written_into_upload_list(tmp_path, monkeypatch):
-    """附件要和视频一起进上传清单，否则归档里只有视频。"""
-    core, web = _scrape_env(tmp_path, monkeypatch)
-    work = tmp_path / "work" / "SSIS123"
-    work.mkdir(parents=True)
-    video = work / "SSIS123.mp4"
-    video.write_bytes(b"x" * 32)
-    monkeypatch.setattr(web.metatube, "configured", lambda: True)
-
-    async def fake_scrape(code, provider="", client=None):
-        return {"code": code, "title": "标题", "actors": ["甲"], "provider": "JavBus"}
-
-    monkeypatch.setattr(web.metatube, "scrape", fake_scrape)
-    web.STORE.start("j1", "SSIS-123", "magnet:a")
-    out = web.scrape_attachments(work, "SSIS-123", [video], "j1")
-    names = {f.name for f in out["files"]}
-    assert {"SSIS123.mp4", "movie.nfo", "metadata.json", "manifest.json"} <= names
-    assert out["pending"] is False
-    extra = web.STORE.get("j1")["extra"]
-    assert extra["scraped"]["title"] == "标题" and extra["scrape_pending"] is False
-
-
-def test_scrape_failure_marks_pending_but_keeps_video(tmp_path, monkeypatch):
-    """刮不到就登记待补刮：视频照样能传，附件不全要能看见。"""
-    core, web = _scrape_env(tmp_path, monkeypatch)
-    work = tmp_path / "work" / "SSIS999"
-    work.mkdir(parents=True)
-    video = work / "SSIS999.mp4"
-    video.write_bytes(b"x")
-    monkeypatch.setattr(web.metatube, "configured", lambda: True)
-
-    async def boom(code, provider="", client=None):
-        raise RuntimeError("服务不可达")
-
-    monkeypatch.setattr(web.metatube, "scrape", boom)
-    web.STORE.start("j2", "SSIS-999", "magnet:a")
-    out = web.scrape_attachments(work, "SSIS-999", [video], "j2")
-    assert out["pending"] is True
-    assert video in out["files"], "视频不能被丢掉"
-    assert web.STORE.get("j2")["extra"]["scrape_pending"] is True
-
-
 def test_scrape_rejects_mismatched_number(tmp_path, monkeypatch):
-    """服务返回别的番号：宁可空着，也不把别人的元数据写进归档。"""
+    """服务返回别的番号：宁可空着，也不把别人的元数据写进归档。
+
+    云添加链路不生成附件（附件由「补刮」推），所以这条守的是补刮入口：
+    番号对不上时必须明确失败，不能把别人的标题写进记录。
+    """
     core, web = _scrape_env(tmp_path, monkeypatch)
-    work = tmp_path / "work" / "ABC123"
-    work.mkdir(parents=True)
+    core.save_state(web.STATE, {"ABC-123": {"code": "ABC-123", "files": []}})
     monkeypatch.setattr(web.metatube, "configured", lambda: True)
 
     async def other(code, provider="", client=None):
         return {"code": "XYZ-999", "title": "别人的"}
 
     monkeypatch.setattr(web.metatube, "scrape", other)
-    web.STORE.start("j3", "ABC-123", "magnet:a")
-    out = web.scrape_attachments(work, "ABC-123", [], "j3")
-    assert out["record"] == {}
-    assert "别人的" not in (work / "metadata.json").read_text(encoding="utf-8")
+    out = web.scrape_sync("ABC-123", resync=True, confirm=True)
+
+    assert out["ok"] is False
+    assert "XYZ-999" in out["error"]
+    rec = core.load_state(web.STATE)["ABC-123"]
+    assert "别人的" not in json.dumps(rec, ensure_ascii=False)
+
+
+def test_scrape_failure_keeps_record_and_marks_pending(tmp_path, monkeypatch):
+    """刮不到就登记待补刮：归档记录照旧，不被清空。"""
+    core, web = _scrape_env(tmp_path, monkeypatch)
+    core.save_state(web.STATE, {"SSIS-999": {"code": "SSIS-999", "files": ["SSIS999.mp4"],
+                                           "scrape_pending": True}})
+    monkeypatch.setattr(web.metatube, "configured", lambda: True)
+
+    async def boom(code, provider="", client=None):
+        raise RuntimeError("服务不可达")
+
+    monkeypatch.setattr(web.metatube, "scrape", boom)
+    out = web.scrape_sync("SSIS-999", resync=True, confirm=True)
+
+    assert out["ok"] is False
+    rec = core.load_state(web.STATE)["SSIS-999"]
+    assert rec["files"] == ["SSIS999.mp4"], "视频条目不能被丢掉"
+    assert rec["scrape_pending"] is True, "附件不全要能看见"
 
 
 def test_manual_fields_get_locked_and_survive_resync(tmp_path, monkeypatch):

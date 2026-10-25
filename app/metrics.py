@@ -77,7 +77,10 @@ def classify(text: str) -> str:
 
 # ---------------------------------------------------------------- 阶段耗时
 
-PHASES = ("download", "organize", "upload")
+# 阶段名。云添加链路是 land（等迅雷云盘落地）/ organize（远端整理）/
+# clean（清源目录）；download 与 upload 是旧本地链路的残留，保留以兼容
+# 历史数据（老记录里还有它们）。
+PHASES = ("download", "organize", "upload", "land", "clean")
 
 
 def record_timing(path: str, timing: dict) -> None:

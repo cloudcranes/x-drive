@@ -33,6 +33,43 @@ def _fresh_store(tmp_path, monkeypatch):
     return st
 
 
+def _cloud_stub(monkeypatch):
+    """把云添加的外部依赖换成假的：存储后端、落地、整理、记账。
+
+    这些用例要验的是**租约**，不是云盘 —— 真实的云盘交互会引入网络与时序噪声。
+    """
+    from types import SimpleNamespace
+
+    backend = SimpleNamespace(kind="clouddrive2", ensure_dir=lambda rel: rel,
+                              list_dirs=lambda rel: [], list_files=lambda rel: [],
+                              move_file=lambda *a: None, purge=lambda rel: "已删除",
+                              link=lambda rel: "", offline_add=lambda *a: None,
+                              real_folder=lambda rel: rel.rsplit("/", 1)[-1])
+    monkeypatch.setattr(web.storage, "get", lambda: backend)
+    monkeypatch.setattr(web, "cloud_ready", lambda: (True, ""))
+    monkeypatch.setattr(web, "get_setting", lambda key, d=None: {
+        "CLOUD_INGEST": True, "CLOUD_INBOX": "inbox", "CLOUD_DEST": "dest",
+        "CLOUD_POLL": 0.01, "CLOUD_LAND_TIMEOUT": 1, "CLOUD_LAND_STABLE": 1,
+    }.get(key, d))
+
+    class _Landing:
+        folder = "SEED-1"
+        total = 4
+        files = [{"name": "v.mp4", "size": 4}]
+
+    async def fake_wait(*a, **kw):
+        return [_Landing()]
+
+    monkeypatch.setattr(web.cloudadd, "wait_landing", fake_wait)
+    monkeypatch.setattr(web.cloudorganize, "plan",
+                        lambda *a, **k: SimpleNamespace(source="SEED-1", target="SSIS-123",
+                                                        move=["v.mp4"], drop=[], size=4))
+    monkeypatch.setattr(web.cloudorganize, "apply",
+                        lambda *a, **k: {"target": "SSIS-123", "files": ["SSIS-123.mp4"],
+                                         "size": 4})
+    return backend
+
+
 # ---------------------------------------------------------------- token 唯一化
 
 def test_lease_token_is_unique_per_execution(monkeypatch):
@@ -197,40 +234,48 @@ def test_finish_refuses_to_archive_without_lease(tmp_path, monkeypatch):
     token = web.lease_owner("j1")
     st.claim_owner("j1", token)
     st.claim_owner("j1", "other", now=time.time() + store.STALE_BEAT + 1)
-    work = tmp_path / "w"
-    work.mkdir()
     with pytest.raises(web.LossOfLease):
-        web._finish("j1", work, "SSIS-1", [], 0, "http://x", "magnet:a",
-                    {"download": 0, "organize": 0, "upload": 0}, _Policy())
+        web._finish_cloud("j1", "magnet:a", {"records": [{
+            "folder": "SSIS-1", "path": "clouddrive2:dest/SSIS-1",
+            "backend": "clouddrive2", "root": "dest", "rel": "dest/SSIS-1",
+            "files": ["SSIS-1.mp4"], "files_detail": [], "size": 0,
+            "inbox": "inbox/task"}]})
     assert core.load_state(web.STATE) == {}, "失租时不许写归档"
 
 
-def test_upload_loop_checks_lease_before_upload(tmp_path, monkeypatch):
-    """上传前失租就不许推 Drive。"""
+def test_cloud_organize_checks_lease_before_moving(tmp_path, monkeypatch):
+    """整理（远端 move）前失租就不许动云盘。"""
     st = _fresh_store(tmp_path, monkeypatch)
     st.start("j1", "SSIS-1", "magnet:a")
     token = web.lease_owner("j1")
     st.claim_owner("j1", token)
     st.claim_owner("j1", "other", now=time.time() + store.STALE_BEAT + 1)
-    pushed = []
-    monkeypatch.setattr(web, "upload_folder", lambda p, f: pushed.append(f) or ("x", 0))
+    moved = []
+    monkeypatch.setattr(web.cloudorganize, "apply",
+                        lambda *a, **k: moved.append(1) or {"target": "SSIS-1",
+                                                           "files": [], "size": 0})
     with pytest.raises(web.LossOfLease):
-        web._upload_loop("j1", tmp_path, "SSIS-1", 1, {"upload": 0.0, "download": 0.0,
-                                                       "organize": 0.0}, _Policy())
-    assert pushed == [], "失租后不能继续上传"
+        web._cloud_run("j1", "magnet:a", "SSIS-1", "SSIS1")
+    assert moved == [], "失租后不能继续整理远端目录"
 
 
-def test_cleanup_is_skipped_when_lease_lost(tmp_path, monkeypatch):
-    """清理目录前校验归属：上传成功后失租，原件与工作区都留在原地。"""
+def test_archive_is_not_written_when_lease_lost(tmp_path, monkeypatch):
+    """归档记账前失租：不许写归档，也不许写共享终态。
+
+    接管者正持租在跑，旧线程写 done 等于替别人宣布完成 ——
+    「清空已完成」还会顺手把它删掉。
+    """
     st = _fresh_store(tmp_path, monkeypatch)
-    monkeypatch.setattr(web, "TMP_ROOT", str(tmp_path / "dl"))
-    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))
     monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
     monkeypatch.setattr(web, "METRICS", str(tmp_path / "m.json"))
-    monkeypatch.setattr(web, "RETRIES", 0)
-    monkeypatch.setattr(web.pipeline, "download", _fake_download)
     monkeypatch.setattr(web.meta, "lookup", _no_lookup)
-    monkeypatch.setattr(web, "upload_folder", _upload_then_lose(st))
+    _cloud_stub(monkeypatch)
+
+    def lose_before_finish(landed, backend, my_inbox, dest, code, **kw):
+        st.claim_owner("j1", "other", now=time.time() + store.STALE_BEAT + 1)
+        return ([], [])
+
+    monkeypatch.setattr(web.cloudadd, "organize_landed", lose_before_finish)
     from app import core
     core.save_state(web.STATE, {})
     st.start("j1", "SSIS-123", "magnet:a")
@@ -240,9 +285,6 @@ def test_cleanup_is_skipped_when_lease_lost(tmp_path, monkeypatch):
 
     web.run_web_job("j1", "magnet:a", "SSIS-123")
 
-    real = tmp_path / "dl" / "SSIS123-1"          # 迅雷重名改成的真实落盘目录
-    assert real.exists() and (real / "v.mp4").exists(), "失租后不许清理下载原件"
-    assert (tmp_path / "work" / "state" / "SSIS123").exists(), "失租后不许清理工作区"
     job = st.get("j1")
     assert job["stage"] not in ("done", "failed", "cancelled"), \
         "失租只退出，不许写共享终态（接管者还在跑，写 cancelled 等于替别人取消）"
@@ -253,14 +295,13 @@ def test_cleanup_is_skipped_when_lease_lost(tmp_path, monkeypatch):
 def test_cleanup_runs_when_lease_held(tmp_path, monkeypatch):
     """对照组：同一流程在持租时正常清理，证明上一条的「没删」是租约挡的。"""
     st = _fresh_store(tmp_path, monkeypatch)
-    monkeypatch.setattr(web, "TMP_ROOT", str(tmp_path / "dl"))
-    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))
     monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
     monkeypatch.setattr(web, "METRICS", str(tmp_path / "m.json"))
-    monkeypatch.setattr(web, "RETRIES", 0)
-    monkeypatch.setattr(web.pipeline, "download", _fake_download)
     monkeypatch.setattr(web.meta, "lookup", _no_lookup)
-    monkeypatch.setattr(web, "upload_folder", lambda p, f: ("https://d/" + f, 0))
+    _cloud_stub(monkeypatch)
+    cleaned = []
+    monkeypatch.setattr(web.cloudadd, "clean_sources",
+                        lambda backend, pending, **kw: cleaned.append(pending) or [])
     from app import core
     core.save_state(web.STATE, {})
     st.start("j1", "SSIS-123", "magnet:a")
@@ -271,31 +312,10 @@ def test_cleanup_runs_when_lease_held(tmp_path, monkeypatch):
     web.run_web_job("j1", "magnet:a", "SSIS-123")
 
     assert st.get("j1")["stage"] == "done"
-    assert not (tmp_path / "dl" / "SSIS123-1").exists(), "持租成功后才清原件"
-    assert not (tmp_path / "work" / "state" / "SSIS123").exists(), "持租成功后才清工作区"
+    assert cleaned, "持租成功后才清源目录"
     assert st.get("j1")["exec_owner"] == "", "终态要释放租约"
 
 
-def _upload_then_lose(st):
-    """上传成功的同时被别人接管：回来时租约已经不归自己。"""
-    def upload(path, folder):
-        st.claim_owner("j1", "other", now=time.time() + store.STALE_BEAT + 1)
-        return "https://d/" + folder, 0
-    return upload
-
-
-async def _fake_download(xl, client, source, dest, progress=None, on_task=None, **opts):
-    """复现真实下载器的落盘契约：重名改成 <键>-1，并给目录打归属标记。"""
-    from pathlib import Path
-    real = Path(str(dest) + "-1")
-    real.mkdir(parents=True, exist_ok=True)
-    (real / "v.mp4").write_bytes(b"x" * (2 << 20))
-    (real / "ad.txt").write_bytes(b"ad")
-    web.workspace.claim(Path(dest), web.workspace.key_of(Path(dest).name), source)
-    web.workspace.adopt(real, web.workspace.key_of(Path(dest).name), source, task_id="T1")
-    if on_task:
-        on_task("T1", {"reused": False})
-    return {"task": "T1", "dir": real, "waited": 0.0, "reused": False}
 
 
 async def _no_lookup(code, path=None, client=None):

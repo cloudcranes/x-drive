@@ -54,28 +54,23 @@ def _run(tmp_path, monkeypatch, cfg, handler_name):
 def test_status_shows_active_today_and_gate_closed(tmp_path, monkeypatch):
     cfg = cfg_for(tmp_path)
     st = store.Store(cfg.jobs_db)
-    st.state_put({"settings": {"DAILY_UPLOAD_GB": 10}})
     st.start("j1", "SSIS-123", "magnet:a")
     st.update("j1", stage="downloading")
     # 今日 metrics：ok 2、error 1
     os.makedirs(os.path.dirname(cfg.metrics_path), exist_ok=True)
     with open(cfg.metrics_path, "w", encoding="utf-8") as fh:
         json.dump({"total": {"ok": 2, "error": 1}, "updated": "today"}, fh)
-    # 用量文件
-    usage = os.path.join(os.path.dirname(cfg.pending_dir), "usage.json")
-    os.makedirs(os.path.dirname(usage), exist_ok=True)
-    from datetime import datetime
-    with open(usage, "w", encoding="utf-8") as fh:
-        json.dump({"date": datetime.now().strftime("%Y-%m-%d"), "bytes": 2 * 1024**3}, fh)
     # 闸门关闭
     store.write_reconcile_mark({"source": "b.db"}, cfg.jobs_db)
+    # 云添加可用（现在只有这一条下载链路，状态里要报它）
+    monkeypatch.setattr(main.cloudadd, "ready", lambda get: (True, "ok"))
 
     sent = _run(tmp_path, monkeypatch, cfg, "on_status")
 
     text = sent[0]
     assert "进行中 1 个" in text
     assert "今日完成 2 · 失败 1" in text
-    assert "今日上传 2.00GB / 10GB" in text
+    assert "云添加 可用" in text
     assert "闸门关闭" in text
 
 

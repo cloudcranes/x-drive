@@ -11,7 +11,12 @@ import asyncio
 
 import pytest
 
-from app import main, store
+from app import cloudadd, main, store
+
+
+def _cloud_ok(monkeypatch):
+    """云添加可用（bot 现在只有这一条下载链路）。"""
+    monkeypatch.setattr(cloudadd, "ready", lambda get: (True, "ok"))
 
 
 def cfg_for(tmp_path):
@@ -30,6 +35,7 @@ def cfg_for(tmp_path):
 def test_run_task_is_held_when_gate_closed(tmp_path, monkeypatch):
     """闸门关闭时新消息不开工：任务留在任务表等网页放行。"""
     cfg = cfg_for(tmp_path)
+    _cloud_ok(monkeypatch)
     monkeypatch.setattr(main, "scheduling_gate",
                         lambda _c: {"open": False, "reason": "库处于待对账状态", "mark": {}})
     started = []
@@ -43,6 +49,7 @@ def test_run_task_is_held_when_gate_closed(tmp_path, monkeypatch):
 
 def test_run_task_claims_when_gate_open(tmp_path, monkeypatch):
     cfg = cfg_for(tmp_path)
+    _cloud_ok(monkeypatch)
     monkeypatch.setattr(main, "scheduling_gate",
                         lambda _c: {"open": True, "reason": "", "mark": {}})
     monkeypatch.setattr(main, "claim_task", lambda c, k, s, ch: "")
@@ -59,11 +66,10 @@ def test_run_task_resume_reuses_job_id(tmp_path, monkeypatch):
     st = store.Store(cfg.jobs_db)
     st.start("old1", "MIMK-290", "magnet:?xt=urn:btih:" + "b" * 40)
     st.update("old1", stage="downloading")
+    _cloud_ok(monkeypatch)
     monkeypatch.setattr(main, "scheduling_gate",
                         lambda _c: {"open": True, "reason": "", "mark": {}})
     monkeypatch.setattr(main, "task_store", lambda _c: st)
-    monkeypatch.setattr(main.pipeline, "probe",
-                        lambda *a, **k: asyncio.sleep(0, None))
     claimed = []
     monkeypatch.setattr(main, "claim_task",
                         lambda c, k, s, ch: claimed.append(k) or "new9")

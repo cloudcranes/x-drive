@@ -1,8 +1,12 @@
-"""归档全链路：生成附件 → 上传（假 rclone）→ 记账 → 补刮 → 校验。
+"""归档全链路（云添加）：落地 → 远端整理 → 记账 → 补刮 → 校验。
 
-全部离线：媒体是现造的几 KB 假文件，rclone/上传/远端列表都是假的，
-不连 MetaTube、不连迅雷、不碰真实 Drive。
-核心目的是钉住「web 与 bot 写出的归档记录是同一份字段契约」。
+2026-10-25 取消本地下载后，网页与 Bot 走同一条云添加链路
+（app/cloudadd.py）：磁力投给迅雷云盘 → 落地 → 远端整理 → 记账。
+
+全部离线：落地/整理/远端列表都是假的，不连 MetaTube、不连云盘。
+
+核心目的没变：**钉住「web 与 bot 写出的归档记录是同一份字段契约」**，
+以及补刮不许把清单里的视频项抹掉、校验必须拿**实际远端内容**对照。
 """
 import asyncio
 import inspect
@@ -12,21 +16,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import core, main, metadata, store, web
+from app import cloudadd, cloudorganize, core, main, metadata, storage, store, web
 from app import meta as meta_mod
 
 CODEC = "SSIS-123"
-# web 侧的假视频名（不经 organize 改名）；bot 侧经 pipeline.organize 会改成规范名
-VIDEO_NAME = "SSIS123.mp4"
+VIDEO_NAME = "SSIS-123.mp4"
+VIDEO_SIZE = 4096
 
-
-def make_video(work: Path, name: str = VIDEO_NAME, size: int = 4096) -> Path:
-    """几 KB 的假 mp4：只要求「是文件、够大、能改名」，不探测时长。"""
-    work.mkdir(parents=True, exist_ok=True)
-    path = work / name
-    path.write_bytes(b"\x00" * size)
-    return path
-
+# 归档记录的字段契约：两条路径都必须写全
+CONTRACT = {"code", "path", "link", "files", "size", "source", "at",
+            "meta", "manifest", "scrape_pending"}
 
 SCRAPED = {"code": CODEC, "title": "测试标题", "original_title": "原题",
            "summary": "简介", "release_date": "2026-01-02", "runtime": 120,
@@ -35,9 +34,27 @@ SCRAPED = {"code": CODEC, "title": "测试标题", "original_title": "原题",
            "fetched_at": "2026-01-03T00:00:00"}
 
 
+class _Landing:
+    """一次落地的样子（形状见 app/cloudingest.wait_landing 的返回）。"""
+    folder = "SEED-1"
+    total = VIDEO_SIZE
+    files = [{"name": VIDEO_NAME, "size": VIDEO_SIZE}]
+
+
+def _cloud_rec(folder=CODEC, files=None, size=VIDEO_SIZE):
+    """一条云添加的落地记录（形状见 app/cloudadd.organize_landed 的返回）。"""
+    names = files or [f"{folder}.mp4"]
+    return {"folder": folder,
+            "path": f"clouddrive2:dest/{folder}",
+            "backend": "clouddrive2", "root": "dest", "rel": f"dest/{folder}",
+            "files": names,
+            "files_detail": [{"name": n, "size": size} for n in names],
+            "size": size, "inbox": "inbox/task"}
+
+
 @pytest.fixture(autouse=True)
 def offline(monkeypatch, tmp_path):
-    """断网：任何真实刮削/元数据查询都只返回空，或由用例自己替换。"""
+    """断网：任何真实刮削/元数据查询都只返回空。"""
     async def no_scrape_web(code, provider="", client=None):
         return {}
 
@@ -47,26 +64,76 @@ def offline(monkeypatch, tmp_path):
     async def no_lookup(*a, **k):
         return None
 
-    async def no_probe(client, source):
-        return None
-
     monkeypatch.setattr(web.metatube, "configured", lambda: False)
     monkeypatch.setattr(web.metatube, "scrape", no_scrape_web)
-    # bot 侧的刮削结果是空的：即「没刮到」，不发请求
     monkeypatch.setattr(main.metatube, "configured", lambda: False)
     monkeypatch.setattr(main.metatube, "scrape", no_scrape_bot)
     monkeypatch.setattr(web.meta, "lookup", no_lookup)
     monkeypatch.setattr(main.meta, "lookup", no_lookup)
-    monkeypatch.setattr(main.pipeline, "probe", no_probe)   # bot 投递前查磁力信息
     monkeypatch.setattr(main, "_STORE", None)
     monkeypatch.setattr(web.notify, "job_done", lambda *a, **k: None)
-    monkeypatch.setattr(web, "SCRAPE_ON", True)
     monkeypatch.setattr(web, "NFO_ON", True)
     monkeypatch.setattr(web, "POSTER_ON", False)
     monkeypatch.setattr(meta_mod, "MIN_INTERVAL", 0.0)       # 断网时不空等节流
-    # 封面：假的取图函数，绝不发请求
     monkeypatch.setattr(metadata, "fetch_image", lambda url, **k: b"")
     return tmp_path
+
+
+def _stub_cloud(monkeypatch, landed=None, records=None):
+    """把云添加的每一步换成假的：提交、等待、整理、记账。"""
+    monkeypatch.setattr(cloudadd, "ready", lambda get: (True, "ok"))
+    # 记录是 clouddrive2 的，后端也得是它 —— 跨后端会被保护挡住
+    monkeypatch.setattr(storage, "get", lambda: SimpleNamespace(
+        kind="clouddrive2", ensure_dir=lambda rel: rel, list_dirs=lambda rel: [],
+        list_files=lambda rel: [], move_file=lambda *a: None,
+        purge=lambda rel: "已删除", link=lambda rel: "",
+        offline_add=lambda *a: None, real_folder=lambda rel: rel.rsplit("/", 1)[-1]))
+    monkeypatch.setattr(storage, "kind", lambda: "clouddrive2")
+    monkeypatch.setattr(cloudadd, "destinations", lambda get: ("inbox", "dest"))
+    monkeypatch.setattr(cloudadd, "task_inbox", lambda inbox, key: f"{inbox}/{key}")
+
+    def fake_submit(backend, source, my_inbox):
+        return {"before": {}, "inbox": my_inbox}
+
+    monkeypatch.setattr(cloudadd, "submit", fake_submit)
+    # 远端整理（move/purge）也是假的：这一步要真连云盘
+    monkeypatch.setattr(cloudorganize, "apply",
+                        lambda backend, src_root, plan, folder_code, dst_root="": {
+                            "target": folder_code, "files": [f"{folder_code}.mp4"],
+                            "size": VIDEO_SIZE})
+    monkeypatch.setattr(cloudorganize, "plan",
+                        lambda source, files, folder_code="": SimpleNamespace(
+                            source=source, target=folder_code,
+                            move=[f"{folder_code}.mp4"], drop=[], size=VIDEO_SIZE))
+
+    async def fake_wait(backend, my_inbox, before, source, **kw):
+        return landed if landed is not None else [_Landing()]
+
+    monkeypatch.setattr(cloudadd, "wait_landing", fake_wait)
+    monkeypatch.setattr(cloudadd, "clean_sources", lambda *a, **k: [])
+    monkeypatch.setattr(cloudadd, "build_record",
+                        lambda rec, scraped=None: _record_of(rec, scraped))
+    if records is not None:
+        monkeypatch.setattr(cloudadd, "organize_landed",
+                            lambda *a, **k: (records, []))
+    return fake_wait
+
+
+def _record_of(rec, scraped=None):
+    """按 metadata.archive_record 的契约组装一条记录（与真实实现同源）。"""
+    record = metadata.archive_record(
+        rec["folder"], rec["path"], "", rec["files"], rec["size"], "",
+        Path("/nonexistent-cloud"), scraped=scraped or {},
+        manifest_files=rec["files"], pending=True)
+    record.update({k: rec[k] for k in ("backend", "root", "rel") if k in rec})
+    by_size = {str(f.get("name")): int(f.get("size") or 0)
+               for f in (rec.get("files_detail") or [])}
+    for entry in (record.get("manifest") or {}).get("files") or []:
+        if entry.get("name") in by_size:
+            entry["size"] = by_size[entry["name"]]
+    record["manifest"]["total_size"] = sum(
+        int(e.get("size") or 0) for e in record["manifest"]["files"])
+    return record
 
 
 # ---------------------------------------------------------------- web 侧
@@ -77,8 +144,6 @@ def setup_web(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "JOBS", {})
     monkeypatch.setattr(web, "LEASES", {})
     monkeypatch.setattr(web, "_lease_live", {})
-    monkeypatch.setattr(web, "RCLONE_REMOTE", "gdrive")
-    monkeypatch.setattr(web, "DRIVE_ROOT", "X-Drive")
     core.save_state(web.STATE, {})
     return web.STORE
 
@@ -88,64 +153,29 @@ def hold_web(job_id: str) -> None:
     web.STORE.claim_owner(job_id, owner)
 
 
-def fake_upload(monkeypatch):
-    """假上传：只把工作区文件名记下来，不碰 Drive。"""
-    sent = {"files": [], "targets": []}
-
-    def upload_folder(work, folder):
-        sent["files"] = sorted(p.name for p in Path(work).iterdir() if p.is_file())
-        sent["targets"].append(f"gdrive:X-Drive/{folder}")
-        return "https://drive.example/f/1", 0
-
-    monkeypatch.setattr(web, "upload_folder", upload_folder)
-    return sent
-
-
-def test_web_flow_attachments_upload_record_rescrape_verify(tmp_path, monkeypatch):
-    """网页链路：附件生成 → 假上传 → 记账 → 补刮 → 校验（通过 / 大小异常）。"""
+def test_web_cloud_flow_record_rescrape_verify(tmp_path, monkeypatch):
+    """网页云添加：落地 → 远端整理 → 记账 → 补刮 → 校验（通过 / 大小异常）。"""
     setup_web(tmp_path, monkeypatch)
+    _stub_cloud(monkeypatch)
     web.STORE.start("j1", CODEC, "magnet:a")
     hold_web("j1")
-    work = tmp_path / "work" / "SSIS123"
-    video = make_video(work)
     web.job_update("j1", extra={"infohash": "ab" * 20, "locked": ["title"]})
 
-    # ① 生成附件（与 bot 共用 metadata.build_attachments）
-    async def scraped_web(code, provider="", client=None):
-        return dict(SCRAPED)
+    # ① 记账：字段契约完整（云添加没有本地工作区，清单按远端回填）
+    web._finish_cloud("j1", "magnet:a", {"records": [_cloud_rec()]})
 
-    monkeypatch.setattr(web.metatube, "configured", lambda: True)
-    monkeypatch.setattr(web.metatube, "scrape", scraped_web)
-    out = web.scrape_attachments(work, CODEC, [video], "j1")
-    assert out["pending"] is False
-    names = {p.name for p in out["files"]}
-    assert {VIDEO_NAME, "movie.nfo", "metadata.json", "manifest.json"} <= names
-    assert "poster.jpg" not in names, "封面开关关着就不该有海报"
-
-    # ② 假上传：附件随视频一起进上传清单
-    sent = fake_upload(monkeypatch)
-    link, _ = web.upload_folder(work, CODEC)
-    assert VIDEO_NAME in sent["files"] and "manifest.json" in sent["files"], \
-        "附件必须跟着 rclone copy 一起上去"
-
-    # ③ 记账：字段契约完整
-    web._finish("j1", work, CODEC, out["files"], video.stat().st_size, link, "magnet:a",
-                {"download": 1.0, "organize": 1.0, "upload": 1.0},
-                SimpleNamespace(attempts=0))
     rec = core.load_state(web.STATE)[CODEC]
-    for key in ("code", "path", "link", "files", "size", "source", "at",
-                "meta", "manifest", "infohash", "locked", "scrape_pending"):
+    for key in CONTRACT:
         assert key in rec, f"归档记录缺字段 {key}"
-    assert rec["path"] == "gdrive:X-Drive/SSIS-123"
-    assert rec["link"] == "https://drive.example/f/1"
-    assert rec["locked"] == ["title"] and rec["infohash"] == "ab" * 20
-    assert rec["scrape_pending"] is False, "刮到了标题就不该再挂着待补刮"
-    assert rec["meta"]["title"] == "测试标题"
+    assert rec["path"] == "clouddrive2:dest/SSIS-123"
+    assert rec["link"] == "", "云添加没有分享链接这一说"
+    assert rec["scrape_pending"] is True, "附件没推，标成待补"
+    assert rec["backend"] == "clouddrive2" and rec["rel"] == "dest/SSIS-123"
     by = {e["name"]: e for e in rec["manifest"]["files"]}
-    assert VIDEO_NAME in by and by[VIDEO_NAME]["size"] == 4096
+    assert VIDEO_NAME in by and by[VIDEO_NAME]["size"] == VIDEO_SIZE
     assert "manifest.json" not in by, "清单不自引用"
 
-    # ④ 补刮：清单里的视频项不许丢
+    # ② 补刮：清单里的视频项不许丢
     posted = {}
 
     def sync_rclone(cmd, src, dst, **kw):
@@ -153,6 +183,15 @@ def test_web_flow_attachments_upload_record_rescrape_verify(tmp_path, monkeypatc
         return 0, "", ""
 
     monkeypatch.setattr(web, "rclone", sync_rclone)
+    # 补刮把附件推到云盘：假的 upload_file 记下内容
+    def fake_upload_file(local, remote):
+        posted[Path(local).name] = Path(local).read_text(encoding="utf-8")
+        return remote
+    monkeypatch.setattr(web.storage, "get", lambda: SimpleNamespace(
+        kind="clouddrive2", ensure_dir=lambda rel: rel, list_dirs=lambda rel: [],
+        list_files=lambda rel: [], move_file=lambda *a: None,
+        purge=lambda rel: "已删除", link=lambda rel: "",
+        upload_file=fake_upload_file, real_folder=lambda rel: rel.rsplit("/", 1)[-1]))
     record = {**core.load_state(web.STATE)[CODEC],
               "meta": dict(SCRAPED), "scrape_pending": False}
     core.update_state(web.STATE, {CODEC: record})
@@ -160,19 +199,17 @@ def test_web_flow_attachments_upload_record_rescrape_verify(tmp_path, monkeypatc
     assert synced["sync_failed"] == [] and "manifest.json" in synced["synced"]
     blob = json.loads(posted["manifest.json"])
     by2 = {e["name"]: e for e in blob["files"]}
-    assert by2[VIDEO_NAME]["size"] == 4096, "补刮不许把视频项抹掉"
+    assert by2[VIDEO_NAME]["size"] == VIDEO_SIZE, "补刮不许把视频项抹掉"
     assert by2["movie.nfo"]["size"] == len(posted["movie.nfo"].encode("utf-8"))
     assert "测试标题" in posted["movie.nfo"], "补刮按最新元数据重写 NFO"
     assert json.loads(posted["metadata.json"])["fields"]["title"] == "测试标题"
 
-    # ⑤ 校验：远端与清单一致 → 校验通过
+    # ③ 校验：远端与清单一致 → 校验通过
     #
     # 关键：remote 必须由**实际推送上去的内容**构造，不能拿站内清单自证。
     # 以前这里用 local 清单直接造 remote，于是「清单说有、云端其实没有」这种
     # 分叉永远测不出来（补刮把 poster 剔除、附件大小不更新都溜了过去）。
-    # posted 是 rclone copyto 的真实载荷，视频用上传时那个文件的大小。
-    record = core.load_state(web.STATE)[CODEC]
-    remote_ok = [{"name": VIDEO_NAME, "size": 4096}]
+    remote_ok = [{"name": VIDEO_NAME, "size": VIDEO_SIZE}]
     remote_ok += [{"name": n, "size": len(blob.encode("utf-8"))}
                   for n, blob in posted.items()]
     monkeypatch.setattr(web, "remote_ls", lambda code, **_: remote_ok)
@@ -180,13 +217,13 @@ def test_web_flow_attachments_upload_record_rescrape_verify(tmp_path, monkeypatc
     assert verdict["state"] == "校验通过", verdict
     assert verdict["missing"] == [] and verdict["size_mismatch"] == []
 
-    # ⑤' 远端某个文件 0 字节 → 大小异常
+    # ③' 远端某个文件 0 字节 → 大小异常
     remote_zero = [{"name": e["name"], "size": (0 if e["name"] == VIDEO_NAME else e["size"])}
                    for e in remote_ok]
     monkeypatch.setattr(web, "remote_ls", lambda code, **_: remote_zero)
     bad = web.verify_archive(CODEC)
     assert bad["state"] == "大小异常", bad
-    assert bad["size_mismatch"] == [{"name": VIDEO_NAME, "local": 4096, "remote": 0}]
+    assert bad["size_mismatch"] == [{"name": VIDEO_NAME, "local": VIDEO_SIZE, "remote": 0}]
 
 
 # ---------------------------------------------------------------- bot 侧
@@ -203,45 +240,16 @@ def bot_cfg(tmp_path, **over):
     )
 
 
-BOT_VIDEO_BYTES = 1 << 20          # 1MB：满足 media_files 的最小体积，又不拖慢测试
-
-
 def stub_bot(monkeypatch, calls, scraped=SCRAPED):
-    """假下载 / 假整理 / 假 rclone / 假分享链接，外加可注入的刮削结果。"""
-
-    async def fake_download(xl, client, source, dest, progress=None, **opts):
-        dest.mkdir(parents=True, exist_ok=True)
-        # 与真实下载一致地用一个够大的媒体文件：organize/media_files 默认丢 1MB 以下的小文件
-        (dest / "raw.mp4").write_bytes(b"\x00" * BOT_VIDEO_BYTES)
-        return {"task": "T", "dir": dest, "waited": 0.0, "reused": False}
-
-    def fake_stage(source_dir, work, key):
-        work.mkdir(parents=True, exist_ok=True)
-        for p in Path(source_dir).glob("*"):
-            if p.is_file():
-                (work / p.name).write_bytes(p.read_bytes())
-        return list(work.glob("*"))
-
-    async def fake_rclone(cfg, *args, timeout=180.0):
-        if args[0] == "copy":
-            calls["copied"] = sorted(p.name for p in Path(args[1]).iterdir()
-                                     if p.is_file())
-            calls["target"] = args[2]
-        return 0, "", ""
-
-    async def fake_link(cfg, target):
-        return "https://drive.example/bot"
+    """假云添加：落地/整理/记账都是假的，刮削结果可注入。"""
+    _stub_cloud(monkeypatch)
+    monkeypatch.setattr(main.metatube, "configured", lambda: True)
 
     async def fake_scrape(code, provider="", client=None):
         if isinstance(scraped, Exception):
             raise scraped
         return dict(scraped)
 
-    monkeypatch.setattr(main.pipeline, "download", fake_download)
-    monkeypatch.setattr(main.pipeline, "stage_copy", fake_stage)
-    monkeypatch.setattr(main, "rclone", fake_rclone)
-    monkeypatch.setattr(main, "folder_link", fake_link)
-    monkeypatch.setattr(main.metatube, "configured", lambda: True)
     monkeypatch.setattr(main.metatube, "scrape", fake_scrape)
     return calls
 
@@ -262,51 +270,35 @@ def run_bot(tmp_path, state, text=BOT_MAGNET, **cfg_over):
     return reply, cfg, state
 
 
-def test_bot_flow_generates_attachments_and_full_record(tmp_path, monkeypatch):
-    """bot 链路：附件跟着 rclone copy 上去，记账字段与网页同一份契约。"""
-    calls = {"copied": [], "target": ""}
+def test_bot_cloud_flow_writes_full_record(tmp_path, monkeypatch):
+    """bot 链路：云添加落地后写出的记录与网页同一份契约。"""
+    calls = {}
     stub_bot(monkeypatch, calls)
 
     reply, cfg, state = run_bot(tmp_path, {})
 
-    assert "✅ SSIS-123" in reply
-    assert calls["target"] == "gdrive:X-Drive/SSIS-123"
-    # 整理会把视频改成规范名 SSIS-123.mp4；附件则必须一起进 rclone copy
-    bot_video = "SSIS-123.mp4"
-    assert {bot_video, "movie.nfo", "metadata.json", "manifest.json"} <= set(calls["copied"]), \
-        "bot 上传的 rclone copy 必须包含生成的附件"
-    rec = state["SSIS-123"]
-    assert core.load_state(cfg.state_path)["SSIS-123"] == rec, "内存镜像与落盘记录要一致"
-    for key in ("code", "path", "link", "files", "size", "source", "at",
-                "meta", "manifest", "infohash", "scrape_pending"):
-        assert key in rec, f"bot 归档记录缺字段 {key}"
-    assert rec["meta"]["title"] == "测试标题"
-    assert rec["scrape_pending"] is False
-    assert rec["infohash"] == "ab" * 20, "infohash 来自投递任务时记的证据"
-    by = {e["name"]: e for e in rec["manifest"]["files"]}
-    assert by[bot_video]["size"] == BOT_VIDEO_BYTES
-    assert "manifest.json" not in by
+    assert "✅" in reply, reply
+    rec = core.load_state(tmp_path / "state.json")[CODEC]
+    for key in CONTRACT:
+        assert key in rec, f"归档记录缺字段 {key}"
+    assert rec["code"] == CODEC
+    assert rec["files"] == [VIDEO_NAME]
+    assert rec["size"] == VIDEO_SIZE
+    assert rec["backend"] == "clouddrive2"
+    assert rec["rel"] == "dest/SSIS-123", "按实际归档位置写，不跟全局根走"
 
 
-def test_bot_scrape_failure_does_not_block_upload(tmp_path, monkeypatch):
-    """刮削炸了也照传：记录里登记待补刮，视频仍在清单里。"""
-    calls = {"copied": [], "target": ""}
+def test_bot_scrape_failure_does_not_block_archive(tmp_path, monkeypatch):
+    """刮削失败只记待补刮，不能挡住归档。"""
+    calls = {}
     stub_bot(monkeypatch, calls, scraped=RuntimeError("MetaTube 不可达"))
 
     reply, cfg, state = run_bot(tmp_path, {})
 
-    assert "✅ SSIS-123" in reply
-    assert "SSIS-123.mp4" in calls["copied"], "刮削失败不能拖累上传"
-    rec = core.load_state(cfg.state_path)["SSIS-123"]
+    assert "✅" in reply, reply
+    rec = core.load_state(tmp_path / "state.json")[CODEC]
     assert rec["scrape_pending"] is True
-    assert rec["meta"] == {}, "没刮到就留空，不编造"
-    assert "SSIS-123.mp4" in {e["name"] for e in rec["manifest"]["files"]}
-
-
-# ---------------------------------------------------------------- 同一契约
-
-CONTRACT = {"code", "path", "link", "files", "size", "source", "at",
-            "meta", "manifest", "scrape_pending"}
+    assert rec["files"] == [VIDEO_NAME], "视频照样归档"
 
 
 def test_web_and_bot_record_field_sets_agree(tmp_path, monkeypatch):
@@ -314,38 +306,16 @@ def test_web_and_bot_record_field_sets_agree(tmp_path, monkeypatch):
     web_root = tmp_path / "web"
     web_root.mkdir()
     setup_web(web_root, monkeypatch)
+    _stub_cloud(monkeypatch)
     web.STORE.start("jc", CODEC, "magnet:a")
     hold_web("jc")
-    work = make_video(web_root / "work" / "SSIS123").parent
-    video = work / VIDEO_NAME
-
-    async def scraped_web(code, provider="", client=None):
-        return dict(SCRAPED)
-
-    monkeypatch.setattr(web.metatube, "configured", lambda: True)
-    monkeypatch.setattr(web.metatube, "scrape", scraped_web)
-    web.job_update("jc", extra={"infohash": "cd" * 20, "locked": ["title"]})
-    out = web.scrape_attachments(work, CODEC, [video], "jc")
-    web._finish("jc", work, CODEC, out["files"], video.stat().st_size,
-                "https://drive.example/w", "magnet:a",
-                {"download": 0, "organize": 0, "upload": 1}, SimpleNamespace(attempts=0))
+    web._finish_cloud("jc", "magnet:a", {"records": [_cloud_rec()]})
     web_rec = core.load_state(web.STATE)[CODEC]
 
     bot_root = tmp_path / "bot"
     bot_root.mkdir()
-    calls = {"copied": [], "target": ""}
-    stub_bot(monkeypatch, calls)
-
-    async def with_extra(cfg, work_dir, folder, files, job_id=""):
-        """在 bot 记账前给任务补上 infohash/locked —— 模拟真实任务记录里已有的证据。"""
-        main.task_store(cfg).update(job_id, extra={
-            **(main.task_store(cfg).get(job_id).get("extra") or {}),
-            "infohash": "cd" * 20, "locked": ["title"]})
-        return await real_scrape_bot(cfg, work_dir, folder, files, job_id)
-
-    real_scrape_bot = main.scrape_bot_attachments
-    monkeypatch.setattr(main, "scrape_bot_attachments", with_extra)
-    _, _, state = run_bot(bot_root, {})
+    stub_bot(monkeypatch, {})
+    _, _, _ = run_bot(bot_root, {})
     bot_rec = core.load_state(bot_root / "state.json")[CODEC]
 
     assert set(web_rec) == set(bot_rec), (
@@ -361,18 +331,18 @@ def test_web_and_bot_record_field_sets_agree(tmp_path, monkeypatch):
         # 清单 = files 去掉自引用的 manifest.json
         assert sorted(f["name"] for f in rec["manifest"]["files"]) == \
             sorted(n for n in rec["files"] if n != "manifest.json")
-        assert rec["path"] == "gdrive:X-Drive/SSIS-123"
+        assert rec["path"] == "clouddrive2:dest/SSIS-123"
 
 
 # ---------------------------------------------------------------- 共用实现
 
 def test_web_and_bot_share_the_same_helpers():
-    """不是两份复制粘贴：附件生成与记账都落在 metadata 的同一份实现上。"""
-    builders = (web.scrape_attachments, main.scrape_bot_attachments)
-    for fn in builders:
-        src = inspect.getsource(fn)
-        assert "metadata.build_attachments" in src, f"{fn.__name__} 没有复用附件生成核心"
-        assert "write_sidecar" not in src, f"{fn.__name__} 又写了一份 sidecar 逻辑"
-    for fn in (web._finish, main.run_task):
-        assert "metadata.archive_record" in inspect.getsource(fn), \
-            f"{fn.__name__} 没有复用归档记录组装"
+    """不是两份复制粘贴：两端都走 app/cloudadd.py 这一条云添加链路。"""
+    for fn in (web._cloud_run, main.run_task):
+        assert "cloudadd." in inspect.getsource(fn), \
+            f"{fn.__name__} 没有走共享的云添加模块"
+    # 归档记录的组装也只在一处（cloudadd.build_record → metadata.archive_record）
+    assert "metadata.archive_record" in inspect.getsource(cloudadd.build_record)
+    for fn in (web._finish_cloud, main.run_task):
+        assert "cloudadd.build_record" in inspect.getsource(fn), \
+            f"{fn.__name__} 没有复用共享的记录组装"
