@@ -20,6 +20,8 @@ class Node {
     this.tagName=tag.toUpperCase(); this.className=cls || ""; this._text=String(text ?? "");
     this.children=[]; this.parentNode=null; this.style={}; this.dataset={}; this.listeners={};
     this.disabled=false; this.hidden=false; this.scrollTop=0; this.value="";
+    // <video> 的几个方法：假 DOM 里没有真播放，但调用不能炸
+    this.play=()=>Promise.resolve(); this.pause=()=>{}; this.load=()=>{};
     this.classList={
       add: (...names)=>{this.className=[...new Set([...this.className.split(/\s+/).filter(Boolean),...names])].join(" ")},
       remove: (...names)=>{this.className=this.className.split(/\s+/).filter(n=>!names.includes(n)).join(" ")},
@@ -68,7 +70,7 @@ const document={
   removeEventListener:(type,fn)=>{const l=docListeners[type]||[];const i=l.indexOf(fn);if(i>=0)l.splice(i,1);},
   dispatchEvent:(ev)=>{for(const f of docListeners[ev.type]||[])f(ev);return true;},
 };
-const stubs={confirm:()=>true,metaApi:null,alerts:[]};
+const stubs={confirm:()=>true,metaApi:null,alerts:[],fetch:null};
 const ctx={console,assert,Node,els,flashes,opened,get,deferred,response,document,docListeners,vm,stubs,
   AbortController,setTimeout,clearTimeout,
   $:get,el:(...args)=>new Node(...args),BASE:"",authInit:x=>x,
@@ -76,7 +78,8 @@ const ctx={console,assert,Node,els,flashes,opened,get,deferred,response,document
   localStorage:{getItem:()=>"1",setItem(){}},confirm:(...a)=>stubs.confirm(...a),
   alert:(msg)=>{stubs.alerts.push(String(msg));},
   window:{open:(...args)=>opened.push(args)},applyStorageScope(){},
-  fetch:async()=>{throw new Error("unexpected fixture request")},load:()=>{},
+  fetch:(...a)=>stubs.fetch?stubs.fetch(...a):(async()=>{throw new Error("unexpected fixture request")})(),
+  load:()=>{},
   askRename:()=>{ctx.renamed=(ctx.renamed||0)+1},askDelete(){},applyFilter(){},
   jobTimeline:j=>new Node("div","tly",JSON.stringify(j.events || j.error || "")),
 };
@@ -98,6 +101,7 @@ part("function settingsRow(",'$("settings-open").addEventListener');
 part("const RES_SORTS =","async function searchResources(");
 part("function renderCandidates(","// ── 顶栏类型切换");
 part("let lightbox = null;","function showDetail(");
+part("async function readJson(","async function renderSubs(");
 ctx.resState={sort:"rec"};
 '''
 
@@ -495,4 +499,58 @@ def test_manual_scrape_shows_all_changed_fields_with_readable_names():
       assert.ok(confirmed.includes("演员乙 / 演员丙"),"数组值要能读");
       // 标出数据来源
       assert.ok(confirmed.includes("javbus"),"确认框要标出来源");
+    ''')
+
+
+def test_archive_detail_has_play_button():
+    """归档详情弹层里要有「播放」入口。"""
+    run_js(r'''
+      const t={id:"a",code:"ABC-1",kind:"视频 1",cat:"video",size_text:"1GB",count:1,
+        files:["ABC-1.mp4"],at:"2026-10-25",path:"p",meta:{title:"x"}};
+      const node=card(t);
+      await node.querySelector(".card-cover").dispatch("click",{});
+      const layer=document.getElementById("detail-layer");
+      const acts=layer.querySelectorAll(".dactions")[0];
+      const btns=acts.querySelectorAll("BUTTON").map(b=>b.textContent);
+      assert.ok(btns.includes("播放"),"详情里要有播放按钮："+btns.join(","));
+    ''')
+
+
+def test_play_opens_player_with_direct_link():
+    """点播放：取直链 → 原地起播放器（不新开标签页）。"""
+    run_js(r'''
+      const calls=[];
+      stubs.fetch=async(url,opts)=>{
+        calls.push(url);
+        if(String(url).includes("/api/cloud/directlink"))
+          return {ok:true,status:200,statusText:"OK",
+                  text:async()=>JSON.stringify({ok:true,via:"clouddrive2",
+                    name:"ABC-1.mp4",link:"http://host.docker.internal:19798/x.mp4",
+                    play:"/videoproxy?u=http%3A%2F%2Fhost.docker.internal%3A19798%2Fx.mp4",
+                    medias:[]})};
+        return {ok:true,status:200,statusText:"OK",text:async()=>"{}"};
+      };
+      const t={id:"a",code:"ABC-1",files:["ABC-1.mp4"],meta:{title:"x"}};
+      await playArchive(t,null);
+      assert.equal(calls.length,1,"应当只请求一次直链接口");
+      assert.ok(calls[0].includes("code=ABC-1"),"请求要带番号："+calls[0]);
+      const player=document.getElementById("player-layer");
+      assert.ok(player,"应当打开播放器");
+      const v=player.querySelector("VIDEO");
+      assert.ok(v,"播放器里要有 video");
+      assert.equal(v.src,"/videoproxy?u=http%3A%2F%2Fhost.docker.internal%3A19798%2Fx.mp4",
+        "video 要指向同源播放地址");
+    ''')
+
+
+def test_play_reports_failure_instead_of_playing():
+    """取不到直链：如实报错，不开播放器。"""
+    run_js(r'''
+      stubs.fetch=async()=>({ok:true,status:200,statusText:"OK",
+        text:async()=>JSON.stringify({ok:false,error:"没有 MIMK-1 的归档记录"})});
+      stubs.alerts.length=0;
+      await playArchive({code:"MIMK-1",files:["a.mp4"],meta:{}},null);
+      assert.equal(document.getElementById("player-layer"),null,"取不到就不该开播放器");
+      assert.equal(stubs.alerts.length,1,"要告诉用户为什么");
+      assert.ok(stubs.alerts[0].includes("没有 MIMK-1"),stubs.alerts[0]);
     ''')

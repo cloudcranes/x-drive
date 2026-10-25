@@ -432,6 +432,21 @@
   .dk{font-family:var(--mono); color:var(--faint); flex:none; min-width:56px}
   .dv{color:var(--text); word-break:break-word}
   .dsub{margin:14px 0 8px; font-family:var(--mono); font-size:11px; color:var(--faint)}
+  /* 播放器：原地铺一层，视频占满可用宽度 */
+  .player-panel{max-width:min(1080px, 96vw); width:min(1080px, 96vw)}
+  .player-video{width:100%; max-height:74vh; display:block; background:#000;
+    border-radius:8px; border:1px solid var(--line)}
+  .player-medias{display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:10px}
+  .pm-label{font-family:var(--mono); font-size:10.5px; color:var(--faint); margin-right:2px}
+  .pm-btn{font:inherit; font-size:11px; padding:3px 10px; cursor:pointer; border-radius:5px;
+    border:1px solid var(--line-soft); background:rgba(255,255,255,.03); color:var(--muted)}
+  .pm-btn:hover{border-color:rgba(62,186,244,.45); color:var(--cyan)}
+  .pm-btn.on{border-color:rgba(62,186,244,.6); color:var(--cyan);
+    background:rgba(62,186,244,.09)}
+  .player-meta{display:flex; flex-wrap:wrap; gap:10px; margin-top:10px;
+    font-family:var(--mono); font-size:10.5px; color:var(--faint)}
+  .player-hint{margin-top:10px; padding:8px 10px; border-radius:6px; font-size:11.5px;
+    color:#ffc98a; border:1px solid rgba(255,201,138,.3); background:rgba(255,201,138,.06)}
   .dwall{display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:8px}
   .dthumb{display:block; aspect-ratio:16/9; overflow:hidden; border-radius:6px; border:1px solid var(--line);
     cursor:zoom-in}
@@ -1441,6 +1456,12 @@ function showArchiveDetail(t) {
   }
 
   const actions = el("div", "dactions");
+  // 播放：取直链后在原地起一个 <video>，不新开标签页
+  const playBtn = el("button", "ghost", "播放");
+  playBtn.type = "button";
+  playBtn.title = "取云盘直链并原地播放";
+  playBtn.addEventListener("click", () => { playArchive(t, playBtn); });
+  actions.append(playBtn);
   // 手动刮削：按需去源站重抓一次元数据。
   // 先看差异再决定写不写 —— 不做「点一下就悄悄覆盖已有字段」。
   const scrapeBtn = el("button", "ghost", "手动刮削");
@@ -1552,6 +1573,106 @@ async function manualScrape(t, closeLayer, btn) {
     if (btn) btn.disabled = false;
     alert("写入失败：" + (e.message || e));
   }
+}
+
+// 播放：取直链后在原地起一个 <video>。
+// 直链有有效期，不缓存 —— 每次播都重新取。
+async function playArchive(t, btn) {
+  const code = t.code || t.id || "";
+  if (!code) { alert("这条归档没有番号"); return; }
+  if (btn) btn.disabled = true;
+  let data = null;
+  try {
+    const r = await fetch(BASE + "/api/cloud/directlink?code=" + encodeURIComponent(code),
+                          authInit({cache: "no-store"}));
+    data = await readJson(r, "/api/cloud/directlink");
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    alert("取直链失败：" + (e.message || e));
+    return;
+  }
+  if (btn) btn.disabled = false;
+  if (!data || !data.ok) {
+    alert("取直链失败：" + ((data && data.error) || "未知原因"));
+    return;
+  }
+  // play 是同源播放地址；link 是原始直链（拿来做「在新标签打开」的备选）
+  const src = data.play || data.link || "";
+  if (!src) { alert("没有可播放的直链"); return; }
+  openPlayer(code, data, src);
+}
+
+// 播放器：原地铺一层。Esc / 点背景 / 关闭都退。
+// 多个画质档时给一排按钮（迅雷官方 API 的 medias），默认第一档。
+function openPlayer(code, data, src) {
+  const old = document.getElementById("player-layer");
+  if (old) old.remove();
+  const layer = el("div", "dlayer player-layer");
+  layer.id = "player-layer";
+  const closeLayer = () => {
+    const v = layer.querySelector("video");
+    if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
+    document.removeEventListener("keydown", onKey);
+    layer.remove();
+    document.body.style.overflow = "";
+  };
+  const onKey = e => {
+    if (e.key !== "Escape") return;
+    closeLayer();
+  };
+  layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
+  document.addEventListener("keydown", onKey);
+  document.body.style.overflow = "hidden";
+
+  const panel = el("div", "dpanel player-panel");
+  const head = el("div", "dhead");
+  head.append(el("span", "dcode", code));
+  const close = el("button", "iconbtn txt", "关闭");
+  close.type = "button";
+  close.addEventListener("click", closeLayer);
+  head.append(close);
+  panel.append(head);
+
+  const video = el("video", "player-video");
+  video.controls = true;
+  video.preload = "metadata";
+  video.playsInline = true;
+  video.src = src;
+  video.addEventListener("error", () => {
+    const hint = el("div", "player-hint", "播放失败：直链可能已过期，或这个后端不给可播的地址");
+    panel.append(hint);
+  });
+  panel.append(video);
+
+  // 多画质档（迅雷官方 API 的 medias）
+  const medias = (data.medias || []).filter(m => m.url);
+  if (medias.length > 1) {
+    const row = el("div", "player-medias");
+    row.append(el("span", "pm-label", "画质"));
+    for (const m of medias) {
+      const b = el("button", "pm-btn", m.name || "流");
+      b.type = "button";
+      b.addEventListener("click", () => {
+        for (const x of row.querySelectorAll(".pm-btn")) x.classList.remove("on");
+        b.classList.add("on");
+        video.src = m.url;
+        video.load();
+      });
+      row.append(b);
+    }
+    row.querySelector(".pm-btn")?.classList.add("on");
+    panel.append(row);
+  }
+
+  const meta = el("div", "player-meta");
+  meta.append(el("span", null, data.name || code));
+  if (data.via) meta.append(el("span", null, "来源：" + data.via));
+  panel.append(meta);
+
+  layer.append(panel);
+  document.body.append(layer);
+  // 自动起播：浏览器可能拦（有声/无手势），拦了就让用户自己点播放键
+  video.play().catch(() => {});
 }
 
 // 删除归档：两段式。先问服务端「将删什么」，把番号和体积摆给用户看，

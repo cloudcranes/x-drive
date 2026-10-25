@@ -106,8 +106,8 @@ def test_modal_close_button_has_room_for_text():
     page = html()
     assert "关闭" in page
     assert ".iconbtn.txt{" in css(page), "文字版 iconbtn 要放开宽度"
-    assert page.count('el("button", "iconbtn txt", "关闭")') == 3, \
-        "三个弹层（详情 / 磁力预览 / 归档详情）的关闭按钮都要带 txt 类"
+    assert page.count('el("button", "iconbtn txt", "关闭")') == 4, \
+        "四个弹层（详情 / 磁力预览 / 归档详情 / 播放器）的关闭按钮都要带 txt 类"
 
 
 # ---------------------------------------------------------------- 7. 队列滚动

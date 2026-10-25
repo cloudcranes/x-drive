@@ -593,6 +593,15 @@ IMG_HOSTS = ("whatslink.info", "www.whatslink.info", "jdbstatic.com", "javbus.co
 IMG_TIMEOUT = 6.0
 IMG_ATTEMPTS = 3
 
+# ── 视频代理：直链播放
+# 直链是云盘给的**内网地址**（CD2 的 host.docker.internal:19798），浏览器
+# 根本连不上 —— 必须由 web 服务转发。
+# 转发要支持 Range：<video> 靠 Range 头做拖动定位，不支持的话只能从头播。
+VIDEO_HOSTS = ("host.docker.internal", "127.0.0.1", "localhost")
+VIDEO_TIMEOUT = 30.0
+# 单次转发的块大小：16MB 足够顺滑，又不至于把内存撑爆
+VIDEO_CHUNK = 16 * 1024 * 1024
+
 
 def img_cache_max_bytes() -> int:
     """缓存上限（字节）。设置里 0 = 不限。"""
@@ -840,7 +849,8 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
         try:
             info = xunleipan.direct_link(path)
             return {"ok": True, "via": "xunleipan", "path": path,
-                    "name": info.get("name") or "", "link": info.get("link") or "",
+                    "name": info.get("name") or "",
+                    "link": info.get("link") or "",
                     "medias": info.get("medias") or []}
         except Exception as exc:                # noqa: BLE001 退回 CD2
             log.warning("官方 API 取直链失败，退回 CD2：%s", exc)
@@ -854,7 +864,25 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
     if not link:
         return {"ok": False, "error": "这个后端取不到直链（可配迅雷官方 API 或 CD2_LINK_MODE）"}
     return {"ok": True, "via": backend.kind, "path": path,
-            "name": path.rsplit("/", 1)[-1], "link": link, "medias": []}
+            "name": path.rsplit("/", 1)[-1], "link": link, "medias": [],
+            "play": play_url(link)}
+
+
+def play_url(link: str) -> str:
+    """把云盘直链换成**同源**的播放地址。
+
+    云盘给的直链是内网地址（CD2 的 host.docker.internal:19798），浏览器
+    连不上 —— 交给 web 服务转发（/videoproxy）才对。
+
+    外网地址（迅雷官方 API 的 web_content_link）浏览器自己就能连，不必绕。
+    """
+    raw = (link or "").strip()
+    if not raw:
+        return ""
+    host = (urlsplit(raw).hostname or "").lower()
+    if host in VIDEO_HOSTS:
+        return "/videoproxy?u=" + quote(raw, safe="")
+    return raw
 
 
 def _cloud_run(job_id: str, source: str, code: str, key: str,
@@ -3209,6 +3237,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/proxy":
             self._proxy_image(parse_qs(parts.query))
             return
+        if path == "/videoproxy":
+            self._proxy_video(parse_qs(parts.query))
+            return
         if path == "/api/peek":
             magnet = parse_qs(parts.query).get("magnet", [""])[0]
             if not magnet.lower().startswith("magnet:"):
@@ -3309,6 +3340,65 @@ class Handler(BaseHTTPRequestHandler):
             self._json(panel_tasks())
             return
         self._send(404, b"not found", "text/plain; charset=utf-8")
+
+    def _proxy_video(self, query: dict) -> None:
+        """转发视频直链（<video> 播放用）。
+
+        直链是云盘给的**内网地址**（CD2 的 host.docker.internal:19798），
+        浏览器根本连不上 —— 必须由 web 服务转一手。
+
+        关键是要**支持 Range**：<video> 靠 Range 头做拖动定位，不支持的话
+        只能从头播、也不能跳片段。上游给什么状态码就回什么（206 局部内容
+        / 200 全量），Content-Range、Content-Length、Accept-Ranges 原样带回去。
+        """
+        url = (query.get("u") or [""])[0].strip()
+        host = (urlsplit(url).hostname or "").lower()
+        # 白名单只放云盘直链的宿主机地址；代理永远不做任意 URL 转发
+        if not url or host not in VIDEO_HOSTS:
+            self._send(400, b"bad proxy url", "text/plain; charset=utf-8")
+            return
+        # 浏览器带来的 Range 头要原样转给上游
+        headers = {"User-Agent": "Mozilla/5.0"}
+        rng = self.headers.get("Range")
+        if rng:
+            headers["Range"] = rng
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=VIDEO_TIMEOUT) as resp:
+                self.send_response(resp.status)
+                ctype = resp.headers.get("Content-Type") or "video/mp4"
+                self.send_header("Content-Type", ctype)
+                for name in ("Content-Length", "Content-Range", "Accept-Ranges"):
+                    val = resp.headers.get(name)
+                    if val:
+                        self.send_header(name, val)
+                if not resp.headers.get("Accept-Ranges"):
+                    self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                # 分块转发：一次读满一帧就写出去，不把整个文件读进内存
+                while True:
+                    chunk = resp.read(VIDEO_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except urllib.error.HTTPError as exc:
+            # 上游的 403/404 之类原样回：Range 越界（416）也要如实告诉浏览器
+            body = exc.read()[:200] if hasattr(exc, "read") else b""
+            self.send_response(exc.code)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except OSError:
+                pass
+        except Exception as exc:
+            log.warning("视频代理失败：%s", exc)
+            try:
+                self._send(502, f"proxy failed: {exc}".encode(),
+                           "text/plain; charset=utf-8")
+            except Exception:
+                pass
 
     def _proxy_image(self, query: dict) -> None:
         """同源转发图片（截图 / 封面），避免浏览器直连第三方域名。

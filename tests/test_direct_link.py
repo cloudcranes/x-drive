@@ -156,3 +156,43 @@ def test_code_link_does_not_query_unrelated_xunlei_cloud(tmp_path, monkeypatch, 
     out = web.cloud_direct_link(code="AB-1")
     assert out["ok"] and out["via"] == kind
     assert calls == [f"{root}/AB-1/a.mp4"]
+
+
+# ─────────────────────────────────────────── 播放地址（同源转发）
+
+def test_play_url_proxies_internal_hosts():
+    """内网直链要换成同源播放地址 —— 浏览器连不上 host.docker.internal。"""
+    assert web.play_url("http://host.docker.internal:19798/static/x.mp4").startswith(
+        "/videoproxy?u=")
+    assert web.play_url("http://127.0.0.1:19798/static/x.mp4").startswith("/videoproxy?u=")
+
+
+def test_play_url_keeps_public_links():
+    """外网地址（迅雷官方 API 的 web_content_link）浏览器自己就能连。"""
+    assert web.play_url("https://dl.example/signed") == "https://dl.example/signed"
+    assert web.play_url("") == ""
+
+
+def test_direct_link_returns_play_url(tmp_path, monkeypatch):
+    """CD2 那条路：返回同源播放地址 + 原始直链。"""
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(web.xunleipan, "configured", lambda: False)
+
+    class Backend:
+        kind = "clouddrive2"
+
+        def download_url(self, path):
+            return "http://host.docker.internal:19798/static/http/x/false/a.mp4"
+
+    monkeypatch.setattr(web, "storage_backend", lambda: Backend())
+    out = web.cloud_direct_link(path="迅雷云盘/a.mp4")
+    assert out["ok"]
+    assert out["play"].startswith("/videoproxy?u=")
+    assert "host.docker.internal" in out["link"], "原始直链也要留着（备选）"
+
+
+def test_video_proxy_rejects_foreign_hosts():
+    """视频代理只转发云盘直链的宿主机地址，不做任意 URL 转发。"""
+    assert "host.docker.internal" in web.VIDEO_HOSTS
+    assert "example.com" not in web.VIDEO_HOSTS
+    assert "evil.test" not in web.VIDEO_HOSTS
