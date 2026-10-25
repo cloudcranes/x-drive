@@ -1107,6 +1107,34 @@ def _parallel_download(job_id: str, link: str, local: Path) -> int:
     return got
 
 
+def _remote_readable(backend, path: str, size: int) -> bool:
+    """远端那个文件真能读出字节吗？（头尾各读一小段）
+
+    只比大小不够 —— 传回被打断会留下「大小对得上、内容坏掉」的文件。
+    """
+    probe = getattr(backend, "download_url", None)
+    if not probe or not size:
+        return False
+    try:
+        url = probe(path)
+    except Exception as exc:                    # noqa: BLE001
+        log.warning("faststart：取下载地址失败：%s", exc)
+        return False
+    if not url:
+        return False
+    for start, end in ((0, 65535), (max(0, size - 65536), max(0, size - 1))):
+        try:
+            req = urllib.request.Request(
+                url, headers={"Range": f"bytes={start}-{end}"})
+            with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT * 4) as resp:
+                if not resp.read(65536):
+                    return False
+        except Exception as exc:                # noqa: BLE001
+            log.warning("faststart：远端读不出来（%d-%d）：%s", start, end, exc)
+            return False
+    return True
+
+
 def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> dict:
     """重排的真正干活部分：下载 → 重排 → 传回原位。
 
@@ -1168,7 +1196,15 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
                     log.error("faststart：回滚失败，原文件在 %s，请手工改名回去：%s",
                               backup, exc2)
                 raise
-            # 新文件已就位。删备份前先核一下大小 —— 传坏了就别删原件。
+            # 新文件已就位。删备份前先**核验它真能用** —— 只比大小不够。
+            #
+            # 实测踩过：传回过程中进程被杀（容器重建），云端留下一个
+            # **大小凑巧对得上、内容却坏掉**的文件（5.6GB）：核验只看大小
+            # 就通过了，备份也被删了 —— 原件没了，坏件留着，5GB 的片子报废。
+            #
+            # 现在：大小对 + **读得出头尾字节** 才删备份。读不出来就把备份
+            # 留着并报错，让用户还有原件可用。
+            verified = False
             try:
                 entries = backend.list_files(path.rsplit("/", 1)[0]
                                              if "/" in path else "")
@@ -1176,8 +1212,21 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
                 if new is not None and new.size and new.size != new_size:
                     log.warning("faststart：%s 大小对不上（期望 %d，实得 %d）",
                                 path, new_size, new.size)
+                else:
+                    verified = _remote_readable(backend, path, new_size)
             except Exception as exc:
-                log.warning("faststart：核验 %s 大小失败：%s", path, exc)
+                log.warning("faststart：核验 %s 失败：%s", path, exc)
+            if not verified:
+                # 核验不过：**不删备份**，把原件（改名后的）留在那儿
+                log.error("faststart：%s 传回后核验不通过（读不出内容），"
+                          "保留备份 %s —— 原件还在，请人工核对", path, backup)
+                try:
+                    backend.purge(tmp_dest)
+                except Exception:
+                    pass
+                return {"ok": False, "changed": False,
+                        "error": f"传回后核验不通过（远端读不出内容），"
+                                  f"原文件保留在 {backup}，请人工核对"}
             try:
                 backend.purge(backup)
             except Exception as exc:
@@ -4374,6 +4423,48 @@ def remote_ls(folder: str, timeout: float = 180.0, rel_path: str = "") -> list[d
             for i in items if i.get("Name")]
 
 
+def _probe_remote_readable(code: str, record: dict) -> list[str]:
+    """抽一个远端媒体文件，读它的**头尾各一小段** —— 读不出来就是真坏了。
+
+    为什么光比大小不够：传回过程被打断（进程被杀、容器重建）会留下
+    「大小凑巧对得上、内容却坏掉」的文件。实测 faststart 传回后云端留下
+    5.6GB 的坏文件：大小与记录一致、校验显示「通过」，但下载直接 500。
+
+    读头尾两段而不是只读头：有些坏法只在尾部（文件没写完）。
+    """
+    out: list[str] = []
+    try:
+        backend = storage_backend()
+        rel = archive_locator(record)
+        entries = remote_ls(code, rel_path=rel)
+        media = [e for e in entries
+                 if Path(str(e.get("name") or "")).suffix.lower() in
+                 (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".mov", ".rmvb", ".iso")]
+        if not media:
+            return out
+        name = str(media[0].get("name"))
+        size = int(media[0].get("size") or 0)
+        probe = getattr(backend, "download_url", None)
+        if not probe:
+            return out
+        url = probe(f"{rel}/{name}" if rel else name)
+        if not url:
+            return out
+        for label, start, end in (("头", 0, 65535),
+                                  ("尾", max(0, size - 65536), max(0, size - 1))):
+            try:
+                req = urllib.request.Request(
+                    url, headers={"Range": f"bytes={start}-{end}"})
+                with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT * 3) as resp:
+                    if not resp.read(65536):
+                        out.append(f"{name}（{label}部读不到内容）")
+            except Exception as exc:            # noqa: BLE001
+                out.append(f"{name}（{label}部读取失败：{str(exc)[:60]}）")
+    except Exception as exc:                    # noqa: BLE001 探不了不算异常
+        log.info("探测远端可读性失败（跳过）：%s", exc)
+    return out
+
+
 def verify_archive(code: str, confirm: bool = False) -> dict:
     """核对归档：本地清单 vs 远端实际文件。
 
@@ -4410,10 +4501,19 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
     # 本地大小不明（0 或没记）就不做大小断言，但要标出来 —— 不能当成通过。
     sized = sorted(n for n in local if n in remote and local[n] and local[n] != remote[n])
     unknown = sorted(n for n in local if n in remote and not local[n])
+    # **可读性**：光比大小不够 —— 传回被打断会留下「大小凑巧对得上、内容却坏掉」
+    # 的文件（实测 faststart 传回时进程被杀，云端留下 5.6GB 的坏文件：
+    # 大小与记录一致，但下载直接 500 / 超时）。
+    # 所以再抽一个媒体文件读它的**头尾各一小段** —— 读不出来就是真坏了。
+    unreadable = []
+    if not missing and not sized:
+        unreadable = _probe_remote_readable(code, record)
     if missing:
         verdict = "缺文件"
     elif sized:
         verdict = "大小异常"
+    elif unreadable:
+        verdict = "内容异常"
     elif not local:
         verdict = "无清单"
     elif unknown:
@@ -4421,6 +4521,7 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
     else:
         verdict = "校验通过"
     out = {"ok": True, "code": code, "state": verdict, "missing": missing,
+           "unreadable": unreadable,
            "extra": extra, "size_mismatch": [
                {"name": n, "local": local[n], "remote": remote[n]} for n in sized],
            "size_unknown": unknown,

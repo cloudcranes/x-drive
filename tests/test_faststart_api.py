@@ -57,6 +57,7 @@ def test_archive_media_path_picks_the_video(tmp_path, monkeypatch):
     from app import core, store as store_mod
     monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
     monkeypatch.setattr(web, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))
     core.save_state(web.STATE, {"ABC-1": {"code": "ABC-1", "files": ["ABC-1.mp4"],
                                            "backend": "clouddrive2", "rel": "dest/ABC-1"}})
 
@@ -241,6 +242,8 @@ def test_faststart_worker_replacement_order(tmp_path, monkeypatch):
     fixed = tmp_path / "fixed.mp4"
     fixed.write_bytes(b"x" * 100)
     monkeypatch.setattr(faststart, "faststart_file", lambda src, work=None: fixed)
+    # 新的核验：删备份前要确认远端**读得出内容**（只比大小不够）
+    monkeypatch.setattr(web, "_remote_readable", lambda *a, **k: True)
 
     out = web._faststart_worker("j1", Backend(), "dest/ABC-1/ABC-1.mp4",
                                 "http://cdn.local/a.mp4", "ABC-1")
@@ -327,3 +330,59 @@ def test_faststart_temp_dir_is_on_local_disk_not_the_cloud_mount(tmp_path, monke
     assert used.get("work") is not None, "应当用 faststart 临时目录"
     assert not str(used["work"]).startswith("/downloads"), \
         f"中间件不能放云盘挂载里：{used['work']}"
+
+
+def test_faststart_keeps_backup_when_remote_is_unreadable(tmp_path, monkeypatch):
+    """传回后远端读不出内容 → **保留备份**，不删原件。
+
+    实测踩过：传回时进程被杀，云端留下一个「大小凑巧对得上、内容却坏掉」
+    的 5.6GB 文件。核验只看大小就通过了、备份也被删了 —— 原件没了，坏件
+    留着，5GB 的片子报废。
+    """
+    from app import core, store as store_mod
+    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(web, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))
+    core.save_state(web.STATE, {"ABC-1": {"code": "ABC-1", "files": ["ABC-1.mp4"],
+                                           "backend": "clouddrive2", "rel": "dest/ABC-1"}})
+
+    purged = []
+
+    class Backend:
+        kind = "clouddrive2"
+
+        def list_files(self, rel):
+            return [type("E", (), {"name": "ABC-1.mp4", "size": 100})()]
+
+        def upload_file(self, local, dest):
+            pass
+
+        def rename_dir(self, src, new_name):
+            pass
+
+        def purge(self, dest):
+            purged.append(dest)
+
+        def download_url(self, path):
+            return "http://cd2.local/x.mp4"
+
+    # **不** patch _remote_readable —— 让真实的读失败路径被触发
+    # （patch 掉就等于把要测的东西也 patch 掉了，反证会失效）
+    monkeypatch.setattr(faststart, "ffmpeg_available", lambda: (True, "可用"))
+    monkeypatch.setattr(faststart, "needs_faststart", lambda p: True)
+    fixed = tmp_path / "fixed.mp4"
+    fixed.write_bytes(b"x" * 100)
+    monkeypatch.setattr(faststart, "faststart_file", lambda src, work=None: fixed)
+
+    def fake_urlopen(req, timeout=None):
+        raise OSError("Connection refused")
+    monkeypatch.setattr(web.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(web, "_parallel_download", lambda job_id, link, local: 100)
+
+    res = web._faststart_worker("j1", Backend(), "dest/ABC-1/ABC-1.mp4",
+                                "http://x/a.mp4", "ABC-1")
+    assert res["ok"] is False, res
+    assert "核验不通过" in res["error"], res
+    # 备份不能被删
+    assert not any(".faststart.bak" in p for p in purged), \
+        f"备份不该被删：{purged}"
