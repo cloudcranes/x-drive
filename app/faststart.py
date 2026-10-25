@@ -86,14 +86,17 @@ def faststart_file(src: Path, work_dir: Path | None = None) -> Path:
     exe = shutil.which(FFMPEG) or FFMPEG
     work = Path(work_dir or tempfile.gettempdir())
     work.mkdir(parents=True, exist_ok=True)
-    # 先写临时名，成功后再改名：中途失败不会留个半截文件顶着真名
-    tmp = work / (src.stem + ".faststart" + src.suffix)
+    # 临时名不能带 .part 之类的后缀 —— ffmpeg 靠扩展名判断输出格式，
+    # 认不出来就报「Unable to choose an output format」。
+    # 所以固定用 .mp4 结尾，并显式给 -f mp4（不靠猜）。
+    tmp = work / (src.stem.split(".faststart")[0] + ".faststart.mp4")
     try:
         if tmp.exists():
             tmp.unlink()
         r = subprocess.run(
             [exe, "-hide_banner", "-loglevel", "error", "-y",
-             "-i", str(src), "-c", "copy", "-movflags", "+faststart", str(tmp)],
+             "-i", str(src), "-c", "copy", "-movflags", "+faststart",
+             "-f", "mp4", str(tmp)],
             capture_output=True, timeout=TRANSCODE_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise FaststartError(f"重排超时（超过 {int(TRANSCODE_TIMEOUT)} 秒）") from None
@@ -103,6 +106,8 @@ def faststart_file(src: Path, work_dir: Path | None = None) -> Path:
         raise FaststartError(f"重排失败：{exc}") from None
     if r.returncode != 0:
         err = (r.stderr or b"").decode(errors="replace").strip()
+        # 完整错误进日志（界面上只给个摘要 —— 太长没法读）
+        log.warning("faststart 重排 %s 失败（rc=%d）：%s", src, r.returncode, err[:2000])
         raise FaststartError(f"重排失败：{err[:200] or '未知原因'}")
     if not tmp.is_file() or tmp.stat().st_size == 0:
         raise FaststartError("重排没有产出文件")

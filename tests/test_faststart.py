@@ -217,3 +217,31 @@ def test_faststart_file_accepts_tail_moov_and_refuses_head_moov(tmp_path, monkey
     with pytest.raises(RuntimeError):
         faststart.faststart_file(tail, tmp_path)
     assert called, "真正需要重排的文件必须走到 ffmpeg"
+
+
+def test_faststart_output_name_keeps_mp4_extension(tmp_path, monkeypatch):
+    """临时产物的名字必须以 .mp4 结尾 —— ffmpeg 靠扩展名判断输出格式。
+
+    线上真跑踩过：下载件叫 `MIMK-188.mp4.part`，临时名就变成
+    `MIMK-188.mp4.faststart.part` —— ffmpeg 认不出这是什么格式，报
+    「Unable to choose an output format」，5GB 白下了 9 分钟。
+    """
+    src = _fake_mp4(tmp_path / "MIMK-188.mp4.part", moov_at_head=False)
+    seen = {}
+
+    class FakeProc:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        out = Path(cmd[-1])
+        out.write_bytes(b"\x00\x00\x00\x10moov" + b"m" * 16)   # 假装产物有 moov
+        return FakeProc()
+
+    monkeypatch.setattr(faststart.subprocess, "run", fake_run)
+    faststart.faststart_file(src, tmp_path)
+
+    cmd = seen["cmd"]
+    assert str(cmd[-1]).endswith(".mp4"), f"输出名要以 .mp4 结尾：{cmd[-1]}"
+    assert "-f" in cmd and "mp4" in cmd, "还要显式指定输出格式，不靠扩展名猜"
