@@ -1295,14 +1295,21 @@ def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool | None:
     raw = (link or "").strip()
     if not raw:
         return True
-    try:
-        req = urllib.request.Request(raw, headers={"Range": f"bytes=0-{probe_bytes - 1}"})
-        with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT) as resp:
-            head = resp.read(probe_bytes)
-    except Exception as exc:                # noqa: BLE001 探不到就返回 None
-        log.info("探测可播性失败：%s", str(exc)[:100])
-        return None
-    return b"moov" in head
+    # 迅雷 CDN 会**间歇性**拒绝连接（实测同一 URL 连打 10 次：成功 2 次、
+    # 8 次 RemoteDisconnected）。所以要重试 —— 一次失败就下结论会误判。
+    last = ""
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(raw, headers={"Range": f"bytes=0-{probe_bytes - 1}"})
+            with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT) as resp:
+                head = resp.read(probe_bytes)
+            return b"moov" in head
+        except Exception as exc:            # noqa: BLE001
+            last = f"{type(exc).__name__}: {str(exc)[:80]}"
+            if attempt < 2:
+                time.sleep(1.0)
+    log.info("探测可播性失败（试了 3 次）：%s", last)
+    return None
 
 
 def play_url(link: str) -> str:
@@ -4473,10 +4480,21 @@ def _probe_remote_readable(code: str, record: dict) -> list[str]:
                 try:
                     req = urllib.request.Request(
                         url, headers={"Range": f"bytes={start}-{end}"})
-                    with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT * 4) as resp:
-                        if not resp.read(65536):
-                            out.append(f"{name}（{via}{label}部读不到内容）")
-                        break                   # 这条路读到了，不用再试另一条
+                    # 重试：迅雷 CDN 会间歇性拒绝连接（同一 URL 10 次里成功
+                    # 2 次）。一次失败就下结论会误判成「坏了」。
+                    for attempt in range(3):
+                        try:
+                            with urllib.request.urlopen(
+                                    req, timeout=VIDEO_PROBE_TIMEOUT * 4) as resp:
+                                blob = resp.read(65536)
+                            break
+                        except Exception:       # noqa: BLE001
+                            if attempt >= 2:
+                                raise
+                            time.sleep(1.0)
+                    if not blob:
+                        out.append(f"{name}（{via}{label}部读不到内容）")
+                    break                       # 这条路读到了，不用再试另一条
                 except Exception as exc:        # noqa: BLE001
                     # **超时 ≠ 损坏**：CD2 的下载路径有时就是慢（实测读 64KB 要
                     # 13.6 秒，而同目录另一个文件只要 0.6 秒）。超时只说明「这会儿
