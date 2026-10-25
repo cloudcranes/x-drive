@@ -1698,6 +1698,7 @@ function openPlayer(code, data, src) {
 
 // 修复可播性：把 MP4 的索引（moov）提到文件头，浏览器才认得了。
 // 要下载 + 重传（5GB 约十几分钟），所以先问清楚再动手。
+// 修正是**后台任务**（十几分钟，HTTP 同步等会超时），所以起完就轮询进度。
 async function repairFaststart(code, btn, hint) {
   if (!confirm(`${code}\n\n修复可播性？\n\n`
     + `这个 MP4 的索引在文件末尾，浏览器认不了。修复要把索引提到文件头：\n`
@@ -1707,27 +1708,51 @@ async function repairFaststart(code, btn, hint) {
     + `确定要修吗？`)) return;
   if (btn) btn.disabled = true;
   const old = btn ? btn.textContent : "";
-  if (btn) btn.textContent = "修复中…";
+  if (btn) btn.textContent = "启动中…";
   try {
     const r = await fetch(BASE + "/api/cloud/faststart", authInit({
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({code})}));
     const d = await readJson(r, "/api/cloud/faststart");
-    if (btn) { btn.disabled = false; btn.textContent = old; }
     if (!d || !d.ok) {
+      if (btn) { btn.disabled = false; btn.textContent = old; }
       if (hint) hint.append(el("span", null, "修复失败：" + ((d && d.error) || "未知原因")));
       return;
     }
-    queueFlash(d.changed ? "已修复，可以播了" : (d.message || "不需要修复"));
-    if (d.changed) {
-      // 修好了就把播放器收掉，让用户重新点一次播放拿新直链
-      const layer = document.getElementById("player-layer");
-      if (layer) layer.remove();
-      document.body.style.overflow = "";
-    }
+    // 重排是后台任务（十几分钟）。**不另起定时器** —— 页面本来就有 3 秒一轮的
+    // 任务队列轮询（loadJobs），挂到它上面就行。
+    faststartWatch = {jobId: d.job_id || "", btn, hint, label: old};
+    if (btn) btn.textContent = "修复中…";
+    queueFlash("已开始修复，进度在任务队列里");
+    loadJobs(true);
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = old; }
     if (hint) hint.append(el("span", null, "修复失败：" + (e.message || e)));
+  }
+}
+
+// 正在等的 faststart 任务（进度挂在既有的 3 秒轮询上，不另起定时器）
+let faststartWatch = null;
+
+// 由 loadJobs 每 3 秒调一次：看后台重排任务到哪一步了
+function checkFaststartProgress() {
+  const w = faststartWatch;
+  if (!w) return;
+  const row = lastJobs.find(j => j.id === w.jobId);
+  if (!row) return;
+  if (row.stage === "done") {
+    faststartWatch = null;
+    if (w.btn) { w.btn.disabled = false; w.btn.textContent = w.label; }
+    queueFlash("已修复，可以播了");
+    const layer = document.getElementById("player-layer");
+    if (layer) layer.remove();
+    document.body.style.overflow = "";
+  } else if (row.stage === "failed") {
+    faststartWatch = null;
+    if (w.btn) { w.btn.disabled = false; w.btn.textContent = w.label; }
+    if (w.hint) w.hint.append(el("span", null, "修复失败：" + (row.error || "未知原因")));
+  } else if (w.btn) {
+    w.btn.textContent = "修复中 " + (row.percent ? Math.round(row.percent) + "%" : "…");
   }
 }
 
@@ -3521,6 +3546,9 @@ async function loadJobs(force = false) {
       const {jobs} = await readJson(r, "/api/jobs");
       if (seq !== jobsSeq) return;
       lastJobs = jobs || [];
+
+      // 后台重排任务的进度：挂在这一轮上，不另起定时器
+      checkFaststartProgress();
 
       const active = lastJobs.filter(j => ACTIVE.has(j.stage)).length;
       const bad = lastJobs.filter(j => j.stage === "failed").length;

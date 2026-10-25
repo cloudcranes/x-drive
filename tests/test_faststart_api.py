@@ -95,3 +95,41 @@ def test_archive_media_path_reports_when_no_media(tmp_path, monkeypatch):
 
     with pytest.raises(storage.StorageError, match="没有媒体文件"):
         web.archive_media_path({"backend": "clouddrive2", "rel": "dest/ABC-1"}, Backend())
+
+
+def test_faststart_starts_background_job(tmp_path, monkeypatch):
+    """重排是后台任务：接口立刻返回 job_id，不同步等十几分钟。"""
+    from app import core, store as store_mod
+    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(web, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    core.save_state(web.STATE, {"ABC-1": {"code": "ABC-1", "files": ["ABC-1.mp4"],
+                                           "backend": "clouddrive2", "rel": "dest/ABC-1"}})
+    monkeypatch.setattr(faststart, "ffmpeg_available", lambda: (True, "可用"))
+
+    class Entry:
+        name = "ABC-1.mp4"
+        size = 100
+
+    class Backend:
+        kind = "clouddrive2"
+
+        def list_files(self, rel):
+            return [Entry()]
+
+        def download_url(self, path):
+            return "http://cdn.local/ABC-1.mp4"
+
+    monkeypatch.setattr(web, "storage_backend", lambda: Backend())
+    # 不真的起线程 —— 只验接口立刻返回
+    started = []
+    monkeypatch.setattr(web.threading, "Thread",
+                        lambda **kw: started.append(kw) or type("T", (), {
+                            "start": lambda self: None})())
+
+    out = web.faststart_archive("ABC-1")
+    assert out["ok"] is True, out
+    assert out.get("job_id"), "应当返回 job_id"
+    assert started, "应当起一个后台线程"
+    row = web._store().get(out["job_id"])
+    assert row is not None, "任务要登记进任务表"
+    assert row["stage"] in ("downloading", "uploading", "queued", "done", "failed")

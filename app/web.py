@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import time
+import uuid
 import asyncio
 import shutil
 import sqlite3
@@ -883,17 +884,13 @@ def archive_media_path(record: dict, backend) -> str:
 
 
 def faststart_archive(code: str) -> dict:
-    """把归档里的媒体重排成「浏览器能播」的 MP4（moov 提到文件头）。
+    """启动「修复可播性」的后台任务。
 
-    这类种子里的 MP4 是 `ftyp + mdat + moov` —— 索引在**最末尾**。浏览器只
-    认 `ftyp + moov + mdat`，找不到就一直在等，于是「播放」点了没反应。
+    整片 5GB 要下载一遍 + 重排 + 传回，约十几分钟 —— **不能**在 HTTP 请求里
+    同步做（浏览器会等到超时）。所以这里只登记任务就返回，重活交给后台线程，
+    进度写进任务表，前端轮询。
 
-    做法：下载 → ffmpeg `-c copy -movflags +faststart` 重排（不重编码）→
-    传回原位。**原文件先不删** —— 上传成功、校验过大小之后才替换，
-    中途失败不会把归档弄成半截。
-
-    代价：整片 5GB 要下载一遍再上传一遍（实测约 12 分钟 + 5GB 临时空间）。
-    所以这是**按需**动作：用户在界面上点了才跑。
+    返回 {"ok": True, "job_id": "..."} 表示已启动。
     """
     from . import faststart
 
@@ -922,15 +919,62 @@ def faststart_archive(code: str) -> dict:
     if not link:
         return {"ok": False, "error": "取不到下载地址，重排做不了"}
 
+    job_id = f"fs-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    if not _store().start(job_id, key, f"faststart:{path}"):
+        return {"ok": False, "error": "同一部正在修复中"}
+    job_update(job_id, stage="downloading", error="")
+    job_event(job_id, "stage", f"准备修复 {key}（要下载整片再传回，约十几分钟）")
+
+    def work():
+        try:
+            out = _faststart_worker(job_id, backend, path, link, key)
+            if out.get("ok"):
+                job_update(job_id, stage="done", error="",
+                           extra={"faststart": out})
+                job_event(job_id, "done", out.get("message") or "修复完成")
+            else:
+                job_update(job_id, stage="failed", error=out.get("error") or "修复失败")
+                job_event(job_id, "failed", out.get("error") or "修复失败")
+        except Exception as exc:                # noqa: BLE001 绝不让异常逃出线程
+            log.exception("faststart 任务 %s 异常退出", job_id)
+            try:
+                job_update(job_id, stage="failed", error=f"后台线程异常退出：{exc}")
+                job_event(job_id, "failed", "后台线程异常退出")
+            except Exception:
+                log.exception("faststart 任务 %s 的失败状态也没能落库", job_id)
+
+    threading.Thread(target=work, daemon=True, name=f"faststart-{job_id}").start()
+    return {"ok": True, "job_id": job_id, "code": key,
+            "message": "已开始修复，进度看任务队列"}
+
+
+def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> dict:
+    """重排的真正干活部分：下载 → 重排 → 传回原位。
+
+    **原文件先不删**：先传临时名，确认成功后再替换 —— 中途失败不会把归档
+    弄成半截。
+    """
+    from . import faststart
+
     work = Path(TMP_ROOT) / "faststart"
     work.mkdir(parents=True, exist_ok=True)
-    local = work / Path(path).name
+    local = work / (Path(path).name + ".part")
     try:
         # ① 下载
         log.info("faststart：下载 %s", path)
+        job_update(job_id, stage="downloading", error="正在下载原片…")
         with urllib.request.urlopen(link, timeout=VIDEO_TIMEOUT * 4) as resp:
+            total = int(resp.headers.get("Content-Length") or 0)
+            got = 0
             with open(local, "wb") as fh:
-                shutil.copyfileobj(resp, fh, VIDEO_CHUNK)
+                while True:
+                    blob = resp.read(VIDEO_CHUNK)
+                    if not blob:
+                        break
+                    fh.write(blob)
+                    got += len(blob)
+                    if total:
+                        job_update(job_id, percent=round(got * 100 / total, 1))
         size = local.stat().st_size
         if not size:
             return {"ok": False, "error": "下载到的文件是空的"}
@@ -939,9 +983,13 @@ def faststart_archive(code: str) -> dict:
                     "message": "这个文件的索引已经在头部，本来就能播"}
         # ② 重排
         log.info("faststart：重排 %s（%d 字节）", path, size)
+        job_update(job_id, stage="uploading", error="正在重排索引…", percent=0)
+        job_event(job_id, "stage", "重排索引（视频不重编码）")
         fixed = faststart.faststart_file(local, work)
         new_size = fixed.stat().st_size
         # ③ 传回原位（先传临时名，成功后再替换）
+        job_update(job_id, stage="uploading", error="正在传回云盘…")
+        job_event(job_id, "stage", f"传回云盘（{core.human_size(new_size)}）")
         tmp_dest = f"{path}.faststart.tmp"
         try:
             backend.upload_file(fixed, tmp_dest)
@@ -972,7 +1020,6 @@ def faststart_archive(code: str) -> dict:
             local.unlink(missing_ok=True)
         except OSError:
             pass
-
 
 def play_url(link: str) -> str:
     """把云盘直链换成**同源**的播放地址。
