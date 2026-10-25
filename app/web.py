@@ -1023,9 +1023,12 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
     # 的中间产物 unlink 掉。
     #
     # **必须放本地磁盘**：TMP_ROOT 是迅雷下载器的**云盘挂载**（/downloads），
-    # 5GB 的中间件写进去要走上行网络（实测掉到 0.3MB/s），而且会污染
-    # 用户的下载目录。STATE_DIR 旁边才是本地盘（/work）。
-    work = Path(STATE_DIR).parent / "faststart" / job_id
+    # 5GB 的中间件写进去要走上行网络（实测掉到 0.3MB/s，而直连本地盘是
+    # 462MB/s），而且会污染用户的下载目录。
+    #
+    # 用 STATE_DIR 本身（生产上是 /work，本地盘）。**不能**用它的 parent ——
+    # /work 的 parent 是 /，那会变成根目录，不可写。
+    work = Path(STATE_DIR) / "faststart" / job_id
     work.mkdir(parents=True, exist_ok=True)
     local = work / (Path(path).name + ".part")
     try:

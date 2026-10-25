@@ -272,6 +272,8 @@ def test_faststart_temp_dir_is_on_local_disk_not_the_cloud_mount(tmp_path, monke
     monkeypatch.setattr(web, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
     monkeypatch.setattr(web, "TMP_ROOT", "/downloads")          # 云盘挂载
     monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))  # 本地盘
+    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path / "work"))
+    # STATE_DIR 的 parent 在生产上是 /（根目录不可写）—— 不能用 parent
     core.save_state(web.STATE, {"ABC-1": {"code": "ABC-1", "files": ["ABC-1.mp4"],
                                            "backend": "clouddrive2", "rel": "dest/ABC-1"}})
     monkeypatch.setattr(faststart, "ffmpeg_available", lambda: (True, "可用"))
@@ -298,7 +300,7 @@ def test_faststart_temp_dir_is_on_local_disk_not_the_cloud_mount(tmp_path, monke
             return False
 
     def fake_urlopen(req, timeout=None):
-        used["work"] = web.Path(web.STATE_DIR).parent / "faststart"
+        used["work"] = web.Path(web.STATE_DIR) / "faststart"
         return FakeResp()
 
     monkeypatch.setattr(web.urllib.request, "urlopen", fake_urlopen)
