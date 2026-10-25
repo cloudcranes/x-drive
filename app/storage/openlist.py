@@ -290,6 +290,22 @@ class OpenList(Backend):
         self._api("POST", "/api/fs/remove", {"dir": parent or "/", "names": [name]})
         return "已删除"
 
+    def remove_dir(self, dest: str) -> str:
+        """删除**空**目录（非递归）。
+
+        AList 的 `/api/fs/remove` 是递归的 —— 直接用它删「空壳」，
+        万一删除前有别的任务刚往里落了文件，那份数据会跟着消失。
+        所以先自己确认目录确实是空的，不空就拒绝。
+        """
+        target = self._p(dest)
+        if self.list_dirs(dest) or self.list_files(dest):
+            raise StorageError(f"openlist 目录非空，不删：{dest}")
+        parent, _, name = target.rstrip("/").rpartition("/")
+        if not name:
+            raise StorageError("openlist 删除失败：路径为空")
+        self._api("POST", "/api/fs/remove", {"dir": parent or "/", "names": [name]})
+        return "已删除"
+
     def move_file(self, src: str, dst: str) -> None:
         """单文件搬运：同目录改名走 rename，跨目录走 move（AList 的 move 只能改目录）。"""
         src_p, dst_p = self._p(src), self._p(dst)

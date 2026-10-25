@@ -113,6 +113,16 @@ class Rclone(Backend):
         self._run("purge", self.spec(dest), timeout=1800.0)
         return "已删除"
 
+    def remove_dir(self, dest: str) -> str:
+        """删除**空**目录（`rclone rmdir` 是非递归的，目录非空会失败）。
+
+        正好合用：rclone 的 rmdir 不会删目录里的东西，非空就报错。
+        """
+        rc, _, err = self.run("rmdir", self.spec(dest), timeout=180.0)
+        if rc != 0:
+            raise StorageError(f"rclone 删除空目录失败：{(err or '').strip()[:200]}")
+        return "已删除"
+
     def rename_dir(self, src: str, new_name: str) -> None:
         parent = src.rstrip("/").rsplit("/", 1)[0] if "/" in src.strip("/") else ""
         dst = f"{parent}/{new_name}" if parent else new_name

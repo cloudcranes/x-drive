@@ -67,6 +67,9 @@ class MyCloud(Backend):
     def purge(self, dest: str) -> str:
         raise StorageError("mycloud：purge 还没实现")
 
+    def remove_dir(self, dest: str) -> str:
+        raise StorageError("mycloud：remove_dir 还没实现")
+
     def rename_dir(self, src: str, new_name: str) -> None:
         raise StorageError("mycloud：rename_dir 还没实现")
 

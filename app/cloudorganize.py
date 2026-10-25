@@ -259,9 +259,23 @@ def cleanup_source(backend, src_root: str, plan_obj: Plan, dst_root: str = "") -
         remaining_files = list(backend.list_files(src))
         if remaining_dirs or remaining_files:
             raise OrganizeError(f"保留源目录 {src}：清理后仍有内容，需人工核对")
+        # 源目录现在是空壳了。**不**在这里删：整目录 purge 是递归的，
+        # 万一删除前有别的任务刚好往里落了文件，那份数据会跟着消失。
+        # 空壳由调用方用非递归删除收掉（cloudadd.remove_empty_shells）。
         return "已清理已知丢弃文件，保留源目录外壳"
     except Exception as exc:
         raise OrganizeError(f"清理源目录 {src} 失败：{exc}") from exc
+
+
+def source_shell_path(src_root: str, plan_obj: Plan) -> str:
+    """这次落地留下的空壳目录在哪。
+
+    两种形态：
+      · 普通落地：源是 `<收件目录>/<种子目录名>`，壳在种子目录那一层
+      · 单文件落地（loose）：源就是收件目录本身，壳在收件目录那一层
+    """
+    src_base = (src_root or "").strip("/")
+    return f"{src_base}/{plan_obj.source}" if plan_obj.source else src_base
 
 
 def _rollback(backend, moved: list[tuple[str, str]], dst: str, src: str) -> None:

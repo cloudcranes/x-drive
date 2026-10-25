@@ -88,6 +88,16 @@ class Backend(Protocol):
     def purge(self, dest: str) -> str:
         """递归删除目录，返回一句回执（例如「已删除」/「已移入回收站」）。"""
 
+    def remove_dir(self, dest: str) -> str:
+        """删除**空**目录（非递归）。目录非空时必须报错，不许连带删内容。
+
+        为什么需要它：整理完源目录只剩空壳时，整目录 purge 也能删，但 purge 是
+        递归的 —— 万一删除前有别的任务刚好往里落了文件，那份数据会跟着消失。
+        非递归删除只对「确实是空的」生效，是这里唯一安全的做法。
+
+        后端不支持时抛 StorageError（调用方据此保留目录壳）。
+        """
+
     def rename_dir(self, src: str, new_name: str) -> None:
         """同父目录改名（归档改名只用这一种）。"""
 

@@ -163,10 +163,14 @@ def clean_sources(backend, pending_cleanup, *, lease_check: LeaseCheck | None = 
     只逐项删除计划内的文件；源目录里有未知内容时保留现场并报告 ——
     嵌套的媒体从未进入归档清单，整目录 purge 会把它连带删掉。
 
+    清理成功的源目录会变成空壳，顺手**非递归**删掉（见 remove_empty_shells）：
+    源目录壳留着不清，收件目录会越积越多（实测每次云添加留一个）。
+
     lease_check 抛出的异常（失租/取消）**不吞**：那种情况要整个任务安静退出，
     不能当成「清理失败」继续往下走。
     """
     leftover: list[dict] = []
+    shells: list[str] = []
     for item in pending_cleanup:
         plan, src_root, dst_root = item["plan"], item["src_root"], item["dst_root"]
         if lease_check is not None:
@@ -175,11 +179,74 @@ def clean_sources(backend, pending_cleanup, *, lease_check: LeaseCheck | None = 
             receipt = cloudorganize.cleanup_source(backend, src_root, plan, dst_root)
             if event is not None:
                 event("stage", f"cleaned {src_root}/{plan.source}（{receipt}）")
+            shells.append(cloudorganize.source_shell_path(src_root, plan))
         except Exception as exc:        # noqa: BLE001 清理失败只挂账
             log.warning("清理源目录 %s/%s 失败：%s", src_root, plan.source, exc)
             leftover.append({"source": plan.source, "src_root": src_root,
                              "dst_root": dst_root,
                              "target": plan.target, "error": str(exc)[:200]})
+    # 空壳收尾：只删递归读过、确认是空的，且用非递归删除
+    leftover.extend(remove_empty_shells(backend, shells,
+                                        lease_check=lease_check, event=event))
+    return leftover
+
+
+def _is_empty_dir(backend, path: str) -> bool:
+    """这个目录是不是**递归**空的。
+
+    两层都要看：目录里有文件，或有子目录（子目录里还可能有东西），
+    都不算空 —— 那种情况绝不能删。
+    """
+    try:
+        if backend.list_files(path):
+            return False
+        for name in backend.list_dirs(path):
+            if not _is_empty_dir(backend, f"{path.rstrip('/')}/{name}"):
+                return False
+    except Exception as exc:            # noqa: BLE001 读不出来 = 不确定 = 不算空
+        log.info("检查 %s 是否为空失败（按非空处理）：%s", path, exc)
+        return False
+    return True
+
+
+def remove_empty_shells(backend, paths: list[str], *,
+                       lease_check: LeaseCheck | None = None,
+                       event: Event | None = None) -> list[dict]:
+    """删掉**确实空了**的源目录壳。返回没能删掉的（要挂 cleanup_pending）。
+
+    只删「递归读过、确认是空」的目录，而且用**非递归**删除
+    （backend.remove_dir）—— 整目录 purge 是递归的，删除前若有别的任务刚好
+    往里落了文件，那份数据会跟着消失。
+
+    目录不空、读不出来、或后端不支持非递归删除 → 一律保留，只记录原因。
+    「壳必须删掉」不是成功条件：留着总比误删强。
+    """
+    leftover: list[dict] = []
+    for path in paths:
+        if not path:
+            continue
+        if lease_check is not None:
+            lease_check()
+        try:
+            if not _is_empty_dir(backend, path):
+                leftover.append({"source": path, "src_root": path,
+                                "dst_root": "", "target": "",
+                                "error": "目录里还有内容，保留"})
+                continue
+            remove = getattr(backend, "remove_dir", None)
+            if remove is None:
+                leftover.append({"source": path, "src_root": path,
+                                "dst_root": "", "target": "",
+                                "error": "后端不支持非递归删除，保留目录壳"})
+                continue
+            receipt = remove(path)
+            if event is not None:
+                event("stage", f"removed {path}（{receipt}）")
+        except Exception as exc:        # noqa: BLE001 删不掉只挂账
+            log.warning("删除空目录 %s 失败：%s", path, exc)
+            leftover.append({"source": path, "src_root": path,
+                            "dst_root": "", "target": "",
+                            "error": str(exc)[:200]})
     return leftover
 
 

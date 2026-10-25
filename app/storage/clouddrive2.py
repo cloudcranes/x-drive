@@ -476,6 +476,25 @@ class CloudDrive2(Backend):
             return f"已移入回收站（{reason}）"
         raise StorageError(f"clouddrive2 删除失败：{res2.errorMessage or reason}")
 
+    def remove_dir(self, dest: str) -> str:
+        """删除**空**目录（非递归）。
+
+        真机实测（2026-10-25）：`DeleteFile` 对空目录删得掉；对**非空**目录
+        它会连里面的子目录一起删掉（递归语义）—— 所以这里先自己确认目录
+        确实是空的，不空就拒绝，绝不把「递归删」当「删空壳」用。
+        """
+        target = self._p(dest)
+        try:
+            if self.list_dirs(dest) or self.list_files(dest):
+                raise StorageError(f"clouddrive2 目录非空，不删：{dest}")
+        except NotFoundError:
+            return "目录已不存在"
+        res = self.chan.call("DeleteFile", pb.FileRequest(path=target),
+                              pb.FileOperationResult)
+        if not res.success:
+            raise StorageError(f"clouddrive2 删除空目录失败：{res.errorMessage or '未知原因'}")
+        return "已删除"
+
     def move_file(self, src: str, dst: str) -> None:
         """单文件搬进目标目录（必要时再改名）。目标已存在时明确失败，不覆盖。
 
