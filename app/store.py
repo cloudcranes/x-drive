@@ -436,16 +436,24 @@ class Store:
     # 事件种类：queued 入队 / claimed 领取 / retry 重试 / deferred 延期 /
     #           resumed 重启恢复 / stage 阶段切换 / done 完成 / failed 失败 /
     #           cancelled 取消。新增种类只追加，前端未知种类按原样显示。
-    def event(self, job_id: str, kind: str, detail: str = "") -> bool:
+    def event(self, job_id: str, kind: str, detail: str = "",
+              owner: str | None = None) -> bool:
         """记一条任务事件。**永不抛异常**：时间线是旁路观测，不能影响任务本身。"""
         if not job_id or not kind:
             return False
         try:
             with self._lock, self._conn() as conn:
-                conn.execute(
-                    "INSERT INTO job_events (job_id, at, kind, detail) VALUES (?,?,?,?)",
-                    (str(job_id), time.time(), str(kind), str(detail or "")[:500]))
-            return True
+                values = (str(job_id), time.time(), str(kind), str(detail or "")[:500])
+                if owner is None:
+                    cur = conn.execute(
+                        "INSERT INTO job_events (job_id, at, kind, detail) VALUES (?,?,?,?)", values)
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO job_events (job_id, at, kind, detail)"
+                        " SELECT ?,?,?,? WHERE EXISTS"
+                        " (SELECT 1 FROM jobs WHERE id=? AND exec_owner=?)",
+                        (*values, job_id, owner))
+            return bool(cur.rowcount)
         except Exception as exc:      # 库锁、表缺失、磁盘满……都只记日志
             log.warning("记录任务 %s 的事件 %s 失败：%s", job_id, kind, exc)
             return False
@@ -510,7 +518,8 @@ class Store:
                 ACTIVE).fetchall()
         return {r["code"].upper() for r in rows if r["code"]}
 
-    def defer(self, job_id: str, until: float, reason: str = "") -> bool:
+    def defer(self, job_id: str, until: float, reason: str = "",
+              owner: str | None = None) -> bool:
         """延期：进 deferred 等待，不占并发但**占番号去重**，到点再回队列。
 
         以前借用 failed 表达延期，而唯一索引只管活跃状态，于是延期期间
@@ -522,9 +531,11 @@ class Store:
         until = float(until or 0)
         if not job_id or until <= 0:
             raise ValueError("延期必须给出唤醒时间")
-        self.update(job_id, stage="deferred",
-                    error=(reason or "额度用尽，稍后重试")[:300],
-                    extra={**self.get(job_id).get("extra", {}), "defer_until": until})
+        fields = dict(stage="deferred", error=(reason or "额度用尽，稍后重试")[:300],
+                      extra={**self.get(job_id).get("extra", {}), "defer_until": until})
+        if owner is not None:
+            return self.update_cas(job_id, owner, **fields)
+        self.update(job_id, **fields)
         return True
 
     def cancel_defer(self, job_id: str) -> bool:
@@ -607,7 +618,7 @@ class Store:
             return False
         return bool(extra.get("cancel_requested"))
 
-    def clear_cancel(self, job_id: str) -> bool:
+    def clear_cancel(self, job_id: str, owner: str | None = None) -> bool:
         """任务收尾时抹掉取消标记（否则重试会被自己上一次的取消卡住）。"""
         if not job_id:
             return False
@@ -621,9 +632,11 @@ class Store:
                 extra = {}
             if extra.pop("cancel_requested", None) is None:
                 return False
-            conn.execute("UPDATE jobs SET extra=?, updated_at=? WHERE id=?",
-                         (json.dumps(extra), time.time(), job_id))
-            return True
+            cur = conn.execute("UPDATE jobs SET extra=?, updated_at=? WHERE id=?"
+                               + (" AND exec_owner=?" if owner is not None else ""),
+                               (json.dumps(extra), time.time(), job_id)
+                               + ((owner,) if owner is not None else ()))
+            return bool(cur.rowcount)
 
     # ------------------------------------------------------------ 执行者领取
     def claim_owner(self, job_id: str, owner: str, now: float | None = None) -> bool:

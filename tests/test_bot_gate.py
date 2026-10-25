@@ -191,19 +191,19 @@ def test_outcome_is_ok_on_clean_success(tmp_path, monkeypatch):
 
 
 def test_outcome_is_fail_when_task_bookkeeping_raises(tmp_path, monkeypatch):
-    """记录已落盘（原件该清），但任务被记成 failed：metrics 不能同时说 ok。"""
+    """归档落盘但任务终态失败：如实报告、metrics记fail、原件留存。"""
     calls = {}
     _stub_success_path(monkeypatch, tmp_path, calls)
 
-    def boom(*a, **k):
-        raise RuntimeError("任务表写不进去（只让 done 那次炸，失败记账照常）")
-
-    # 直接打库：绕开 finish_task 自身的容错，模拟「任务表真的写不进去」
-    def boom(self, job_id, stage, error=""):
+    # Patch the real execution write interface, not the legacy unfenced finish.
+    def boom(self, job_id, owner, stage, error=""):
         raise RuntimeError("任务表写不进去")
 
-    monkeypatch.setattr(type(main.task_store(cfg_for(tmp_path))), "finish", boom)
+    monkeypatch.setattr(type(main.task_store(cfg_for(tmp_path))), "finish_cas", boom)
     reply, cfg = _run(tmp_path)
 
     assert "⚠️" in reply, f"应当如实报失败：{reply}"
     assert _last_outcome(cfg) == "fail", "同一任务不能一边记 failed 一边记 ok"
+    key = workspace.key_of("SSIS-777")
+    assert workspace.staging(cfg.tmp_root, key).is_dir(), "任务记账失败应保留原件"
+    assert workspace.workspace(cfg.state_dir, key).is_dir(), "任务记账失败应保留工作区"

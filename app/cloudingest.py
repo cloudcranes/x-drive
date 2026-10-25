@@ -101,12 +101,12 @@ def snapshot_strict(backend, inbox: str) -> dict[str, int]:
         # 但**只**在「目录不存在」时这么办；别的读失败照旧抛。
         return out
     try:
-        loose = 0
-        for entry in backend.list_files(inbox):
-            loose += int(entry.size or 0)
-        # 收件目录根下的文件（单文件种子实测如此）整体记一个键，
-        # 与 measure() 的 LOOSE_KEY 对齐 —— 否则它们每轮都算「新增」。
-        out[LOOSE_KEY] = loose
+        loose_files = list(backend.list_files(inbox))
+        # 空目录不占用 loose 键，否则后来落下的单文件永远不算新增。
+        # 用文件数量而非字节数判空：历史零字节文件也属于既有内容，
+        # 保守地排除整个 loose 分组，避免将历史文件混入本次归档。
+        if loose_files:
+            out[LOOSE_KEY] = sum(int(entry.size or 0) for entry in loose_files)
     except Exception as exc:                    # noqa: BLE001
         raise StorageError(f"列 {inbox} 文件失败：{exc}") from exc
     return out

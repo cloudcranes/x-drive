@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import hashlib
 import json
 import logging
@@ -285,7 +286,8 @@ def task_event(cfg: Config, job_id: str, kind: str, detail: str = "") -> None:
     if not job_id or not kind:
         return
     try:
-        task_store(cfg).event(job_id, kind, detail)
+        owner = execution_owner(cfg, job_id)
+        task_store(cfg).event(job_id, kind, detail, owner=owner if owner and kind != "lease_lost" else None)
     except Exception as exc:
         log.warning("记录任务 %s 的事件 %s 失败：%s", job_id, kind, exc)
 
@@ -318,7 +320,7 @@ def claim_task(cfg: Config, code: str, source: str, chat_id: int | None) -> str:
     if not task_store(cfg).start(job_id, code, source[:300], owner="bot"):
         log.info("番号 %s 已在任务表里未结束，跳过重复提交", code)
         return ""
-    task_store(cfg).update(job_id, stage="downloading")
+    task_store(cfg).update_cas(job_id, "", stage="downloading")
     # 入队事件由 store.start 与登记同一次提交；这里补上阶段与真正领取
     task_event(cfg, job_id, "stage", "downloading 投给迅雷")
     extra: dict = {}
@@ -328,8 +330,20 @@ def claim_task(cfg: Config, code: str, source: str, chat_id: int | None) -> str:
     if btih:
         extra["infohash"] = btih        # 续接证据：重启后据此认回自己的迅雷任务
     if extra:
-        task_store(cfg).update(job_id, extra=extra)
+        task_store(cfg).update_cas(job_id, "", extra=extra)
     return job_id
+
+
+_EXECUTION = ContextVar("bot_execution", default=None)
+
+
+def execution_owner(cfg: Config, job_id: str) -> str:
+    current = _EXECUTION.get()
+    return current[1] if current and current[0] == job_id and current[2] is task_store(cfg) else ""
+
+
+def task_update(cfg: Config, job_id: str, **fields) -> bool:
+    return task_store(cfg).update_cas(job_id, execution_owner(cfg, job_id), **fields)
 
 
 def finish_task(cfg: Config, job_id: str, stage: str, error: str = "") -> bool:
@@ -345,8 +359,7 @@ def finish_task(cfg: Config, job_id: str, stage: str, error: str = "") -> bool:
     if not job_id:
         return True
     try:
-        task_store(cfg).finish(job_id, stage, error)
-        return True
+        return task_store(cfg).finish_cas(job_id, execution_owner(cfg, job_id), stage, error)
     except Exception as exc:
         log.warning("任务 %s 终态 %s 落库失败：%s", job_id, stage, exc)
         return False
@@ -384,11 +397,12 @@ def lease_begin(cfg: Config, job_id: str) -> bool:
     否则第一次 beat 就落空、表现为「刚拿到就被判失租」。
     """
     store_ = task_store(cfg)
-    LEASES.pop(job_id, None)
-    token = lease_owner(job_id)
+    token = f"{PROC_ID}:{job_id}:{uuid4().hex[:12]}"
     if not store_.claim_owner(job_id, token):
-        LEASES.pop(job_id, None)
         return False
+    with _lease_lock:
+        LEASES[job_id] = token
+    _EXECUTION.set((job_id, token, store_))
     # 占位：心跳线程每 HEARTBEAT_INTERVAL 才跳一次，起跳前也要算「在场」，
     # 否则紧随其后的 require_lease 会把它当成没起心跳而过不去
     _lease_live[job_id] = True
@@ -437,14 +451,14 @@ def lease_alive(cfg: Config, job_id: str) -> bool:
     """本次执行的租约是否仍有效；心跳失败过就直接判定失租。"""
     if not _lease_live.get(job_id, True):
         return False
-    owner = LEASES.get(job_id)
+    owner = execution_owner(cfg, job_id)
     if not owner:
         return False
     try:
         return bool(task_store(cfg).beat(job_id, owner))
     except Exception as exc:      # 库暂时不可用不等于失租
         log.warning("检查任务 %s 的租约失败：%s", job_id, exc)
-        return True
+        return False
 
 
 def require_lease(cfg: Config, job_id: str) -> None:
@@ -460,13 +474,15 @@ def require_lease(cfg: Config, job_id: str) -> None:
 
 
 def lease_end(cfg: Config, job_id: str) -> None:
-    """结束执行：停心跳并让出租约。"""
+    owner = execution_owner(cfg, job_id)
     with _lease_lock:
-        _lease_live.pop(job_id, None)
-        stop = _lease_wake.pop(job_id, None)
-        owner = LEASES.pop(job_id, None)
+        stop = None
+        if owner and LEASES.get(job_id) == owner:
+            _lease_live.pop(job_id, None)
+            stop = _lease_wake.pop(job_id, None)
+            LEASES.pop(job_id, None)
     if stop is not None:
-        stop.set()                  # 唤醒心跳线程立刻退出，不用等满一个 interval
+        stop.set()
     if owner:
         try:
             task_store(cfg).release(job_id, owner)
@@ -482,7 +498,7 @@ def defer_task(cfg: Config, job_id: str, reason: str = "") -> float:
     """
     until = core.next_quota_retry()
     if job_id:
-        task_store(cfg).defer(job_id, until, reason)
+        task_store(cfg).defer(job_id, until, reason, owner=execution_owner(cfg, job_id))
         when = time.strftime("%m-%d %H:%M", time.localtime(until)) if until else "未知"
         task_event(cfg, job_id, "deferred",
                    f"{when} 唤醒 · {reason or '额度用尽，稍后重试'}")
@@ -537,7 +553,7 @@ async def scrape_bot_attachments(cfg: Config, work: Path, folder: str,
                                      want_nfo=cfg.scrape_nfo,
                                      want_poster=cfg.scrape_poster)
     if job_id:
-        store_.update(job_id, extra={**(store_.get(job_id).get("extra") or {}),
+        task_update(cfg, job_id, extra={**(store_.get(job_id).get("extra") or {}),
                                      "scraped": out["record"],
                                      "scrape_pending": out["pending"],
                                      "scrape_failed": out["failed"]})
@@ -668,8 +684,7 @@ async def run_task(
         meta_info: dict = {}
         try:
             async def on_progress(percent, speed, status, _p=progress, _i=index):
-                if cancel_requested(cfg, job_id):
-                    raise JobCancelled("已停止")
+                require_lease(cfg, job_id)
                 mb = (speed or 0) / 1048576
                 await _p(f"⏳ 下载 {_i}/{len(sources)} · {percent * 100:.1f}% · {mb:.1f}MB/s")
 
@@ -731,6 +746,7 @@ async def run_task(
             phase = time.monotonic()
             require_lease(cfg, job_id)          # downloading→organizing 前
             task_event(cfg, job_id, "stage", "organizing 整理文件名与目录")
+            require_lease(cfg, job_id)
             workspace.drop_workspace(work, key_safe, "整理前清空")
             pipeline.stage_copy(Path(handle.get("dir") or download_dir), work, key_safe)
             found = fetcher.media_files(work) or fetcher.media_files(work, types=fetcher.MEDIA_EXT)
@@ -750,7 +766,7 @@ async def run_task(
             # ── 刮削并生成附件（失败不阻断）：NFO/JSON/封面/清单跟视频一起传
             scraped = await scrape_bot_attachments(cfg, work, folder, files, job_id)
             if scraped["written"]:
-                task_store(cfg).update(job_id, extra={
+                task_update(cfg, job_id, extra={
                     **(task_store(cfg).get(job_id).get("extra") or {}),
                     "files": [f.name for f in scraped["files"]]})
 
@@ -763,10 +779,13 @@ async def run_task(
                            if scraped["files"] != files else
                            f"⏳ 上传 {folder}（{core.human_size(total)}）…")
 
+            upload_rel = target.split(":", 1)[1]
+
             async def do_upload():
+                require_lease(cfg, job_id)
                 if backend.kind != "rclone":
                     # 适配器是同步实现（网页在后台线程用），这里丢到线程里跑
-                    rel = storage.rel(folder)
+                    rel = upload_rel
                     await asyncio.to_thread(backend.ensure_dir, rel)
                     await asyncio.to_thread(
                         lambda: backend.upload_dir(work, rel,
@@ -797,17 +816,20 @@ async def run_task(
             await retry.run_with_retry(do_upload, up_policy, on_retry=on_up_retry)
             clock["upload"] = time.monotonic() - phase
             retried["upload"] = up_policy.attempts
+            require_lease(cfg, job_id)
             add_usage(cfg, total)
 
             if backend.kind != "rclone":
                 # CD2 会归一化目录名（全角替换、削尾部空白/点号），记账得按真实名
-                actual = await asyncio.to_thread(storage.real_folder, folder)
+                probe = getattr(backend, "real_folder", None)
+                actual = await asyncio.to_thread(probe, upload_rel) if probe else folder
                 if actual and actual != folder:
                     log.info("远端目录名被归一化：%s → %s", folder, actual)
                     folder = actual
-                    target = f"{backend.kind}:{storage.rel(folder)}"
+                    upload_rel = f"{upload_rel.rsplit('/', 1)[0]}/{folder}"
+                    target = f"{backend.kind}:{upload_rel}"
                 try:
-                    link = await asyncio.to_thread(backend.link, storage.rel(folder))
+                    link = await asyncio.to_thread(backend.link, upload_rel)
                 except Exception as exc:
                     log.warning("取 %s 的分享链接失败：%s", folder, exc)
                     link = None
@@ -837,7 +859,12 @@ async def run_task(
                 locks=task_extra.get("locked") or (),
                 pending=bool(scraped["pending"] or task_extra.get("scrape_pending")),
                 at=datetime.now().isoformat(timespec="seconds"),
+                backend=backend.kind,
+                root=target.split(":", 1)[1].rsplit("/", 1)[0],
+                rel=target.split(":", 1)[1],
+                remote=target.split(":", 1)[0] if backend.kind == "rclone" else "",
             )
+            require_lease(cfg, job_id)
             core.update_state(cfg.state_path, {folder: state[folder]})
             # 「归档记录已落盘」：必须放在所有落盘动作（写状态文件）之后。
             # finish_task 在库坏了时会抛，那时记录已经写进 state.json，原件清掉是对的；
@@ -847,6 +874,8 @@ async def run_task(
             # 任务表记账失败不影响归档结果（记录已落盘），但它返回 False 说明
             # 面板里这条任务会停在旧状态；所以要如实告诉用户，不能只报 ✅。
             task_done = finish_task(cfg, job_id, "done")
+            if not task_done and not lease_alive(cfg, job_id):
+                raise LeaseLost("归档终态写入前已被其他执行者接手")
             task_event(cfg, job_id, "done",
                        " · ".join(x for x in (folder, core.human_size(total), link or "") if x))
             line = f"✅ {folder} · {core.human_size(total)}" + (
@@ -864,7 +893,7 @@ async def run_task(
             log.info("任务 %s 被用户取消：%s", job_id, exc)
             finish_task(cfg, job_id, "cancelled", "已停止")
             task_event(cfg, job_id, "cancelled", first_line(str(exc)) or "已停止")
-            if handle.get("id") and handle.get("ours", True):
+            if lease_alive(cfg, job_id) and handle.get("id") and handle.get("ours", True):
                 try:
                     await xl.remove(client, handle["id"])
                 except Exception as exc2:      # noqa: BLE001 停止流程不崩
@@ -876,6 +905,8 @@ async def run_task(
             task_event(cfg, job_id, "lease_lost", first_line(str(exc)))
         except Exception as exc:
             log.exception("下载失败 %s", source[:80])
+            if not lease_alive(cfg, job_id):
+                continue
             if retry.classify(str(exc)) == retry.QUOTA:
                 # 配额类不是失败，是「今天没额度」：留待办，明天开机自动补跑
                 until = defer_task(cfg, job_id, str(exc)[:200])
@@ -886,11 +917,11 @@ async def run_task(
                 failures.append(f"{source[:40]}…: {str(exc)[:160]}")
                 finish_task(cfg, job_id, "failed", str(exc)[:200])
                 task_event(cfg, job_id, "failed", first_line(str(exc)))
-            if handle.get("id") and handle.get("ours", True):
+            if lease_alive(cfg, job_id) and handle.get("id") and handle.get("ours", True):
                 await xl.remove(client, handle["id"])
         finally:
             try:
-                task_store(cfg).clear_cancel(job_id)   # 抹掉取消标记，重试不会被卡住
+                task_store(cfg).clear_cancel(job_id, owner=execution_owner(cfg, job_id))   # 抹掉取消标记，重试不会被卡住
             except Exception as exc:            # noqa: BLE001 收尾不抛
                 log.warning("清取消标记失败：%s", exc)
             metrics.record_timing(cfg.metrics_path, {
@@ -908,13 +939,14 @@ async def run_task(
             # 前面失败过一次，后面成功任务的目录就再也不会被清，磁盘一路涨。
             # 失败时保留目录，方便 /retry 续传，但整体有容量上限。
             # 清理前必须确认目录仍归自己：失租时另一个执行者可能正在用同一目录。
-            if uploaded and archived and lease_alive(cfg, job_id):
+            if uploaded and archived and outcome_ok and lease_alive(cfg, job_id):
                 workspace.drop_workspace(work, clean_key, "上传成功")
                 # 下载目录的归属标记写的是投递时的键，必须按 key_safe 校验
-                workspace.drop(download_dir, key_safe, "上传成功")
+                if lease_alive(cfg, job_id):
+                    workspace.drop(download_dir, key_safe, "上传成功")
                 # 迅雷重名时真实目录是 <键>-N，预设的 dest 删了也不代表原件清掉了
                 real_dir = Path(handle.get("dir") or "")
-                if real_dir and real_dir != download_dir:
+                if real_dir and real_dir != download_dir and lease_alive(cfg, job_id):
                     workspace.drop(real_dir, key_safe, "上传成功")
             elif uploaded and archived:
                 log.warning("任务 %s 已失租，跳过目录清理：%s %s", job_id, work, download_dir)
@@ -1050,6 +1082,11 @@ async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     target = record.get("path") or ""
     backend = storage.get()
+    try:
+        metadata.validate_archive_backend(record, backend.kind, cfg.remote)
+    except ValueError as exc:
+        await message.reply_text(f"❌ 删除中止：{str(exc)[:300]}")
+        return
     if backend.kind != "rclone":
         code = str(record.get("code") or key)
         if ".." in code or "/" in code:
@@ -1058,7 +1095,9 @@ async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             # 按记录定位（与网页同口径）：云添加的归档在 CLOUD_DEST，
             # 不跟全局 STORAGE_ROOT 走
-            rel = record.get("rel") or storage.rel(code)
+            rel = str(record.get("rel") or storage.rel(code)).strip("/")
+            if any(bit in (".", "..") for bit in rel.split("/")) or "\\" in rel:
+                raise storage.StorageError("归档路径不合法")
             receipt = await asyncio.to_thread(backend.purge, rel)
         except storage.StorageError as exc:
             await message.reply_text(f"❌ 删除失败：{str(exc)[:300]}")
@@ -1068,7 +1107,14 @@ async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await message.reply_text(f"🗑 已删除 {key}（{backend.kind}：{receipt}）")
         return
     root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
-    if not target.startswith(root + "/") or ".." in target:
+    if record.get("backend") == "rclone" and record.get("rel"):
+        rel = str(record["rel"]).strip("/")
+        if any(bit in (".", "..") for bit in rel.split("/")) or "\\" in rel:
+            await message.reply_text("⛔ 归档路径校验未通过")
+            return
+        target = f"{cfg.remote}:{rel}"
+        root = f"{cfg.remote}:"
+    if not (target.startswith(root + "/") or root.endswith(":") and target.startswith(root)) or ".." in target:
         await message.reply_text("⛔ 路径校验未通过，已拒绝删除")
         return
     rc, _, err = await rclone(cfg, "purge", target, timeout=600.0)

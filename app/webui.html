@@ -308,6 +308,9 @@
     border-radius:5px; border:1px solid transparent; background:transparent; color:var(--faint);
     transition:color .15s, border-color .15s, background .15s}
   .card-del:hover{color:#ff8a8a; border-color:rgba(255,138,138,.4); background:rgba(255,138,138,.09)}
+  /* 归档成功但源目录还留着内容：只提示，不提供删除 —— 要人自己核对 */
+  .card .cleanup-pending{padding:6px 13px 0; font-family:var(--mono); font-size:10.5px;
+    color:var(--cyan); line-height:1.5; overflow-wrap:anywhere}
 
   .empty{margin:26px var(--pad) 60px; padding:44px 22px; color:var(--muted); text-align:center;
     border:1px dashed var(--line); border-radius:var(--radius)}
@@ -1265,6 +1268,13 @@ function renderActiveFilters() {
 }
 
 // ── 卡片
+function cleanupPendingText(items) {
+  if (!Array.isArray(items) || !items.length) return "";
+  const detail = items.slice(0, 3).map(item =>
+    [item.target || item.source || "源目录", item.error].filter(Boolean).join("："));
+  return `已归档 · 源目录清理待处理 ${items.length} 项：` + detail.join("；")
+    + (items.length > 3 ? "；其余见任务记录" : "");
+}
 function card(t) {
   const m = t.meta || {};
   const node = el("article", "card");
@@ -1310,6 +1320,8 @@ function card(t) {
   if (m.maker) body.append(el("span", "tag", m.maker));
   if (m.rating) body.append(el("span", "tag rate", "★ " + m.rating));
   node.append(body);
+  const cleanup = cleanupPendingText(t.cleanup_pending);
+  if (cleanup) node.append(el("div", "why cleanup-pending", cleanup));
 
   // 演员单独一行，点了能当筛选条件
   const actors = m.actors || [];
@@ -1372,7 +1384,7 @@ function card(t) {
     node.setAttribute("role", "link");
     node.setAttribute("aria-label", `${t.code} · 打开 Drive`);
     node.addEventListener("keydown", e => {
-      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target !== node || (e.key !== "Enter" && e.key !== " ")) return;
       e.preventDefault();
       window.open(t.link, "_blank", "noopener");
     });
@@ -1618,8 +1630,9 @@ async function askDelete(t) {
 // 增量渲染：按 id 复用已有卡片，轮询时只重排、不重建
 const mounted = new Map();
 let inflight = null;
-const sigOf = t => [t.at, t.code, t.kind, t.size_text, t.link, t.series,
-  (t.meta && (t.meta.title || "") + "|" + (t.meta.cover || "")) || ""].join("~");
+const sigOf = t => JSON.stringify([t.at, t.code, t.kind, t.cat, t.size_text,
+  t.link, t.path, t.series, t.meta && [t.meta.title, t.meta.cover,
+    t.meta.maker, t.meta.rating, t.meta.actors], t.cleanup_pending]);
 
 function syncFeed(tasks) {
   const feed = $("feed");
@@ -1779,7 +1792,7 @@ async function downloadCandidate(code, item, btn) {
     }
     setResHint(`已提交 ${d.count || 1} 个任务 · ${code}`, "ok");
     openQueue();
-    loadJobs();
+    loadJobs(true);
   } catch (e) {
     setResHint("提交失败：" + (e.message || e), "err");
   } finally {
@@ -1788,7 +1801,7 @@ async function downloadCandidate(code, item, btn) {
 }
 
 // ── 候选排序（跟后端 sources.rank 同一口径，但用户可以改）
-// 默认「推荐」= 有种子优先 → 字幕 → 高清 → 做种数 → 体积。
+// 默认「推荐」= 已知非零/未知组 → 字幕 → 高清 → 做种数 → 体积；已知 0 垫底。
 // 0 种子的永远垫底：迅雷云盘解析不了它们（2026-10-24 实测 MIMK-267）。
 const RES_SORTS = {
   rec: {label: "推荐"},
@@ -1796,7 +1809,13 @@ const RES_SORTS = {
   size: {label: "体积"},
 };
 const num = (v) => Number(v) || 0;
-const isDead = (it) => "seeders" in it && !num(it.seeders);
+function seedCount(value) {
+  if (typeof value === "number") return Number.isInteger(value) && value >= 0 ? value : null;
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return null;
+  const n = Number(value.trim());
+  return Number.isFinite(n) ? n : null;
+}
+const isDead = (it) => seedCount(it.seeders) === 0;
 // 死种（0 个种子）永远垫底：迅雷云盘解析不了它们（2026-10-24 实测 MIMK-267）。
 // 先单独分两组再各组内排序 —— 混在一个比较器里排不出「死种全在最后」：
 // 体积排序时 5.24GB 的死种会压过 2.13GB 的活种，那正是要避免的。
@@ -1809,15 +1828,16 @@ const cmpCand = (a, b) => {
   const sub = (x) => (x.has_subtitle ? 0 : 1);
   const hd = (x) => (x.is_hd ? 0 : 1);
   return sub(a) - sub(b) || hd(a) - hd(b)
-         || (num(b.seeders) - num(a.seeders))
+         || (num(seedCount(b.seeders)) - num(seedCount(a.seeders)))
          || (num(b.size_bytes) - num(a.size_bytes));
 };
 function sortCandidates(items) {
   const key = resState.sort && RES_SORTS[resState.sort] ? resState.sort : "rec";
   const {live, dead} = splitDead(items);
-  if (key === "seed") live.sort((a, b) => (num(b.seeders) - num(a.seeders)) || cmpCand(a, b));
+  if (key === "seed") live.sort((a, b) => (num(seedCount(b.seeders)) - num(seedCount(a.seeders))) || cmpCand(a, b));
   else if (key === "size") live.sort((a, b) => (num(b.size_bytes) - num(a.size_bytes)) || cmpCand(a, b));
   else live.sort(cmpCand);
+  dead.sort(cmpCand);
   return [...live, ...dead];
 }
 
@@ -1895,13 +1915,15 @@ function renderCandidates(items, got, info) {
     row.append(el("span", "tag " + (item.has_subtitle ? "vid" : ""),
                   item.has_subtitle ? "字幕" : (item.is_hd ? "高清" : "磁力")));
     row.append(el("span", "nm", item.size_text || "体积未知"));
-    const seed = Number(item.seeders);
+    const seed = seedCount(item.seeders);
     // 做种数**不论多少都要显示**：0 种子的候选迅雷云盘会「解析失败」，
     // 而之前 0 种子什么都不显示 —— 用户看不出哪条能下，只能凭体积猜
     // （2026-10-24 实测：MIMK-267 选了 0 种子的那条，迅雷解析失败，
     // 任务干等两小时）。0 种子的标红并写明。
     if (seed > 0) {
       row.append(el("span", "seed", `种子 ${seed}`));
+    } else if (seed === null) {
+      row.append(el("span", "seed", "做种数未知"));
     } else {
       row.append(el("span", "seed dead", "种子 0（迅雷多半下不了）"));
       row.classList.add("dead");
@@ -2586,7 +2608,7 @@ async function submitDownload(text, btn) {
     clearSubmit();
     applyFilter();
     openQueue();
-    loadJobs();
+    loadJobs(true);
   } catch (e) {
     setSubmitHint("提交失败：" + (e.message || e), "err");
   } finally {
@@ -2619,9 +2641,18 @@ function jobNode(j) {
     stop.title = "停止这个任务";
     stop.addEventListener("click", async () => {
       stop.disabled = true;
-      try { await fetch(BASE + "/api/job/stop", authInit({method: "POST",
-        headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: j.id})})); } catch (e) {}
-      loadJobs();
+      try {
+        const r = await fetch(BASE + "/api/job/stop", authInit({method: "POST",
+          headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: j.id})}));
+        const d = await readJson(r, "/api/job/stop");
+        if (!r.ok || !d.ok) throw new Error(d.error || ("HTTP " + r.status));
+        queueFlash("已请求停止，等待任务退出");
+      } catch (e) {
+        queueFlash("停止失败：" + (e.message || e), true);
+      } finally {
+        stop.disabled = false;
+        loadJobs(true);
+      }
     });
     acts.append(stop);
   }
@@ -2646,7 +2677,7 @@ function jobNode(j) {
         queueFlash("删除失败：" + (e.message || e), true);
       } finally {
         rm.disabled = false;
-        loadJobs();
+        loadJobs(true);
       }
     });
     acts.append(rm);
@@ -2676,9 +2707,14 @@ function jobNode(j) {
 
   // 时间线按需展开：轮询重建卡片时保持展开状态，否则 3 秒一次会被收起
   let tlBox = null;
+  let tlSig = "";
+  const timelineSig = () => JSON.stringify(Array.isArray(j.events) && j.events.length
+    ? j.events : [j.stage, j.owner, j.created_at, j.updated_at, j.retries, j.error,
+      j.defer_until, j.resume_from, j.kept, j.total, j.percent, j.queued_position]);
   const showTl = () => {
     if (tlBox) return;
     tlBox = jobTimeline(j);
+    tlSig = timelineSig();
     node.append(tlBox);
   };
   tl.addEventListener("click", () => {
@@ -2693,7 +2729,14 @@ function jobNode(j) {
   }
   // 进度条与那行字就地刷新：下载中的任务每 3 秒都有新数字，
   // 但**不该因此重建整张卡**（重建就会闪）
-  const update = () => {
+  const update = next => {
+    if (next) j = next;              // 复用节点，但所有动作与展示都读最新快照
+    if (tlBox && tlSig !== timelineSig()) {
+      const nextBox = jobTimeline(j);
+      tlBox.replaceWith(nextBox);
+      tlBox = nextBox;
+      tlSig = timelineSig();
+    }
     fill.style.width = (j.stage === "done" ? 100 : (j.percent || 0)) + "%";
     const bits = [];
     if (ACTIVE.has(j.stage) && j.downloaded) bits.push(gb(j.downloaded) + " 已落盘");
@@ -2702,6 +2745,8 @@ function jobNode(j) {
     if (j.stage === "done" && j.link) bits.push("已上传");
     if (j.stage === "queued" && j.queued_position) bits.push(`第 ${j.queued_position} 位`);
     if (j.error) bits.push(j.error);
+    const cleanup = cleanupPendingText(j.cleanup_pending);
+    if (cleanup) bits.push(cleanup);
     text.textContent = bits.join(" · ") || fmt(j.at);
   };
   update();
@@ -2966,7 +3011,7 @@ async function panelControl(id, action, btn) {
     alert(`${label}失败：${e.message || e}`);
   } finally {
     if (btn) btn.disabled = false;
-    loadJobs();
+    loadJobs(true);
   }
 }
 
@@ -2975,12 +3020,13 @@ async function panelControl(id, action, btn) {
 // 减法：这一段是**外部下载器**的任务，不是 x-drive 的任务，默认收起。
 // 队列面板的主体只放自己的任务；要看迅雷那边再点开。
 const XL_PANEL_OPEN = "xlp";          // 展开状态记在 localStorage：刷新后还在
-async function appendPanelTasks(box, tail) {
+async function appendPanelTasks(box, tail, seq, signal) {
   let data = null;
   try {
-    const r = await fetch(BASE + "/api/xunlei", authInit({cache: "no-store"}));
+    const r = await fetch(BASE + "/api/xunlei", authInit({cache: "no-store", signal}));
     if (r.ok) data = await readJson(r, "/api/xunlei");
   } catch (e) { return; }
+  if (seq !== jobsSeq) return;       // 面板必须属于当前未失效的队列快照
   const tasks = (data && data.tasks) || [];
   if (!tasks.length) {
     // 面板清空了：把上一轮的节点收掉（renderQueueBlock 传空列表即按 scope 清理）
@@ -3000,7 +3046,7 @@ async function appendPanelTasks(box, tail) {
       head.addEventListener("click", () => {
         const next = localStorage.getItem(XL_PANEL_OPEN) === "1" ? "0" : "1";
         localStorage.setItem(XL_PANEL_OPEN, next);
-        loadJobs();                       // 重画：头部文字与任务可见性跟着变
+        loadJobs(true);                       // 重画：头部文字与任务可见性跟着变
       });
       return head;
     },
@@ -3012,7 +3058,7 @@ async function appendPanelTasks(box, tail) {
         // 同上：phase/name 决定结构（按钮不一样），percent/speed 只改字
         sig: queueSig(["xl", t.name, t.phase, t.error ? 1 : 0]),
         build: () => panelTaskNode(t),
-        update: node => node.updatePanel && node.updatePanel(),
+        update: node => node.updatePanel && node.updatePanel(t),
       });
     }
   }
@@ -3050,7 +3096,8 @@ function panelTaskNode(t) {
     node.append(bar);
     const meta = el("div", "jmeta");
     node.append(meta);
-    const update = () => {
+    const update = next => {
+      if (next) t = next;
       fill.style.width = Math.max(0, Math.min(100, Number(t.percent) || 0)) + "%";
       const bits = [];
       if (t.percent) bits.push(Number(t.percent).toFixed(0) + "%");
@@ -3115,69 +3162,99 @@ function renderQueueBlock(box, items, scope, after) {
   return cursor;
 }
 
-async function loadJobs() {
-  try {
-    const r = await fetch(BASE + "/api/jobs", authInit({cache: "no-store"}));
-    if (!r.ok) return;
-    const {jobs} = await readJson(r, "/api/jobs");
-    lastJobs = jobs || [];
+let jobsSeq = 0;
+let jobsInflight = null;
+let jobsPending = false;
+async function loadJobs(force = false) {
+  if (jobsInflight) {
+    jobsPending = true;
+    if (force === true) jobsSeq += 1; // 操作后的刷新令旧快照失效，普通定时tick不作废慢请求
+    return jobsInflight;
+  }
+  const seq = ++jobsSeq;
+  jobsInflight = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const r = await fetch(BASE + "/api/jobs", authInit({cache: "no-store", signal: controller.signal}));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const {jobs} = await readJson(r, "/api/jobs");
+      if (seq !== jobsSeq) return;
+      lastJobs = jobs || [];
 
-    const active = lastJobs.filter(j => ACTIVE.has(j.stage)).length;
-    const bad = lastJobs.filter(j => j.stage === "failed").length;
-    const n = $("queue-n");
-    n.textContent = active ? `${active} 进行中` : (lastJobs.length ? `${lastJobs.length} 条` : "");
-    $("queuebtn").classList.toggle("busy", active > 0);
-    // 视图头部的状态：进行中 / 失败数，一眼看清这页有没有东西在跑
-    const stat = $("queue-stat");
-    if (stat) {
-      stat.textContent = active ? `${active} 个进行中` : `${lastJobs.length} 条记录`;
-      stat.className = "badge" + (active ? " ok" : (bad ? " warn" : ""));
-    }
-    const qhint = $("queue-hint");
-    if (qhint) qhint.textContent = bad ? `${bad} 个失败，点任务上的「时间线」看原因` : "";
-
-    const box = $("jobs");
-    // 轮询是增量的（见 renderQueueBlock）：滚动位置、展开的时间线、hover 都不丢
-    const keepTop = box.scrollTop;
-
-    const items = [];
-    if (!lastJobs.length) {
-      items.push({
-        key: "job:__empty__",
-        sig: "empty",
-        build: () => {
-          const empty = el("div", "queue-empty");
-          empty.append(el("div", null, "队列是空的"));
-          empty.append(el("div", null, "新建下载后进度会显示在这里"));
-          return empty;
-        },
-      });
-    } else {
-      for (const j of lastJobs) {
-        items.push({
-          key: "job:" + j.id,
-          // 签名只放「会改变卡片结构」的字段（阶段、番号、有没有链接、有没有错误行）。
-          // percent / speed / downloaded 只改文字与进度条宽度，走 update 原地刷新 ——
-          // 把它们放进签名会让下载中的卡片每 3 秒重建一次，那就是「一直在闪」。
-          sig: queueSig([j.stage, j.code, j.name, j.link, j.error ? 1 : 0,
-                         j.stage === "queued" ? (j.queued_position ? 1 : 0) : 0,
-                         tlOpen.has(j.id) ? 1 : 0]),
-          build: () => jobNode(j),
-          update: node => node.updateJob && node.updateJob(),
-        });
+      const active = lastJobs.filter(j => ACTIVE.has(j.stage)).length;
+      const bad = lastJobs.filter(j => j.stage === "failed").length;
+      const n = $("queue-n");
+      n.textContent = active ? `${active} 进行中` : (lastJobs.length ? `${lastJobs.length} 条` : "");
+      $("queuebtn").classList.toggle("busy", active > 0);
+      // 视图头部的状态：进行中 / 失败数，一眼看清这页有没有东西在跑
+      const stat = $("queue-stat");
+      if (stat) {
+        stat.textContent = active ? `${active} 个进行中` : `${lastJobs.length} 条记录`;
+        stat.className = "badge" + (active ? " ok" : (bad ? " warn" : ""));
       }
-    }
-    const tail = renderQueueBlock(box, items, "job:");
-    await appendPanelTasks(box, tail);
-    box.scrollTop = keepTop;
+      const qhint = $("queue-hint");
+      if (qhint) qhint.textContent = bad ? `${bad} 个失败，点任务上的「时间线」看原因` : "";
 
-    // 有任务从进行中变成完成，顺手刷新一次列表
-    if (active === 0 && lastJobs.some(j => j.stage === "done") && !loadJobs._done) {
-      loadJobs._done = true;
-      load();
+      const box = $("jobs");
+      // 轮询是增量的（见 renderQueueBlock）：滚动位置、展开的时间线、hover 都不丢
+      const keepTop = box.scrollTop;
+
+      const items = [];
+      if (!lastJobs.length) {
+        items.push({
+          key: "job:__empty__",
+          sig: "empty",
+          build: () => {
+            const empty = el("div", "queue-empty");
+            empty.append(el("div", null, "队列是空的"));
+            empty.append(el("div", null, "新建下载后进度会显示在这里"));
+            return empty;
+          },
+        });
+      } else {
+        for (const j of lastJobs) {
+          items.push({
+            key: "job:" + j.id,
+            // 签名只放「会改变卡片结构」的字段（阶段、番号、有没有链接、有没有错误行）。
+            // percent / speed / downloaded 只改文字与进度条宽度，走 update 原地刷新 ——
+            // 把它们放进签名会让下载中的卡片每 3 秒重建一次，那就是「一直在闪」。
+            sig: queueSig([j.stage, j.code, j.name, j.link, j.error ? 1 : 0,
+                           j.stage === "queued" ? (j.queued_position ? 1 : 0) : 0,
+                           tlOpen.has(j.id) ? 1 : 0]),
+            build: () => jobNode(j),
+            update: node => node.updateJob && node.updateJob(j),
+          });
+        }
+      }
+      const tail = renderQueueBlock(box, items, "job:");
+      await appendPanelTasks(box, tail, seq, controller.signal);
+      if (seq !== jobsSeq) return;
+      box.scrollTop = keepTop;
+
+      // 有任务从进行中变成完成，顺手刷新一次列表
+      if (active === 0 && lastJobs.some(j => j.stage === "done") && !loadJobs._done) {
+        loadJobs._done = true;
+        load();
+      }
+      if (active > 0) loadJobs._done = false;
+    } catch (e) {
+      if (seq !== jobsSeq) return;
+      const hint = $("queue-hint");
+      if (hint) hint.textContent = "队列刷新失败（显示上次结果）：" + (e.message || e);
+    } finally {
+      clearTimeout(timeout);
     }
-    if (active > 0) loadJobs._done = false;
-  } catch (e) { /* 静默 */ }
+  })();
+  try {
+    await jobsInflight;
+  } finally {
+    jobsInflight = null;
+    if (jobsPending) {
+      jobsPending = false;
+      await loadJobs();               // 多次tick/操作只补一轮，不重叠请求
+    }
+  }
 }
 
 // ─────────────── 封面卡片（关键词搜索结果用）
@@ -3544,9 +3621,7 @@ async function metaApi(path, body) {
     : {method: "POST", headers: {"Content-Type": "application/json"},
        body: JSON.stringify(body)};
   const r = await fetch(BASE + path, authInit(opts));
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok && data && !data.error) data.error = "HTTP " + r.status;
-  return data || {};
+  return readJson(r, path);
 }
 
 // 体检区：配置通不通、版本、可用源、哪些归档待补刮
@@ -4286,7 +4361,7 @@ $("panel-clean").addEventListener("click", async () => {
     const failed = (res.failed || []).length;
     queueFlash(`已清理 ${(res.deleted || []).length} 条` + (failed ? `，失败 ${failed} 条` : ""),
                failed > 0);
-    loadJobs();
+    loadJobs(true);
   } catch (e) {
     queueFlash("清理失败：" + (e.message || e), true);
   }
@@ -4320,7 +4395,7 @@ async function clearJobs(stage, label) {
   } catch (e) {
     queueFlash("清理失败：" + (e.message || e), true);
   }
-  loadJobs();
+  loadJobs(true);
 }
 
 $("queue-clear").addEventListener("click", () => clearJobs("", "已结束的"));
@@ -4345,6 +4420,22 @@ fetch(BASE + "/api/session", {cache: "no-store"})
 // 后端 /api/settings 返回 {items: {KEY: {value, source, type, default, group, label, note}}}
 // 前端只负责展示与编辑；值怎么解析、怎么生效全由后端决定，不自造第二套口径。
 const settingsDirty = {};   // key -> 用户改后的值（还没保存）
+let settingsSaving = false;
+let settingsLoadSeq = 0;
+const settingsDisabled = new Map();
+function lockSettings(on) {
+  if (on) {
+    const controls = [...$("settings-list").querySelectorAll("input, select, textarea, button"),
+      $("settings-reload")];
+    for (const control of controls) {
+      settingsDisabled.set(control, control.disabled);
+      control.disabled = true;
+    }
+  } else {
+    for (const [control, disabled] of settingsDisabled) control.disabled = disabled;
+    settingsDisabled.clear();
+  }
+}
 // 设置按功能分区：分组名 -> 这一区包含哪些键。renderDirty 靠它给标签点「未保存」。
 let settingsGroups = {};
 let settingsTab = "";       // 当前分区（分组名），重载后尽量留在原地
@@ -4382,7 +4473,9 @@ function switchSettingsTab(name) {
   renderDirty();
 }
 
-async function loadSettings() {
+async function loadSettings(afterSave = false) {
+  if (settingsSaving && afterSave !== true) return;
+  const seq = ++settingsLoadSeq;
   const list = $("settings-list");
   const tabs = $("settings-tabs");
   const st = $("settings-state");
@@ -4394,6 +4487,7 @@ async function loadSettings() {
   st.textContent = "加载中";
   try {
     const d = await subsApi("/api/settings");
+    if (seq !== settingsLoadSeq || (settingsSaving && afterSave !== true)) return;
     if (!d || !d.ok) throw new Error(d && d.error || "读取失败");
     const items = d.items || {};
     settingsSaved = {};
@@ -4468,6 +4562,7 @@ async function loadSettings() {
     st.textContent = "已加载";
     hint.textContent = `${Object.keys(items).length} 项 · ${names.length} 个分区 · 来源标注在每项右侧`;
   } catch (e) {
+    if (seq !== settingsLoadSeq || (settingsSaving && afterSave !== true)) return;
     st.textContent = "读取失败";
     hint.textContent = e.message || e;
   }
@@ -4918,7 +5013,8 @@ function settingsRow(key, it) {
       sel.append(opt);
     }
     sel.addEventListener("change", () => {
-      if (String(sel.value) === String(it.value)) delete settingsDirty[key];
+      const baseline = key in settingsSaved ? settingsSaved[key] : it.value;
+      if (String(sel.value) === String(baseline)) delete settingsDirty[key];
       else settingsDirty[key] = sel.value;
       sel.classList.toggle("dirty", key in settingsDirty);
       renderDirty();
@@ -4952,7 +5048,8 @@ function settingsRow(key, it) {
       else delete settingsDirty[key];
     } else {
       const v = it.type === "bool" ? input.checked : input.value;
-      if (String(v) === String(it.type === "bool" ? !!it.value : it.value)) {
+      const baseline = key in settingsSaved ? settingsSaved[key] : it.value;
+      if (String(v) === String(it.type === "bool" ? !!baseline : baseline)) {
         delete settingsDirty[key];
       } else {
         settingsDirty[key] = v;
@@ -4982,8 +5079,12 @@ function settingsSource(s) {
 
 function renderDirty() {
   const n = Object.keys(settingsDirty).length;
-  $("settings-state").textContent = n ? `${n} 项待保存` : "已加载";
-  $("settings-save").disabled = !n;
+  $("settings-state").textContent = settingsSaving ? "保存中" : (n ? `${n} 项待保存` : "已加载");
+  $("settings-save").disabled = settingsSaving || !n;
+  for (const row of $("settings-list").querySelectorAll(".setting")) {
+    const control = row.querySelector("input, select, textarea");
+    if (control) control.classList.toggle("dirty", row.dataset.key in settingsDirty);
+  }
   // 存储分区里换后端会收起一部分行：数字要跟着变，否则看起来像没生效
   if ($("settings-list") && $("settings-list").children.length) applyStorageScope();
   // 未保存的改动可能散在别的分区里：每个标签上点一个黄点，否则用户不知道还剩哪几处
@@ -4998,28 +5099,40 @@ function renderDirty() {
 }
 
 async function saveSettings() {
+  if (settingsSaving) return;
   const updates = {};
   for (const [k, v] of Object.entries(settingsDirty)) updates[k] = v;
   const n = Object.keys(updates).length;
   if (!n) return;
-  const btn = $("settings-save");
-  btn.disabled = true;
-  $("settings-hint").textContent = "保存中…";
+  settingsSaving = true;
+  settingsLoadSeq += 1;             // 保存开始即作废先前尚未返回的读取
+  lockSettings(true);
+  renderDirty();
+  $("settings-hint").textContent = "保存中…（编辑暂时锁定）";
   try {
     const d = await subsApi("/api/settings", { updates });
     if (!d || !d.ok) throw new Error((d && d.error) || "保存失败");
-    const saved = `已保存 ${n} 项` + (d.failed && Object.keys(d.failed).length
-      ? `，失败 ${Object.keys(d.failed).length} 项：${Object.values(d.failed).join("；")}`
-      : "");
+    const failed = d.failed || {};
+    const failedCount = Object.keys(failed).length;
+    const saved = `已保存 ${n - failedCount} 项` + (failedCount
+      ? `，失败 ${failedCount} 项：${Object.values(failed).join("；")}` : "");
     $("settings-hint").textContent = saved;
     if ($("settings-saved")) $("settings-saved").textContent = saved;
-    for (const k of Object.keys(settingsDirty)) delete settingsDirty[k];
-    await loadSettings();
+    for (const [k, v] of Object.entries(updates)) {
+      if (k in failed) continue;
+      settingsSaved[k] = v;
+      // 仅清除本次提交且没有再变更的版本，保护异步动作产生的新草稿。
+      if (settingsDirty[k] === v) delete settingsDirty[k];
+    }
+    if (!Object.keys(settingsDirty).length) await loadSettings(true);
   } catch (e) {
     const why = "保存失败：" + (e.message || e);
     $("settings-hint").textContent = why;
     if ($("settings-saved")) $("settings-saved").textContent = why;
-    btn.disabled = false;
+  } finally {
+    settingsSaving = false;
+    lockSettings(false);
+    renderDirty();
   }
 }
 

@@ -48,8 +48,9 @@ const ctx = {
   location: { hash: "", search: "", href: "http://127.0.0.1:8080/",
               protocol: "http:", host: "127.0.0.1:8080" },
   navigator: { language: "zh" },
-  setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {},
-  fetch: () => Promise.resolve({ ok: true, status: 200, json: async () => ({}) }),
+  AbortController, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {},
+  fetch: () => Promise.resolve({ ok: true, status: 200, statusText: "OK",
+    json: async () => ({}), text: async () => "{}" }),
   alert: () => {}, confirm: () => true,
 };
 ctx.window = ctx; ctx.globalThis = ctx;
@@ -63,7 +64,8 @@ const api = { preview: P.metaPreview, apply: P.metaApplyField, applyAll: P.metaA
 const calls = [];
 const out = {};
 function reply(payload) {
-  return { ok: true, status: 200, json: async () => payload };
+  return { ok: true, status: 200, statusText: "OK", json: async () => payload,
+    text: async () => JSON.stringify(payload) };
 }
 
 (async () => {

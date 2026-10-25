@@ -251,28 +251,45 @@ class CloudDrive2(Backend):
         candidates.add(f"{self._p(parent)}/{_normalize(name)}".replace("//", "/"))
         deadline = time.monotonic() + self.chan.task_timeout
         interval = 1.0
+        exact_without_task = 0
         while time.monotonic() < deadline:
             try:
                 items = self._uploads()
-            except StorageError:
-                items = []
+            except StorageError as exc:
+                # 查询失败不是「任务已消失」，否则远端占位文件会被当成完成。
+                raise StorageError(f"clouddrive2 读取上传任务失败：{exc}") from exc
             mine = next((i for i in items
                          if i.destPath in candidates
                          or i.destPath.endswith(target)), None)
+            finished = mine is not None and mine.statusEnum == FINISHED
             if mine is not None:
-                if mine.statusEnum == FINISHED:
-                    return
+                exact_without_task = 0
                 if mine.statusEnum == ERROR:
                     raise StorageError(f"clouddrive2 上传失败（{Path(dest).name}）："
                                        f"{mine.errorMessage or 'CD2 未给原因'}")
-                if progress and mine.size:
+                if progress and mine.size and not finished:
                     progress(min(mine.transferedBytes / mine.size, 0.99),
                              f"{Path(dest).name} {mine.transferedBytes * 100 // max(mine.size, 1)}%")
-            else:
-                # 任务瞬间完成时列表里可能已经查不到：直接问最终路径是否落地
+            if finished or mine is None:
+                # 即使任务 Finished 也必须核验最终文件的精确大小。
+                # 任务瞬间消失时要求非空文件连续两次精确大小回读；空文件
+                # 需要 Finished 证据，避免将 CreateFile 的占位视作上传完成。
                 found = self._find(dest)
-                if found is not None and (not found.size or int(found.size) >= size):
+                normalized = f"{parent}/{_normalize(name)}" if parent else _normalize(name)
+                if found is None and normalized != dest:
+                    found = self._find(normalized)
+                actual = getattr(found, "size", None)
+                exact = (found is not None and not getattr(found, "isDirectory", False)
+                         and actual is not None and int(actual) == size)
+                if exact and finished:
                     return
+                exact_without_task = exact_without_task + 1 if exact and size > 0 else 0
+                if exact_without_task >= 2:
+                    return
+                if finished:
+                    raise StorageError(
+                        f"clouddrive2 上传完成核验失败（{Path(dest).name}）："
+                        f"远端大小 {actual!r}，预期 {size}")
             time.sleep(interval)
             interval = min(interval * 1.3, 5.0)
         raise StorageError(f"clouddrive2 等待上传任务超时（{Path(dest).name}，"

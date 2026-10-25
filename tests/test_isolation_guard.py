@@ -39,6 +39,7 @@ def test_clearing_threads_dict_does_not_hide_running_thread(tmp_path, monkeypatc
         "path": str(tmp_path / "jobs.db"),
         "get": lambda self, jid: {"total": 0, "code": "A-1"},
         "update": lambda self, jid, **kw: None,
+        "update_cas": lambda self, jid, owner, **kw: True,
         "claim_owner": lambda self, jid, token: True,
     })())
     monkeypatch.setattr(web, "_lease_live", {})

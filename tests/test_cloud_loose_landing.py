@@ -75,6 +75,12 @@ def test_cleanup_of_loose_files_keeps_the_inbox():
     purged = []
 
     class B:
+        def list_dirs(self, path):
+            return []
+
+        def list_files(self, path):
+            return []                 # 媒体已经 move，源路径不存在
+
         def purge(self, path):
             purged.append(path)
             return "已删除"
@@ -82,14 +88,20 @@ def test_cleanup_of_loose_files_keeps_the_inbox():
     plan = cloudorganize.plan("", [{"name": "MIMK-267ch.mp4", "size": 100}],
                               folder_code="MIMK-267")
     cloudorganize.cleanup_source(B(), "inbox/task", plan, "X-Drive")
-    assert purged == ["inbox/task/MIMK-267ch.mp4"], purged
+    assert purged == [], "已搬走的媒体不应再向源路径发删除请求"
 
 
-def test_cleanup_of_normal_dir_purges_the_dir():
-    """普通形态（文件在种子目录里）照旧删整个源目录。"""
+def test_cleanup_of_normal_dir_keeps_empty_shell():
+    """普通形态也保留源目录壳，回读与清理间迟到媒体不被连带删除。"""
     purged = []
 
     class B:
+        def list_dirs(self, path):
+            return []
+
+        def list_files(self, path):
+            return []                 # 媒体已经 move，源路径不存在
+
         def purge(self, path):
             purged.append(path)
             return "已删除"
@@ -98,4 +110,4 @@ def test_cleanup_of_normal_dir_purges_the_dir():
                               [{"name": "MAAN-1199.mp4", "size": 100}],
                               folder_code="MAAN-1199")
     cloudorganize.cleanup_source(B(), "inbox/task", plan, "X-Drive")
-    assert purged == ["inbox/task/kss55.cc@MAAN-1199"], purged
+    assert purged == [], "无已知残留时只保留源目录壳"

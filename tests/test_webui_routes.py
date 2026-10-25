@@ -49,9 +49,11 @@ def frontend_calls(js: str) -> list[tuple[str, str]]:
     """[(方法, 路径)] —— 抠出前端所有后端调用及其 HTTP 方法。"""
     calls: list[tuple[str, str]] = []
 
-    # subsApi("path") / subsApi("path", body)
-    for m in re.finditer(r'subsApi\(\s*"([^"]+)"\s*(,)?', js):
+    # 两个通用 JSON 包装器都以有无 body 决定方法；normApi 则始终 POST。
+    for m in re.finditer(r'(?:subsApi|metaApi)\(\s*"([^"]+)"\s*(,)?', js):
         calls.append(("POST" if m.group(2) else "GET", m.group(1)))
+    for m in re.finditer(r'normApi\(\s*"([^"]+)"', js):
+        calls.append(("POST", m.group(1)))
 
     # fetch(BASE + "path", {method:"POST" ...})
     for m in re.finditer(
@@ -107,6 +109,25 @@ def test_every_frontend_call_matches_backend_method(js):
         else:
             problems.append(f"{method} {path} → 后端两个方法里都没有这条路由")
     assert not problems, "前端路由与后端方法对不上：\n  " + "\n  ".join(problems)
+
+
+def test_wrapped_calls_are_scanned_with_method():
+    assert frontend_calls('metaApi("/status"); metaApi("/sync", {code: "A"}); '
+                          'subsApi("/subs"); normApi("/normalize");') == [
+        ("GET", "/status"), ("POST", "/sync"), ("GET", "/subs"), ("POST", "/normalize")]
+
+
+def test_metadata_routes_are_included(js):
+    calls = set(frontend_calls(js))
+    for path in ("/api/scrape/status", "/api/scrape/preview", "/api/scrape/sync",
+                 "/api/archive/verify", "/api/archive/dups"):
+        assert ("POST", path) in calls
+
+
+def test_meta_api_uses_read_json(js):
+    body = js[js.index("async function metaApi"):js.index("function renderMetaHealth")]
+    assert "readJson(r, path)" in body
+    assert "r.json()" not in body
 
 
 def test_xlp_credentials_is_post(js):

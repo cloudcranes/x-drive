@@ -157,10 +157,22 @@ def archive_manifest(work: Path, names: list[str], scraped: dict,
             "total_size": sum(e["size"] for e in media_entries)}
 
 
+def validate_archive_backend(record: dict, kind: str, remote: str = "") -> None:
+    """Shared Web/Bot guard; a persisted location must not cross backends."""
+    which = str((record or {}).get("backend") or "")
+    if which and which != kind:
+        raise ValueError(f"归档后端 {which} 与当前后端 {kind} 不符，保留记录")
+    if which == "rclone":
+        saved = record.get("remote") or str(record.get("path") or "").split(":", 1)[0]
+        if saved and saved != remote:
+            raise ValueError("归档 rclone remote 与当前配置不符，保留记录")
+
+
 def archive_record(code: str, path: str, link: str | None, files, size: int,
                    source: str, work: Path, scraped: dict | None = None,
                    manifest_files: list[str] | None = None, infohash: str = "",
-                   locks=None, pending: bool = False, at: str | None = None) -> dict:
+                   locks=None, pending: bool = False, at: str | None = None,
+                   backend: str = "", root: str = "", rel: str = "", remote: str = "") -> dict:
     """一条归档记录的完整字段契约。web 的 _finish 与 bot 的 run_task 都写这一份。
 
     以前两条路径各写一遍，bot 写出的记录少了 meta/manifest/infohash/locked/
@@ -183,6 +195,10 @@ def archive_record(code: str, path: str, link: str | None, files, size: int,
                                      else names, dict(scraped or {}), code=code),
         "scrape_pending": bool(pending),
     }
+    if backend:
+        record.update(backend=backend, root=root, rel=rel)
+        if remote:
+            record["remote"] = remote
     if infohash:                              # 有才写，没有不编
         record["infohash"] = str(infohash)
     if locks:

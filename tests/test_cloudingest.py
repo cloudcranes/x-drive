@@ -175,7 +175,7 @@ def test_submit_snapshots_before_and_adds():
     b = FakeBackend()
     out = cloudingest.submit(b, "magnet:?xt=urn:btih:" + "a" * 40, "inbox")
     assert out["inbox"] == "inbox"
-    assert out["before"] == {cloudingest.LOOSE_KEY: 0}
+    assert out["before"] == {}, "空目录应允许后续单文件成为 newcomer"
     assert b.added == [("magnet:?xt=urn:btih:" + "a" * 40, "inbox")]
     assert "/inbox" in b.dirs
 

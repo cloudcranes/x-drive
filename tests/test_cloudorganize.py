@@ -110,12 +110,18 @@ class FakeCloud:
         self.dirs.add(path)
         return path.rsplit("/", 1)[-1]
 
+    def list_dirs(self, path):
+        prefix = path.rstrip("/") + "/"
+        return sorted({p[len(prefix):].split("/", 1)[0] for p in self.files
+                       if p.startswith(prefix) and "/" in p[len(prefix):]})
+
     def list_files(self, path):
-        """核验用：返回 path 下的文件（名字 + 大小）。目录不存在按空处理。"""
+        """与真实后端一致，只列直接子文件，不将嵌套媒体伪装成顶层文件。"""
         from pathlib import PurePosixPath
         prefix = path.rstrip("/") + "/"
         return [type("E", (), {"name": PurePosixPath(p).name, "size": n})()
-                for p, n in self.files.items() if p.startswith(prefix)]
+                for p, n in self.files.items()
+                if p.startswith(prefix) and "/" not in p[len(prefix):]]
 
     def move_file(self, src, dst):
         if self.fail_on and self.fail_on in src:
@@ -126,7 +132,8 @@ class FakeCloud:
 
     def purge(self, path):
         self.purged.append(path)
-        for name in [f for f in self.files if f.startswith(path.rstrip("/") + "/")]:
+        for name in [f for f in self.files
+                     if f == path or f.startswith(path.rstrip("/") + "/")]:
             self.files.pop(name)
         return "已删除"
 
@@ -151,7 +158,7 @@ def test_cleanup_source_removes_source_after_archive():
     plan.target = "MIMK-290"
     cloudorganize.apply(cloud, "inbox", plan, "MIMK-290", dst_root="archive")
     receipt = cloudorganize.cleanup_source(cloud, "inbox", plan, "archive")
-    assert receipt and cloud.purged == ["inbox/seed_xxx"]
+    assert receipt and cloud.purged == ["inbox/seed_xxx/广告.txt"]
     assert "archive/MIMK-290/MIMK-290.mp4" in cloud.files, "目标目录不能被误删"
     assert not [f for f in cloud.files if f.startswith("inbox/seed_xxx")], \
         "广告文件跟着源目录一起消失"
@@ -264,7 +271,7 @@ def test_cleanup_source_removes_source_after_archive():
     plan.target = "MIMK-290"
     cloudorganize.apply(cloud, "inbox", plan, "MIMK-290", dst_root="archive")
     receipt = cloudorganize.cleanup_source(cloud, "inbox", plan, "archive")
-    assert receipt and cloud.purged == ["inbox/seed_xxx"]
+    assert receipt and cloud.purged == ["inbox/seed_xxx/广告.txt"]
     assert "archive/MIMK-290/MIMK-290.mp4" in cloud.files, "目标目录不能被误删"
     assert not [f for f in cloud.files if f.startswith("inbox/seed_xxx")], \
         "广告文件跟着源目录一起消失"

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import base64
+from contextvars import ContextVar, copy_context
 import datetime
 import hashlib
 import hmac
@@ -322,7 +323,8 @@ def job_event(job_id: str, kind: str, detail: str = "") -> None:
     if not job_id or not kind:
         return
     try:
-        _store().event(job_id, kind, detail)
+        owner = execution_owner(job_id)
+        _store().event(job_id, kind, detail, owner=owner if owner and kind != "lease_lost" else None)
     except Exception as exc:          # 库打不开、磁盘满、表还没迁移……
         log.warning("记录任务 %s 的事件 %s 失败：%s", job_id, kind, exc)
 
@@ -346,15 +348,35 @@ def _event_deferred(job_id: str, until: float, note: str, why: str = "") -> None
               f"{when} 唤醒 · {note}" + (f" · {_first_line(why)}" if why else ""))
 
 
-def job_update(job_id: str, **fields) -> None:
+# Context belongs to one execution, not the mutable job -> latest-worker registry.
+_EXECUTION = ContextVar("web_execution", default=None)
+
+
+def execution_owner(job_id: str) -> str:
+    current = _EXECUTION.get()
+    return current[1] if current and current[0] == job_id and (
+        current[2] is _store() or getattr(current[2], "path", None) == getattr(_store(), "path", object())) else ""
+
+
+def job_update(job_id: str, **fields) -> bool:
+    st = _store()
+    owner = execution_owner(job_id)
+    if not st.get(job_id) and not owner:
+        st.start(job_id, str(fields.get("code") or ""), str(fields.get("source") or ""))
+    # Even legacy/direct callers may only change an unleased row. A contextless
+    # callback must never borrow the newest token from LEASES.
+    if not st.update_cas(job_id, owner, **fields):
+        return False
     with _jobs_lock:
         record = JOBS.setdefault(job_id, {"id": job_id, "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         record.update(fields)
-    st = _store()
-    if not st.get(job_id):
-        # 没有 start() 就来的调用（补记、外部注入）也要落库，否则重启即丢
-        st.start(job_id, str(fields.get("code") or ""), str(fields.get("source") or ""))
-    st.update(job_id, **fields)
+    return True
+
+
+def _archive_lease(job_id: str, code: str = "") -> None:
+    # Direct maintenance/tests on unleased records remain supported.
+    if execution_owner(job_id) or _store().get(job_id).get("exec_owner"):
+        require_lease(job_id, code)
 
 
 # 任务接口对外承诺的字段。只增不改：前端与 bot 都按这张表读，
@@ -374,6 +396,7 @@ def jobs_snapshot() -> list[dict]:
         row = {k: j.get(k) for k in JOB_FIELDS}
         extra = j.get("extra") or {}
         row["at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(j["created_at"]))
+        row["cleanup_pending"] = extra.get("cleanup_pending") or []
         row["name"] = extra.get("name") or ""
         row["screenshots"] = extra.get("screenshots") or []
         row["infohash"] = extra.get("infohash") or ""
@@ -654,8 +677,17 @@ def upload_folder(work: Path, folder: str) -> tuple[str | None, int]:
     返回即代表云端已落地。
     """
     backend = storage_backend()
+    root = storage.root()             # 同一份快照同时用于上传和记账，避免热更新夹在两次读取之间
+    location = {"backend": backend.kind, "root": root,
+                "rel": "/".join([root, folder.strip("/")])}
+    if backend.kind == "rclone":
+        location.update(root=DRIVE_ROOT, rel=f"{DRIVE_ROOT}/{folder}", remote=RCLONE_REMOTE)
+    location["path"] = f"{location.get('remote') or backend.kind}:{location['rel']}"
+    _UPLOAD_PROGRESS.location = location
+    _UPLOAD_PROGRESS.location_work = str(work)
+    _UPLOAD_PROGRESS.location_backend = backend
     if backend.kind != "rclone":
-        rel = storage.rel(folder)
+        rel = location["rel"]
         backend.ensure_dir(rel)
         size = backend.upload_dir(work, rel,
                                   transfers=get_setting("UPLOAD_TRANSFERS"),
@@ -859,28 +891,37 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
     medias 各档画质），凭据在设置 → 存储；没配就用 CD2 的
     GetDownloadUrlPath（实测可用，但只在内网有意义）。直链有有效期，不缓存。
     """
-    if code and not path:
+    backend = None
+    if code:
         state = core.load_state(STATE)
         key = codes.canonical(code) or (code or "").strip().upper()
         record = state.get(key) or {}
         if not record:
             return {"ok": False, "error": f"没有 {key} 的归档记录"}
-        rel = archive_locator(record)
         try:
-            entries = storage_backend().list_files(rel)
-        except Exception as exc:                # noqa: BLE001
+            rel = archive_locator(record)
+            backend = storage_backend()
+            validate_archive_backend(backend, record)
+            if path:
+                if not path.strip("/").startswith(rel + "/"):
+                    return {"ok": False, "error": "文件路径与归档定位不符"}
+            else:
+                entries = backend.list_files(rel)
+                if not entries:
+                    return {"ok": False, "error": f"{key} 归档目录是空的"}
+                media_ext = (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".mov", ".rmvb", ".iso")
+                media = [e for e in entries if Path(e.name).suffix.lower() in media_ext]
+                path = f"{rel}/{(media or entries)[0].name}"
+        except Exception as exc:
             return {"ok": False, "error": f"列归档目录失败：{str(exc)[:120]}"}
-        if not entries:
-            return {"ok": False, "error": f"{key} 归档目录是空的"}
-        media_ext = (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".mov", ".rmvb", ".iso")
-        media = [e for e in entries if Path(e.name).suffix.lower() in media_ext]
-        path = f"{rel}/{(media or entries)[0].name}"
     path = (path or "").strip("/")
     if not path or ".." in path or "\\" in path:
         return {"ok": False, "error": "缺少合法的文件路径"}
 
     # 1) 迅雷官方 API：外网可播的 web_content_link + 云播转码档
-    if xunleipan.configured():
+    is_xunlei = path.split("/", 1)[0] == "迅雷云盘"
+    official_allowed = is_xunlei and (backend is None or backend.kind == "clouddrive2")
+    if official_allowed and xunleipan.configured():
         try:
             info = xunleipan.direct_link(path)
             return {"ok": True, "via": "xunleipan", "path": path,
@@ -890,19 +931,20 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
             log.warning("官方 API 取直链失败，退回 CD2：%s", exc)
     # 2) CD2：内网直链（下载路径）
     try:
-        backend = storage_backend()
+        backend = backend or storage_backend()
         probe = getattr(backend, "download_url", None)
         link = probe(path) if probe else backend.link(path)
     except Exception as exc:                    # noqa: BLE001
         return {"ok": False, "error": f"取直链失败：{str(exc)[:120]}"}
     if not link:
         return {"ok": False, "error": "这个后端取不到直链（可配迅雷官方 API 或 CD2_LINK_MODE）"}
-    return {"ok": True, "via": "clouddrive2", "path": path,
+    return {"ok": True, "via": backend.kind, "path": path,
             "name": path.rsplit("/", 1)[-1], "link": link, "medias": []}
 
 
 def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
     """云添加整条链路（同步执行，由 run_web_job 在线程里调）。"""
+    _archive_lease(job_id, code)
     ok, why = cloud_ready()
     if not ok:
         raise RuntimeError(f"云添加不可用：{why}")
@@ -918,8 +960,7 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
     submitted = _cloud_submit(backend, job_id, source, my_inbox)
 
     def on_progress(snapshot: dict, rounds: int) -> None:
-        if cancel_requested(job_id):
-            raise Cancelled("已停止")
+        require_lease(job_id)
         # 没有百分比：只报「已出现几个文件、多少字节」
         count = sum(int(v.get("count") or 0) for v in snapshot.values())
         total = sum(int(v.get("bytes") or 0) for v in snapshot.values())
@@ -974,7 +1015,7 @@ def _cloud_run(job_id: str, source: str, code: str, key: str) -> dict:
         results.append(record)
         pending_cleanup.append({"plan": plan, "src_root": my_inbox, "dst_root": dest})
     return {"landed": [x.folder for x in landed], "records": results,
-            "inbox": my_inbox, "dest": dest,
+            "inbox": my_inbox, "dest": dest, "_backend": backend,
             # 1.4：清理挪到记账之后，由调用方在归档落盘成功后执行
             "cleanup": [(c["plan"], c["src_root"], c["dst_root"]) for c in pending_cleanup]}
 
@@ -1029,8 +1070,7 @@ def _upload_progress(job_id: str):
     last = [0.0]
 
     def report(ratio: float, _note: str = "") -> None:
-        if cancel_requested(job_id):
-            raise Cancelled("已停止")
+        require_lease(job_id)
         now = time.monotonic()
         if ratio < 1.0 and now - last[0] < 0.8:
             return
@@ -1041,7 +1081,8 @@ def _upload_progress(job_id: str):
         except Exception:            # 进度只是展示，写库失败不能拖垮上传
             pass
 
-    return report
+    context = copy_context()
+    return lambda *args, **kwargs: context.copy().run(report, *args, **kwargs)
 
 
 def _upload_loop(job_id: str, work: Path, folder: str, size: int,
@@ -1091,6 +1132,7 @@ def _finish_cloud(job_id: str, source: str, out: dict) -> None:
         raise RuntimeError("云添加没有产出可归档的目录")
     for rec in records:
         folder = rec["folder"]
+        _archive_lease(job_id, folder)
         names = list(rec.get("files") or [])
         size = int(rec.get("size") or 0)
         try:
@@ -1114,16 +1156,36 @@ def _finish_cloud(job_id: str, source: str, out: dict) -> None:
                     entry["size"] = by_size[entry["name"]]
             record["manifest"]["total_size"] = sum(
                 int(e.get("size") or 0) for e in record["manifest"]["files"])
+        record.update({k: rec[k] for k in ("backend", "root", "rel") if k in rec})
         record["cloud_inbox"] = rec.get("inbox") or ""
+        _archive_lease(job_id, folder)
         core.update_state(STATE, {folder: record})
         job_event(job_id, "done", f"{folder} · {core.human_size(size)} · 云盘")
     last = records[-1]
     extra = {**(_store().get(job_id).get("extra") or {}), "cloud": last}
     extra.pop("cloud_submit", None)          # 成功后提交记录退场，重跑时可以重新投
-    job_update(job_id, stage="done", code=last["folder"], folder=last["folder"],
-               size=int(last.get("size") or 0), link="", error="", resume_from="",
-               extra=extra)
+    if not job_update(job_id, stage="done", code=last["folder"], folder=last["folder"],
+                      size=int(last.get("size") or 0), link="", error="", resume_from="",
+                      extra=extra):
+        raise LossOfLease("归档完成状态未写入，本次执行停止")
     notify.job_done(last["folder"], core.human_size(int(last.get("size") or 0)), "")
+
+
+def _uploaded_location(folder: str, work: Path) -> dict:
+    location = getattr(_UPLOAD_PROGRESS, "location", None)
+    if getattr(_UPLOAD_PROGRESS, "location_work", None) != str(work):
+        location = None
+    if location:
+        location = dict(location)
+        location["rel"] = "/".join([location["root"].strip("/"), folder]).strip("/")
+    else:
+        kind = storage.kind()
+        root = DRIVE_ROOT if kind == "rclone" else storage.root()
+        location = {"backend": kind, "root": root, "rel": f"{root}/{folder}"}
+        if kind == "rclone":
+            location["remote"] = RCLONE_REMOTE
+    location["path"] = f"{location.get('remote') or location['backend']}:{location['rel']}"
+    return location
 
 
 def _finish(job_id: str, work: Path, folder: str, files: list[Path], size: int,
@@ -1131,8 +1193,16 @@ def _finish(job_id: str, work: Path, folder: str, files: list[Path], size: int,
     """记账：元数据查不到也写归档，不能因为刮削失败丢掉已上传的记录。"""
     # 目录名以服务端为准：CloudDrive2 会把 *?:/\<>|" 转全角、削掉尾部空白与点号。
     # 不跟着改的话，记录里的路径在远端根本不存在 —— 之后的校核、改名、删除全对不上。
-    if storage.kind() != "rclone":
-        actual = storage.real_folder(folder)
+    require_lease(job_id, folder)
+    location = _uploaded_location(folder, work)
+    if location["backend"] != "rclone":
+        actual_backend = (getattr(_UPLOAD_PROGRESS, "location_backend", None)
+                          if getattr(_UPLOAD_PROGRESS, "location_work", None) == str(work) else None)
+        if actual_backend is not None:
+            probe = getattr(actual_backend, "real_folder", None)
+            actual = probe(location["rel"]) if probe else folder
+        else:
+            actual = storage.real_folder(folder)
         if actual and actual != folder:
             log.info("远端目录名被归一化：%s → %s", folder, actual)
             folder = actual
@@ -1157,18 +1227,21 @@ def _finish(job_id: str, work: Path, folder: str, files: list[Path], size: int,
     # 记录组装与 bot 共用一份实现（字段契约见 metadata.archive_record）。
     # 清单按工作区实际文件生成；文件已不在工作区（如被清理）就保留条目、大小记 0。
     record = metadata.archive_record(
-        folder, f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}", link, names, size, source, work,
+        folder, _uploaded_location(folder, work)["path"], link, names, size, source, work,
         scraped=info or extra.get("scraped") or {},
         manifest_files=names,
         infohash=str(extra.get("infohash") or ""),
         locks=extra.get("locked") or (),
         pending=bool(extra.get("scrape_pending")),
     )
+    record.update({k: v for k, v in _uploaded_location(folder, work).items() if k != "path"})
+    _archive_lease(job_id, folder)
     core.update_state(STATE, {folder: record})
-    job_update(job_id, stage="done", link=link or "", code=folder, size=size,
-               retries=policy.attempts, error="", resume_from="",
-               timing={k: round(v, 2) for k, v in clock.items()},
-               throughput=(round(size / clock["upload"] / 1048576, 2) if clock["upload"] else None))
+    if not job_update(job_id, stage="done", link=link or "", code=folder, size=size,
+                      retries=policy.attempts, error="", resume_from="",
+                      timing={k: round(v, 2) for k, v in clock.items()},
+                      throughput=(round(size / clock["upload"] / 1048576, 2) if clock["upload"] else None)):
+        raise LossOfLease("归档完成状态未写入，本次执行停止")
     job_event(job_id, "done", " · ".join(x for x in (
         folder, core.human_size(size), link or "") if x))
     notify.job_done(folder, core.human_size(size), link or "")
@@ -1207,14 +1280,14 @@ def lease_alive(job_id: str) -> bool:
     """本次执行的租约是否还有效：暂停过心跳（还没起心跳）也算在场。"""
     if not _lease_live.get(job_id, True):
         return False
-    owner = LEASES.get(job_id)
+    owner = execution_owner(job_id)
     if not owner:
         return False
     try:
         return bool(_store().beat(job_id, owner))
     except Exception as exc:      # 库暂时不可用不等于失租，别把任务误杀
         log.warning("检查任务 %s 的租约失败：%s", job_id, exc)
-        return True
+        return False
 
 
 def lease_begin(job_id: str, token: str | None = None) -> str:
@@ -1230,6 +1303,7 @@ def lease_begin(job_id: str, token: str | None = None) -> str:
         else:
             LEASES.pop(job_id, None)
     owner = token or lease_owner(job_id)
+    _EXECUTION.set((job_id, owner, _store()))
     # 先续一次：顺带把「这次持有的租约真的在库里属于我」验证一遍
     if not _store().beat(job_id, owner):
         log.warning("任务 %s 的租约不在本线程手里，按失租处理", job_id)
@@ -1281,13 +1355,16 @@ def lease_begin(job_id: str, token: str | None = None) -> str:
 
 
 def lease_end(job_id: str) -> None:
-    """结束一次执行：停心跳、让出租约。"""
+    """Release only this execution; never stop a replacement heartbeat."""
+    owner = execution_owner(job_id)
     with _lease_lock:
-        _lease_live.pop(job_id, None)
-        stop = _lease_wake.pop(job_id, None)
-        owner = LEASES.pop(job_id, None)
+        stop = None
+        if owner and LEASES.get(job_id) == owner:
+            _lease_live.pop(job_id, None)
+            stop = _lease_wake.pop(job_id, None)
+            LEASES.pop(job_id, None)
     if stop is not None:
-        stop.set()                  # 唤醒心跳线程立刻退出，不用等满一个 interval
+        stop.set()
     if owner:
         try:
             _store().release(job_id, owner)
@@ -1312,7 +1389,10 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
     下载目录（迅雷建）与工作区（我们整理）分开：
     下载原件只读，改名挑主体都在工作区做，失败时原件还在，便于续传。
     """
-    owner = lease_owner(job_id)
+    _UPLOAD_PROGRESS.location = None
+    _UPLOAD_PROGRESS.location_work = None
+    _UPLOAD_PROGRESS.location_backend = None
+    owner = execution_owner(job_id) or lease_owner(job_id)
     if not _store().beat(job_id, owner):
         log.warning("任务 %s 的租约已被接管，不再启动", job_id)
         return
@@ -1332,7 +1412,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             _finish_cloud(job_id, source, out)
             # 1.4：归档记录已落盘，才允许删源目录（ads 一起消失）。清理失败
             # 不影响任务成功 —— 目录留给重试，job extra 里挂着待清理标记。
-            backend_ = storage.get()
+            backend_ = out.get("_backend") or storage.get()
             leftover = []
             for plan, src_root, dst_root in out.get("cleanup") or []:
                 try:
@@ -1340,14 +1420,20 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
                     receipt = cloudorganize.cleanup_source(backend_, src_root, plan, dst_root)
                     job_event(job_id, "stage", f"cleaned {src_root}/{plan.source}（{receipt}）")
                 except Exception as exc:        # noqa: BLE001 清理失败只挂账
+                    if isinstance(exc, (LossOfLease, Cancelled)):
+                        raise
                     log.warning("任务 %s 清理源目录 %s/%s 失败：%s",
                                 job_id, src_root, plan.source, exc)
                     leftover.append({"source": plan.source, "src_root": src_root,
                                      "dst_root": dst_root,
                                      "target": plan.target, "error": str(exc)[:200]})
-            if leftover:
+            if leftover and lease_alive(job_id):
                 job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
                                           "cleanup_pending": leftover})
+                for rec in out.get("records") or []:
+                    _archive_lease(job_id, rec["folder"])
+                    saved = core.load_state(STATE).get(rec["folder"]) or {}
+                    core.update_state(STATE, {rec["folder"]: {**saved, "cleanup_pending": leftover}})
         except Cancelled as exc:
             # 用户主动停止才落终态；失租（LossOfLease）绝不能写共享状态 ——
             # 接管者正在跑，旧线程把它写成 cancelled 等于替别人取消任务
@@ -1358,12 +1444,17 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             job_event(job_id, "lease_lost", _first_line(str(exc)))
         except Exception as exc:                # noqa: BLE001 失败要落到任务状态上
             log.exception("云添加任务失败")
+            if not lease_alive(job_id):
+                return
             job_update(job_id, stage="failed", error=str(exc)[:300])
             job_event(job_id, "failed", _first_line(str(exc)))
             if retry.classify(str(exc)) == retry.QUOTA:
                 until = core.next_quota_retry()
-                _store().defer(job_id, until, str(exc)[:200])
+                _store().defer(job_id, until, str(exc)[:200], owner=execution_owner(job_id))
         finally:
+            _UPLOAD_PROGRESS.location = None
+            _UPLOAD_PROGRESS.location_work = None
+            _UPLOAD_PROGRESS.location_backend = None
             lease_end(job_id)
         return
 
@@ -1374,8 +1465,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             job_event(job_id, "stage", "downloading 投给迅雷")
 
             async def on_progress(percent, speed, status):
-                if cancel_requested(job_id):
-                    raise Cancelled("已停止")
+                require_lease(job_id)
                 # 迅雷回传的是真实百分比；体积只用于显示
                 total = int((status or {}).get("file_size") or 0)
                 done = int(((status or {}).get("params") or {}).get("checked_size") or 0)
@@ -1401,7 +1491,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             except Cancelled:
                 task_id = (JOBS.get(job_id) or {}).get("xunlei_task")
                 ours = (JOBS.get(job_id) or {}).get("xunlei_ours", True)
-                if task_id and ours:
+                if task_id and ours and lease_alive(job_id):
                     try:
                         await xl.remove(client, task_id)
                     except Exception as exc:      # 清不掉也别把停止流程搞崩
@@ -1467,6 +1557,7 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         source_dir: Path = result.get("dir") or download_dir
         # 归属标记由下载器在确认落盘时补（迅雷重名改成 <键>-N 的情形）
         job_update(job_id, keep_dir=str(source_dir))
+        require_lease(job_id, code)
         workspace.drop_workspace(work, key, "整理前清空")
         pipeline.stage_copy(source_dir, work, key)
         names = " ".join(p.name for p in work.glob("*"))
@@ -1506,11 +1597,13 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         job_event(job_id, "lease_lost", _first_line(str(exc)))
     except Exception as exc:
         log.exception("网页任务失败")
+        if not lease_alive(job_id):
+            return
         if retry.classify(str(exc)) == retry.QUOTA:
             # 配额不是失败，是等待：定到次日 00:10（本地时区）自动重跑
             until = core.next_quota_retry()
             note = f"额度用尽，{time.strftime('%m-%d %H:%M', time.localtime(until))} 自动重试"
-            _store().defer(job_id, until, f"{note}：{str(exc)[:150]}")
+            _store().defer(job_id, until, f"{note}：{str(exc)[:150]}", owner=execution_owner(job_id))
             job_update(job_id, stage="deferred", error=note)
             _event_deferred(job_id, until, note, str(exc))
             notify.job_deferred(code or job_id, until, str(exc)[:150])
@@ -1522,9 +1615,10 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         outcome = "ok" if uploaded else ("download_fail" if not clock["download"] else "upload_fail")
         record_timing(job_id, done_code, done_size, clock, outcome, started)
         with _jobs_lock:
-            CANCEL.pop(job_id, None)
+            if lease_alive(job_id):
+                CANCEL.pop(job_id, None)
         try:
-            _store().clear_cancel(job_id)       # 抹掉库里的取消标记，重试不会被卡住
+            _store().clear_cancel(job_id, owner=execution_owner(job_id))       # 抹掉库里的取消标记，重试不会被卡住
         except Exception as exc:                # noqa: BLE001 收尾不抛
             log.warning("清取消标记失败：%s", exc)
         # 清理用迅雷上报的真实目录（重名时是 <键>-N），不是提交时预设的那个；
@@ -1535,13 +1629,17 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
         if uploaded and lease_alive(job_id):
             # 只有全流程成功才删：失败留着原件，重试与人工排查都要用
             workspace.drop_workspace(work, key, "上传成功")
-            workspace.drop(download_dir, key, "上传成功")
-            if real_dir and real_dir != download_dir:
+            if lease_alive(job_id):
+                workspace.drop(download_dir, key, "上传成功")
+            if real_dir and real_dir != download_dir and lease_alive(job_id):
                 workspace.drop(real_dir, key, "上传成功")
         elif uploaded:
             log.warning("任务 %s 已失租，跳过目录清理：%s %s", job_id, work, download_dir)
-        else:
+        elif lease_alive(job_id):
             job_update(job_id, kept=str(real_dir or download_dir))
+        _UPLOAD_PROGRESS.location = None
+        _UPLOAD_PROGRESS.location_work = None
+        _UPLOAD_PROGRESS.location_backend = None
         lease_end(job_id)
 
 
@@ -1644,29 +1742,25 @@ def admit(job_id: str) -> bool:
         usable = None if free is None else free - max(0, already)
         if not diskspace.fits(need, usable, reserve):
             return False
+        source, code = item
+        token = f"{PROC_ID}:{job_id}:{uuid4().hex[:12]}"
+        if not _store().claim_owner(job_id, token):
+            job_event(job_id, "busy", "租约已被其他执行者持有，交还队列等下一轮")
+            return False
+        # Reserve disk budget under the same admission lock as the capacity check.
+        _store().update_cas(job_id, token, stage="downloading", error="")
         WAITING.pop(job_id, None)
         _queued_at.pop(job_id, None)
-        # 立刻转成 downloading 并落库：闸门现在读的是任务表，
-        # 只改内存的话下一次 admit 看不到这份额度，几个任务会一起开下把盘吃穿
-        _store().update(job_id, stage="downloading", error="")
+        with _lease_lock:
+            LEASES[job_id] = token
         with _jobs_lock:
             JOBS.setdefault(job_id, {}).update(
                 {"stage": "downloading", "error": "", "queued_position": 0})
-    source, code = item
-    token = lease_owner(job_id)
-    if not _store().claim_owner(job_id, token):
-        # 别的执行者已经持租（重启恢复与延期到期撞在一起）：交还队列等下一轮
-        job_event(job_id, "busy", "租约已被其他执行者持有，交还队列等下一轮")
-        with _jobs_lock:
-            JOBS.setdefault(job_id, {}).update({"stage": "queued"})
-        with _waiting_lock:
-            WAITING[job_id] = item
-            _queued_at[job_id] = time.time()
-        return False
     job_event(job_id, "claimed", token)
 
     def work() -> None:
         _remember_thread(job_id)
+        _EXECUTION.set((job_id, token, _store()))
         try:
             run_web_job(job_id, source, code)
         except Exception:
@@ -1726,10 +1820,10 @@ def _refresh_queue_positions() -> None:
             hint = ("等待磁盘空间" if short <= 0
                     else f"等待磁盘空间（还差 {core.human_size(max(0, short))}）")
         # 排队位置是瞬时状态，只放内存镜像：每轮都写库既没必要，也会把库撑大
-        with _jobs_lock:
-            JOBS.setdefault(job_id, {}).update(
-                {"stage": "queued", "queued_position": idx, "error": hint})
-        _store().update(job_id, stage="queued", error=hint)
+        if _store().update_cas(job_id, "", stage="queued", error=hint):
+            with _jobs_lock:
+                JOBS.setdefault(job_id, {}).update(
+                    {"stage": "queued", "queued_position": idx, "error": hint})
 
 _last_clean = 0.0
 
@@ -1741,15 +1835,17 @@ def requeue(job_id: str, source: str, code: str, stage: str = "queued") -> bool:
     job = _store().get(job_id)
     if not job:
         return False
+    if job.get("exec_owner") and float(job.get("exec_beat") or 0) >= time.time() - store.STALE_BEAT:
+        return False
     if not int(job.get("total") or 0) and code:
         # 体积未知就按同系列历史中位数估，否则闸门把 need 当 0 直接放行
         guess = series_median(code, core.load_state(STATE))
         if guess:
-            _store().update(job_id, total=guess)
-    _store().update(job_id, stage=stage, error="")
-    with _jobs_lock:
-        JOBS.setdefault(job_id, {"id": job_id}).update(
-            {"id": job_id, "stage": stage, "code": code, "source": source})
+            _store().update_cas(job_id, "", total=guess)
+    if _store().update_cas(job_id, "", stage=stage, error=""):
+        with _jobs_lock:
+            JOBS.setdefault(job_id, {"id": job_id}).update(
+                {"id": job_id, "stage": stage, "code": code, "source": source})
     with _waiting_lock:
         WAITING[job_id] = (source, code)
         _queued_at[job_id] = time.time()
@@ -1792,7 +1888,8 @@ def stop_job(job_id: str) -> bool:
             if stored.get("stage") == "queued":
                 # 库里排队、本进程却不在 WAITING（重启后丢失）：没人会再跑它，
                 # 直接落终态，不能只记标记干等一个不存在的执行者
-                _store().update(job_id, stage="cancelled", error="已停止")
+                if not _store().update_cas(job_id, "", stage="cancelled", error="已停止"):
+                    return request_cancel(job_id)
                 job_event(job_id, "cancelled", "排队中被用户停止")
                 return True
             # 在跑（本进程或别的进程）：写取消标记让执行者自停
@@ -1801,7 +1898,8 @@ def stop_job(job_id: str) -> bool:
         if revoked:
             job_event(job_id, "cancelled", "正在开工的任务被用户停止")
         return revoked
-    _store().update(job_id, stage="cancelled", error="已停止")
+    if not _store().update_cas(job_id, "", stage="cancelled", error="已停止"):
+        return request_cancel(job_id)
     with _jobs_lock:
         JOBS.setdefault(job_id, {"id": job_id}).update({"stage": "cancelled", "error": "已停止"})
     job_event(job_id, "cancelled", "排队中被用户停止")
@@ -2558,6 +2656,14 @@ def purge_archives(codes_to_drop: list[str]) -> list[dict]:
             continue
         state = core.load_state(STATE)
         record = state.get(code) or {}
+        if not record:
+            continue
+        try:
+            validate_archive_backend(backend, record)
+            rel = archive_locator(record)
+        except storage.StorageError as exc:
+            log.warning("删除 %s 跳过：%s", code, exc)
+            continue
         if backend.kind != "rclone":
             try:
                 # 按记录定位（1.5）：云添加的归档在 CLOUD_DEST，不能拿全局根拼路径
@@ -2568,7 +2674,7 @@ def purge_archives(codes_to_drop: list[str]) -> list[dict]:
             log.info("删除 %s：%s", code, receipt)
             _drop_share(backend, record)
         else:
-            target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
+            target = f"{RCLONE_REMOTE}:{rel}"
             rc, _, err = rclone("purge", target, timeout=1800.0)
             if rc != 0:
                 log.warning("删除 %s 失败：%s", code, err.strip()[:200])
@@ -2611,12 +2717,19 @@ def rename_archive(old: str, new: str) -> dict:
         backend = storage_backend()
     except Exception as exc:
         return {"ok": False, "error": f"存储后端不可用：{exc}"}
+    try:
+        validate_archive_backend(backend, state[old])
+        base = archive_locator(state[old])
+    except storage.StorageError as exc:
+        return {"ok": False, "error": str(exc)}
     if backend.kind != "rclone":
         return _rename_archive_backend(backend, old, wanted, state)
 
-    src = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{old}"
-    dst = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{wanted}"
-    rc, out, err = rclone("lsf", f"{RCLONE_REMOTE}:{DRIVE_ROOT}", "--dirs-only", timeout=180.0)
+    parent = base.rsplit("/", 1)[0] if "/" in base else ""
+    src = f"{RCLONE_REMOTE}:{base}"
+    dst_rel = f"{parent}/{wanted}".strip("/")
+    dst = f"{RCLONE_REMOTE}:{dst_rel}"
+    rc, out, err = rclone("lsf", f"{RCLONE_REMOTE}:{parent}", "--dirs-only", timeout=180.0)
     if rc == 0 and wanted in {line.strip().strip("/") for line in out.splitlines()}:
         return {"ok": False, "error": f"Drive 里已有 {DRIVE_ROOT}/{wanted}，先处理掉同名目录"}
 
@@ -2628,6 +2741,8 @@ def rename_archive(old: str, new: str) -> dict:
     record = dict(state[old])
     record["code"] = wanted
     record["path"] = dst
+    if record.get("rel"):
+        record["rel"] = dst_rel
     rc, out, _ = rclone("link", dst, timeout=120.0)
     if rc == 0 and out.strip().startswith("http"):
         record["link"] = out.strip()
@@ -2644,7 +2759,7 @@ def _rename_archive_backend(backend, old: str, wanted: str, state: dict) -> dict
     不能拿全局 STORAGE_ROOT 拼。
     """
     record_old = state[old]
-    base = str((record_old.get("rel") or "").strip("/") or storage.rel(old))
+    base = archive_locator(record_old)
     parent, _leaf = base.rsplit("/", 1) if "/" in base else ("", base)
     try:
         existing = set(backend.list_dirs(parent or storage.rel("")))
@@ -2964,6 +3079,7 @@ def collect() -> dict:
                 "series": series_of(code),
                 "link": item.get("link") or "",
                 "path": item.get("path") or "",
+                "cleanup_pending": item.get("cleanup_pending") or [],
                 "at": at,
                 "month": at[:7],
                 "files": files,
@@ -3973,7 +4089,9 @@ def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> 
             backend = storage_backend()
         except Exception as exc:
             raise RuntimeError(f"存储后端不可用：{exc}") from exc
+        validate_archive_backend(backend, record)
         rel = archive_locator(record)            # 1.5：按记录定位，云归档在 CLOUD_ROOT
+        target = f"{RCLONE_REMOTE}:{rel}"
 
         def push(name: str) -> tuple[bool, str]:
             """推一个附件；返回 (是否成功, 失败原因)。"""
@@ -4060,6 +4178,14 @@ def _record_after_sync(record: dict, work: Path, pushed: list, failed: list) -> 
 
 # ─────────────────────────────────────────── 归档完整性校验（第四批）
 
+def validate_archive_backend(backend, record: dict) -> None:
+    """Never apply an old record to a newly configured, different backend."""
+    try:
+        metadata.validate_archive_backend(record, backend.kind, RCLONE_REMOTE)
+    except ValueError as exc:
+        raise storage.StorageError(str(exc)) from exc
+
+
 def archive_locator(record: dict) -> str:
     """按归档记录定位远端目录，返回后端内相对路径。
 
@@ -4068,11 +4194,14 @@ def archive_locator(record: dict) -> str:
     曾经就是「记录写着 cloud:X-Drive/DEMO，核验却去 legacy-root/DEMO 找」。
     旧记录没有三元组，退回 storage.rel(code) 的老算法（行为与升级前一致）。
     """
-    rel = str((record or {}).get("rel") or "").strip("/")
+    record = record or {}
+    rel = str(record.get("rel") or "").strip("/")
     if rel:
+        if any(bit in (".", "..") for bit in rel.split("/")) or "\\" in rel:
+            raise storage.StorageError("归档路径不合法")
         return rel
-    code = str((record or {}).get("code") or "").strip("/")
-    if ".." in code or "/" in code:
+    code = str(record.get("code") or "").strip("/")
+    if ".." in code or "/" in code or "\\" in code:
         raise storage.StorageError(f"归档番号不合法：{code!r}")
     return storage.rel(code)
 
@@ -4094,7 +4223,7 @@ def remote_ls(folder: str, timeout: float = 180.0, rel_path: str = "") -> list[d
         except storage.StorageError as exc:
             raise RuntimeError(f"列目录失败：{exc}") from exc
         return [{"name": e.name, "size": e.size} for e in entries]
-    rc, out, err = rclone("lsjson", f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{folder}",
+    rc, out, err = rclone("lsjson", f"{RCLONE_REMOTE}:{rel}",
                           "--files-only", timeout=timeout)
     if rc != 0:
         raise RuntimeError(f"列目录失败：{err.strip()[:200]}")
@@ -4124,6 +4253,7 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
         local = {str(f.get("name")): int(f.get("size") or 0) for f in manifest_files if f.get("name")}
     try:
         # 按记录定位：云添加的归档在 CLOUD_DEST，不跟全局 STORAGE_ROOT 走
+        validate_archive_backend(storage_backend(), record)
         remote = {i["name"]: i["size"] for i in remote_ls(code, rel_path=archive_locator(record))}
     except Exception as exc:
         return {"ok": False, "code": code, "error": str(exc)[:200], "state": "检查失败"}

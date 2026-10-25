@@ -298,17 +298,8 @@ def pick_candidate(items: list[dict]) -> dict | None:
     if not items:
         return None
 
-    def score(item: dict) -> tuple:
-        # 「字段缺失」= 不知道（javbus 不给做种数），不是「没人做种」——
-        # 那种按未知处理，不能当成死种。
-        dead = 1 if ("seeders" in item and not int(item.get("seeders") or 0)) else 0
-        return (dead,
-                0 if item.get("has_subtitle") else 1,
-                0 if item.get("is_hd") else 1,
-                -int(item.get("seeders") or 0),
-                -int(item.get("size_bytes") or 0))
-
-    return sorted(items, key=score)[0]
+    # 与手动搜索共用同一个排序器，避免 null/缺失字段在订阅里被误判成死种。
+    return min(items, key=sources.rank)
 
 
 def _choose(found: list[dict], code: str, max_size_gb: float,
@@ -347,7 +338,7 @@ def _choose(found: list[dict], code: str, max_size_gb: float,
         "tags": list(best.get("tags") or []),
         "has_subtitle": bool(best.get("has_subtitle")),
         "is_hd": bool(best.get("is_hd")),
-        "seeders": int(best.get("seeders") or 0),
+        "seeders": sources.seeder_count(best),
         "source": best.get("source") or "",
         "candidates": len(usable),
     }, ""

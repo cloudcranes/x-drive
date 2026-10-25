@@ -1250,6 +1250,7 @@ def test_job_snapshot_exposes_name_position_and_defer(tmp_path, monkeypatch):
 
 def test_cancelling_a_queued_job_removes_it_from_queue(tmp_path, monkeypatch):
     """排队中的任务没有线程：以前点停止毫无反应，空间够了照样开下。"""
+    monkeypatch.setattr(web.diskspace, "free_bytes", lambda _path: 0)  # 真实经过磁盘闸门排队
     monkeypatch.setattr(web, "run_web_job", lambda *a: None)   # 别真的去连迅雷
     monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
     monkeypatch.setattr(web, "JOBS", {})

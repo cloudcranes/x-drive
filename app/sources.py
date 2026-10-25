@@ -4,6 +4,7 @@
 统一成：
     {"magnet", "title", "size_bytes", "size_text", "has_subtitle", "is_hd",
      "seeders", "source"}
+其中 seeders 为非负整数或 None（未知），明确 0 与未知分开。
 
 路由：FC2 系列 javbus 必然 404，直接跳过；其余按 `SOURCES` 顺序**全部**问一遍，
 把各源候选合并后按 infoHash 去重、按质量排序（先到先得只用一个源会漏掉别的源
@@ -103,7 +104,7 @@ async def fetch_javbus(code: str, client: httpx.AsyncClient) -> list[dict]:
         "size_text": m.get("size_text") or "",
         "has_subtitle": bool(m.get("has_subtitle")),
         "is_hd": bool(m.get("is_hd")),
-        "seeders": 0,                    # javbus 不给做种数
+        "seeders": None,                 # 未知，不冒充明确的 0
         "source": "javbus",
     } for m in items]
 
@@ -116,7 +117,7 @@ def parse_sukebei(xml: str) -> list[dict]:
         if not hit:
             continue
         size_text = (re.search(r"<nyaa:size>(.*?)</nyaa:size>", block) or [None, ""])[1]
-        seeders = (re.search(r"<nyaa:seeders>(\d+)</nyaa:seeders>", block) or [None, "0"])[1]
+        seeders = re.search(r"<nyaa:seeders>(\d+)</nyaa:seeders>", block)
         sub, hd = flags(title)
         out.append({
             "magnet": magnet_of(hit.group(1), title),
@@ -125,7 +126,7 @@ def parse_sukebei(xml: str) -> list[dict]:
             "size_text": size_text.strip(),
             "has_subtitle": sub,
             "is_hd": hd,
-            "seeders": int(seeders or 0),
+            "seeders": int(seeders.group(1)) if seeders else None,
             "source": "sukebei",
         })
     return out
@@ -158,7 +159,7 @@ def parse_bt4g(xml: str) -> list[dict]:
             "size_text": size_text,
             "has_subtitle": sub,
             "is_hd": hd,
-            "seeders": 0,                    # bt4g 不给做种数
+            "seeders": None,                 # 未知，不冒充明确的 0
             "source": "bt4g",
         })
     return out
@@ -176,6 +177,20 @@ REGISTRY = {
 
 # ---------------------------------------------------------------- 汇总
 
+def seeder_count(item: dict) -> int | None:
+    """做种数三态：未知为 None，明确为零保留 0，正数原样保留。"""
+    value = item.get("seeders")
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and value.is_integer() and value >= 0:
+        return int(value)
+    if isinstance(value, str) and re.fullmatch(r"\d+", value.strip()):
+        return int(value.strip())
+    return None
+
+
 def rank(item: dict) -> tuple:
     """排序：**有种子优先**，然后字幕 → 高清 → 做种数 → 体积。
 
@@ -191,25 +206,21 @@ def rank(item: dict) -> tuple:
 
     注意「没有 seeders 字段」≠「0 个种子」：javbus/bt4g 不给做种数，
     那是「不知道」，不是「没人做种」。所以只有**明确是 0** 才算死种，
-    字段缺失按「未知」处理，排在有种子的后面但不当作死种。
+    字段缺失或 None 按「未知」处理，不当作死种；其余沿用字幕/高清偏好。
     """
-    if "seeders" in item and not int(item.get("seeders") or 0):
-        dead = 1                    # 明确 0 个种子 —— 排最后
-    else:
-        dead = 0                    # 有种子，或不知道
+    count = seeder_count(item)
+    dead = int(count == 0)            # 只有来源明确报告 0，才放到最后
     return (dead,
             0 if item.get("has_subtitle") else 1,
             0 if item.get("is_hd") else 1,
-            -int(item.get("seeders") or 0),
+            -(count or 0),
             -int(item.get("size_bytes") or 0))
 
 def dedupe(items: list[dict]) -> list[dict]:
     """按 infoHash 去重；同一资源在多个源都出现时**保留信息更全的那条**。
 
-    合并多源后，同一个种子常常同时出现在 sukebei 与 bt4g：javbus 不给做种数，
-    bt4g 也不给，只有 sukebei 给。原先「先到先留」会让 bt4g 那条的 seeders=0
-    覆盖掉 sukebei 的真实做种数，排序时这条就被当成没人做种的。
-    所以这里不丢字段：同 key 时逐字段取「有信息的那一份」。
+    未知做种数不覆盖已知值，明确 0 也属于有信息；多个已知观测取最大值。
+    其余字段逐字段保留信息，字幕/高清标记合并取真。
     """
     seen: dict = {}
     order: list[str] = []
@@ -217,14 +228,17 @@ def dedupe(items: list[dict]) -> list[dict]:
         hit = re.search(r"btih:([0-9a-zA-Z]+)", item.get("magnet") or "")
         key = hit.group(1).lower() if hit else item.get("magnet")
         if key not in seen:
-            seen[key] = dict(item)
+            seen[key] = {**item, "seeders": seeder_count(item)}
             order.append(key)
             continue
         old = seen[key]
-        for field in ("title", "size_bytes", "size_text", "seeders"):
-            # 0 视为「没有信息」：javbus/bt4g 的 seeders 恒为 0，别盖掉真实值
+        for field in ("title", "size_bytes", "size_text"):
             if not old.get(field) and item.get(field):
                 old[field] = item[field]
+        incoming = seeder_count(item)
+        current = seeder_count(old)
+        if incoming is not None and (current is None or incoming > current):
+            old["seeders"] = incoming
         # 字幕/高清是布尔，认「真」的那个：任一源说带字幕就带字幕
         for field in ("has_subtitle", "is_hd"):
             if item.get(field):

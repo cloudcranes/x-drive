@@ -5,9 +5,9 @@
 
   · 选正片的规则沿用本地的（`fetcher` 里那套「有正片就丢样片」），只是决定
     「搬哪些」而不是「删哪些」；
-  · 搬运是「目标目录里建好 → 逐个 move 过去 → 原目录整个 purge」；
-  · purge 会**真删云盘目录**，所以路径只允许「inbox + 已确认的落地目录名」，
-    不接受任何外部输入，也不允许出现 `..` / 分隔符。
+  · 搬运是「目标目录里建好 → 逐个 move → 回读核验 → 归档记账」；
+  · 记账后只逐项清理计划中的 drop；未知内容保留并报告，源目录外壳不删。
+    清理路径只允许 inbox 与已确认的条目，不允许 `..` / 分隔符。
 
 实测（CD2 1.0.18 + 迅雷云盘）：建目录、改名、移动、删除都可用；同网盘内一次
 只能移动一个文件（CD2 的接口本身就是单文件循环，不受影响）。
@@ -223,7 +223,7 @@ def apply(backend, src_root: str, plan_obj: Plan, folder_code: str = "",
 
 
 def cleanup_source(backend, src_root: str, plan_obj: Plan, dst_root: str = "") -> str:
-    """删掉整理后的源目录。**独立步骤、可重试**：归档记录落盘之后才允许调用。
+    """清理整理后已知的丢弃文件，保留源目录。归档落盘之后才允许调用。
 
     返回回执字符串。目标目录与源目录同名时拒绝 —— 那会把刚搬好的文件一起删掉。
     """
@@ -235,18 +235,31 @@ def cleanup_source(backend, src_root: str, plan_obj: Plan, dst_root: str = "") -
     dst = f"{(dst_root or src_root).strip('/')}/{plan_obj.target}"
     if src == dst:
         raise OrganizeError(f"源目录与目标目录同名（{src}），拒绝清理")
+    if not src_base:
+        raise OrganizeError("落地目录为空，保留源目录")
     try:
-        if plan_obj.source:
-            return backend.purge(src)
-        # 文件直接躺在收件目录根下：只删搬走的那几个文件，收件目录本身留着
-        for name in plan_obj.move:
-            backend.purge(f"{src}/{name}")
-        for name in plan_obj.drop:
-            try:
-                backend.purge(f"{src}/{name}")
-            except Exception as exc:                # noqa: BLE001 广告删不掉不影响
-                log.info("删广告 %s/%s 失败（不影响归档）：%s", src, name, exc)
-        return "已清理收件目录里的落地文件"
+        # 落地观察只读一层，子目录从未进入归档清单。清理前重新读取，
+        # 未知文件、迟到的媒体和任何子目录都保留，让调用方挂 cleanup_pending。
+        dirs = list(backend.list_dirs(src))
+        files = list(backend.list_files(src))
+        allowed = set(plan_obj.drop)
+        unknown = [f"{name}/" for name in dirs]
+        unknown.extend(str(entry.name) for entry in files if entry.name not in allowed)
+        if unknown:
+            raise OrganizeError(
+                f"保留源目录 {src}：存在未归档或未知内容 {', '.join(unknown[:10])}")
+        # 普通目录和 loose 都只逐项删除明确的 drop；后端没有非递归 rmdir
+        # 契约，保留空目录外壳，杜绝回读后迟到文件被整目录 purge 连带删除。
+        # 媒体已经 move，原路径通常不存在；删除失败向上抛，让残留被持久化。
+        for entry in files:
+            if _BAD_NAME.search(str(entry.name)):
+                raise OrganizeError(f"清理文件名不安全：{entry.name!r}")
+            backend.purge(f"{src}/{entry.name}")
+        remaining_dirs = list(backend.list_dirs(src))
+        remaining_files = list(backend.list_files(src))
+        if remaining_dirs or remaining_files:
+            raise OrganizeError(f"保留源目录 {src}：清理后仍有内容，需人工核对")
+        return "已清理已知丢弃文件，保留源目录外壳"
     except Exception as exc:
         raise OrganizeError(f"清理源目录 {src} 失败：{exc}") from exc
 
