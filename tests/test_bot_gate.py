@@ -211,3 +211,36 @@ def test_outcome_is_fail_when_task_bookkeeping_raises(tmp_path, monkeypatch):
 
     assert "⚠️" in reply, f"应当如实报失败：{reply}"
     assert _last_outcome(cfg) == "fail", "同一任务不能一边记 failed 一边记 ok"
+
+
+def test_bot_direct_link_uses_file_path_not_directory(tmp_path, monkeypatch):
+    """Bot 取直链要传**文件**路径 —— rel 是目录，传目录拿不到直链。
+
+    direct_link 内部 resolve 出的是 file_id，file_info 里才有 web_content_link；
+    传目录的话 resolve 拿到目录 id，file_info 里没有那个字段，直链永远是空的。
+    """
+    from app import main as bot
+    from app import xunleipan as xp
+    asked = {}
+
+    def fake_direct_link(path, *, client=None):
+        asked["path"] = path
+        return {"name": "x.mp4", "link": "https://dl.example/x.mp4", "medias": []}
+
+    monkeypatch.setattr(xp, "direct_link", fake_direct_link)
+    # last 的形状：rel 是目录，files 是里面的文件
+    last = {"folder": "MIMK-1", "rel": "迅雷云盘/X-Drive/MIMK-1",
+            "files": ["MIMK-1.mp4"], "size": 100}
+    got = bot._direct_link_for(last)
+    assert asked["path"] == "迅雷云盘/X-Drive/MIMK-1/MIMK-1.mp4", asked
+    assert got == "https://dl.example/x.mp4"
+
+
+def test_bot_direct_link_returns_empty_without_media(tmp_path, monkeypatch):
+    """归档目录里没有媒体文件：直链取不到，返回空串（不抛）。"""
+    from app import main as bot
+    from app import xunleipan as xp
+    monkeypatch.setattr(xp, "direct_link",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("不该调")))
+    last = {"folder": "MIMK-1", "rel": "迅雷云盘/X-Drive/MIMK-1", "files": [], "size": 0}
+    assert bot._direct_link_for(last) == ""

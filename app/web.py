@@ -991,10 +991,41 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
         job_update(job_id, stage="uploading", error="正在传回云盘…")
         job_event(job_id, "stage", f"传回云盘（{core.human_size(new_size)}）")
         tmp_dest = f"{path}.faststart.tmp"
+        backup = f"{path}.faststart.bak"
         try:
             backend.upload_file(fixed, tmp_dest)
-            backend.purge(path)
-            backend.rename_dir(tmp_dest, Path(path).name)
+            # 替换顺序很重要：**先备份原文件，再把新文件改名顶上，最后才删备份**。
+            #
+            # 以前是「purge 原文件 → rename 新文件」：中间那一步失败的话，原文件
+            # 已经没了，只剩一个临时名 —— 归档直接空掉，5GB 的片子说没就没。
+            #
+            # 现在任何一步失败，原文件都还在（只是改了个名），可以回滚。
+            backend.rename_dir(path, Path(backup).name)
+            try:
+                backend.rename_dir(tmp_dest, Path(path).name)
+            except Exception:
+                # 新文件没能顶上：把原文件改回原名，恢复原状
+                try:
+                    backend.rename_dir(backup, Path(path).name)
+                except Exception as exc2:
+                    log.error("faststart：回滚失败，原文件在 %s，请手工改名回去：%s",
+                              backup, exc2)
+                raise
+            # 新文件已就位。删备份前先核一下大小 —— 传坏了就别删原件。
+            try:
+                entries = backend.list_files(path.rsplit("/", 1)[0]
+                                             if "/" in path else "")
+                new = next((e for e in entries if e.name == Path(path).name), None)
+                if new is not None and new.size and new.size != new_size:
+                    log.warning("faststart：%s 大小对不上（期望 %d，实得 %d）",
+                                path, new_size, new.size)
+            except Exception as exc:
+                log.warning("faststart：核验 %s 大小失败：%s", path, exc)
+            try:
+                backend.purge(backup)
+            except Exception as exc:
+                # 备份删不掉不是致命伤：新文件已经就位，只是多留一份
+                log.warning("faststart：备份 %s 删不掉（不影响播放）：%s", backup, exc)
         except Exception as exc:                # noqa: BLE001
             try:
                 backend.purge(tmp_dest)
@@ -3545,20 +3576,25 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as exc:
             # 上游的 403/404 之类原样回：Range 越界（416）也要如实告诉浏览器
             body = exc.read()[:200] if hasattr(exc, "read") else b""
-            self.send_response(exc.code)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
             try:
+                self.send_response(exc.code)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
                 self.wfile.write(body)
             except OSError:
-                pass
+                pass            # 浏览器已经走了 —— 不用管
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            # 浏览器拖动进度条会把当前请求掐掉 —— 这是**正常**的，不是故障。
+            # 以前这里当普通异常处理，还会往已经关掉的连接上写 502，
+            # 刷出一堆「视频代理失败：Broken pipe」的假警报。
+            log.info("视频代理：浏览器中断了传输（拖动进度条属正常）：%s", exc)
         except Exception as exc:
             log.warning("视频代理失败：%s", exc)
             try:
                 self._send(502, f"proxy failed: {exc}".encode(),
                            "text/plain; charset=utf-8")
-            except Exception:
+            except OSError:
                 pass
 
     def _proxy_image(self, query: dict) -> None:
@@ -3634,7 +3670,9 @@ def scrape_status() -> dict:
     info = {"configured": metatube.configured(), "url": metatube.base(),
             "scrape": get_setting("SCRAPE"), "nfo": get_setting("SCRAPE_NFO"), "poster": get_setting("SCRAPE_POSTER"),
             "ok": False, "version": "", "providers": [], "error": "",
-            "pending": _scrape_pending()}
+            "pending": _scrape_pending(),
+            # 附件未推的单独一份 —— 跟「元数据没刮到」是两回事
+            "attachment_pending": _attachment_pending()}
     if not metatube.configured():
         info["error"] = "未配置 METATUBE_URL"
         return info
@@ -3655,13 +3693,33 @@ def scrape_status() -> dict:
 
 
 def _scrape_pending() -> list[str]:
-    """归档里元数据不全的番号：标题都没有，或上次生成附件失败过。"""
+    """归档里**元数据不全**的番号：标题都没有。
+
+    这里刻意**不看** scrape_pending —— 那个标记说的是「附件（NFO/封面/清单）
+    还没推到云盘」，不是「元数据没刮到」。云添加链路不生成附件，所以每条
+    新归档的 scrape_pending 都是 True，而它们的元数据其实是齐的。
+
+    两者混在一张列表里，界面就会把「元数据齐、只是附件没推」的番号报成
+    「待补刮」—— 用户点进去刮一遍什么也不会变。
+    """
     pending = []
     for code, record in (core.load_state(STATE) or {}).items():
         meta_rec = (record or {}).get("meta") or {}
-        if not meta_rec.get("title") or (record or {}).get("scrape_pending"):
+        if not meta_rec.get("title"):
             pending.append(code)
     return sorted(pending)
+
+
+def _attachment_pending() -> list[str]:
+    """附件（NFO/封面/清单）还没推到云盘的番号。
+
+    这是「补刮 + 同步附件」那一步的事，跟元数据缺失是两回事，单独列一份。
+    """
+    out = []
+    for code, record in (core.load_state(STATE) or {}).items():
+        if (record or {}).get("scrape_pending"):
+            out.append(code)
+    return sorted(out)
 
 
 def scrape_preview(code: str) -> dict:

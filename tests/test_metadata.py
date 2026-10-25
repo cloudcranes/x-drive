@@ -515,3 +515,29 @@ def test_scrape_preview_ignores_session_fields(tmp_path, monkeypatch):
     assert "gid" not in out["changes"], f"gid 是每次都变的会话凭证，不该报差异：{out['changes']}"
     assert "uc" not in out["changes"]
     assert "director" in out["changes"], "真正的作品字段要报"
+
+
+def test_scrape_pending_separates_metadata_gap_from_missing_attachments(tmp_path, monkeypatch):
+    """「元数据没刮到」与「附件没推」是两回事，要分成两份清单。
+
+    云添加链路不生成附件，所以每条新归档的 scrape_pending 都是 True ——
+    而它们的元数据其实是齐的。混在一张列表里，界面会把这些番号报成
+    「待补刮」，用户点进去刮一遍什么也不会变。
+    """
+    from app import core, store as store_mod, web as web_mod
+    monkeypatch.setattr(web_mod, "STATE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(web_mod, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    core.save_state(web_mod.STATE, {
+        # 元数据齐、只是附件没推 → 只该出现在附件清单里
+        "ABC-1": {"code": "ABC-1", "meta": {"title": "有标题"}, "scrape_pending": True},
+        # 元数据缺标题 → 两份清单都该有它
+        "ABC-2": {"code": "ABC-2", "meta": {}, "scrape_pending": True},
+        # 元数据齐、附件也推了 → 两份都没有
+        "ABC-3": {"code": "ABC-3", "meta": {"title": "有标题"}, "scrape_pending": False},
+    })
+    assert web_mod._scrape_pending() == ["ABC-2"], web_mod._scrape_pending()
+    assert web_mod._attachment_pending() == ["ABC-1", "ABC-2"], web_mod._attachment_pending()
+
+    st = web_mod.scrape_status()
+    assert st["pending"] == ["ABC-2"]
+    assert st["attachment_pending"] == ["ABC-1", "ABC-2"]

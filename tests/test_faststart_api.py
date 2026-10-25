@@ -133,3 +133,128 @@ def test_faststart_starts_background_job(tmp_path, monkeypatch):
     row = web._store().get(out["job_id"])
     assert row is not None, "任务要登记进任务表"
     assert row["stage"] in ("downloading", "uploading", "queued", "done", "failed")
+
+
+def test_faststart_replacement_keeps_original_until_new_is_in_place(tmp_path, monkeypatch):
+    """替换文件时，原文件必须留到新文件就位之后。
+
+    以前是「purge 原文件 → rename 新文件」：中间那步失败，原文件已经没了，
+    只剩一个临时名 —— 归档直接空掉，5GB 的片子说没就没。
+
+    现在：先把原文件改名成备份 → 新文件改名顶上 → 核验大小 → 才删备份。
+    """
+    from app import core, store as store_mod
+    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(web, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    core.save_state(web.STATE, {"ABC-1": {"code": "ABC-1", "files": ["ABC-1.mp4"],
+                                           "backend": "clouddrive2", "rel": "dest/ABC-1"}})
+    monkeypatch.setattr(faststart, "ffmpeg_available", lambda: (True, "可用"))
+
+    calls = []
+    renamed = {"dest/ABC-1/ABC-1.mp4": "dest/ABC-1/ABC-1.mp4.faststart.bak"}
+
+    class Entry:
+        name = "ABC-1.mp4"
+        size = 100
+
+    class Backend:
+        kind = "clouddrive2"
+
+        def list_files(self, rel):
+            return [Entry()]
+
+        def download_url(self, path):
+            return "http://cdn.local/ABC-1.mp4"
+
+        def upload_file(self, local, dest):
+            calls.append(("upload", dest))
+
+        def rename_dir(self, src, new_name):
+            calls.append(("rename", src, new_name))
+            renamed[src] = f"{src.rsplit('/', 1)[0]}/{new_name}"
+
+        def purge(self, dest):
+            calls.append(("purge", dest))
+
+    monkeypatch.setattr(web, "storage_backend", lambda: Backend())
+    # 让重排与下载都变成假的（这一步只验顺序）
+    monkeypatch.setattr(web, "_faststart_worker",
+                        lambda job_id, backend, path, link, code: {
+                            "ok": True, "changed": True, "path": path})
+
+    out = web.faststart_archive("ABC-1")
+    assert out["ok"] is True
+    # worker 被桩掉了 —— 顺序要在 worker 里验，所以这里只验接口能起来
+    assert out.get("job_id")
+
+
+def test_faststart_worker_replacement_order(tmp_path, monkeypatch):
+    """替换顺序：备份 → 顶上 → 核验 → 删备份。原文件在顶上之前不会没。"""
+    from app import core, store as store_mod
+    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(web, "STORE", store_mod.Store(str(tmp_path / "jobs.db")))
+    core.save_state(web.STATE, {"ABC-1": {"code": "ABC-1", "files": ["ABC-1.mp4"],
+                                           "backend": "clouddrive2", "rel": "dest/ABC-1"}})
+
+    calls = []
+
+    class Entry:
+        name = "ABC-1.mp4"
+        size = 100
+
+    class Backend:
+        kind = "clouddrive2"
+
+        def list_files(self, rel):
+            return [Entry()]
+
+        def upload_file(self, local, dest):
+            calls.append(("upload", dest))
+
+        def rename_dir(self, src, new_name):
+            calls.append(("rename", src, new_name))
+
+        def purge(self, dest):
+            calls.append(("purge", dest))
+
+    # 下载与重排都桩掉
+    class FakeResp:
+        headers = {"Content-Length": "100"}
+
+        def __init__(self):
+            self.left = 100
+
+        def read(self, n=-1):
+            if self.left <= 0:
+                return b""            # 读完就返回空 —— 否则下载循环停不下来
+            self.left -= 100
+            return b"x" * 100
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(web.urllib.request, "urlopen", lambda *a, **k: FakeResp())
+    monkeypatch.setattr(faststart, "needs_faststart", lambda p: True)
+    # 临时目录：本地 /downloads 不可写，指向 tmp_path
+    monkeypatch.setattr(web, "TMP_ROOT", str(tmp_path))
+
+    fixed = tmp_path / "fixed.mp4"
+    fixed.write_bytes(b"x" * 100)
+    monkeypatch.setattr(faststart, "faststart_file", lambda src, work=None: fixed)
+
+    out = web._faststart_worker("j1", Backend(), "dest/ABC-1/ABC-1.mp4",
+                                "http://cdn.local/a.mp4", "ABC-1")
+    assert out["ok"] is True, out
+
+    kinds = [c[0] for c in calls]
+    # 原文件先改名为备份，新文件再顶上，最后才删备份
+    assert kinds == ["upload", "rename", "rename", "purge"], calls
+    # 第一次 rename 是「把原文件改成备份」
+    assert calls[1][2].endswith(".faststart.bak"), calls[1]
+    # 第二次 rename 是「新文件顶上」
+    assert calls[2][2] == "ABC-1.mp4", calls[2]
+    # 最后 purge 的必须是备份，不是原文件
+    assert calls[3][1].endswith(".faststart.bak"), calls[3]

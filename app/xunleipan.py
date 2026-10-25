@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from urllib.parse import quote
@@ -440,6 +441,19 @@ def _needs_refresh(margin: int = 300) -> bool:
     return exp - int(time.time()) < margin
 
 
+# 续期失败后的冷却：refresh_token 失效时**每次请求**都会白跑一次续期
+# （发请求 + 拿 400 + 抛异常），而结果都一样 —— 用户没重新授权之前，
+# 再试一百次也一样。这个冷却把无谓的请求压下来。
+#
+# 冷却期过后仍会重试：万一是临时的网络故障，过一会儿自己就好了。
+_REFRESH_FAILED_AT = 0.0
+REFRESH_COOLDOWN = float(os.getenv("XLPAN_REFRESH_COOLDOWN", "900") or 900)
+
+
+def _refresh_failed_recently() -> bool:
+    return time.time() - _REFRESH_FAILED_AT < REFRESH_COOLDOWN
+
+
 def auto_refresh(*, client=None) -> dict:
     """过期自动续期，并把新 token 写回设置。返回续期结果（没过期则 skipped=True）。
 
@@ -447,11 +461,17 @@ def auto_refresh(*, client=None) -> dict:
     操作集体失败，用户可能几天后才发现。修好（续期成功）后清掉提醒去重，
     下次真失效时还能再提醒。
     """
+    global _REFRESH_FAILED_AT
     if not _needs_refresh():
         return {"ok": True, "skipped": True, "reason": "access_token 未临近过期"}
+    if _refresh_failed_recently():
+        # 刚续期失败过，冷却期内不再试 —— 每次请求都白跑一次续期没有意义
+        return {"ok": False, "skipped": True,
+                "reason": f"上次续期失败，冷却中（{int(REFRESH_COOLDOWN)} 秒）"}
     try:
         out = refresh_access_token(client=client)
     except Exception as exc:                    # noqa: BLE001
+        _REFRESH_FAILED_AT = time.time()
         try:
             from . import notify
             notify.xlp_auth_broken(str(exc))
@@ -463,6 +483,7 @@ def auto_refresh(*, client=None) -> dict:
         saved["XLPAN_TOKEN"] = out["access_token"]
     if out.get("refresh_token"):
         saved["XLPAN_REFRESH_TOKEN"] = out["refresh_token"]
+    _REFRESH_FAILED_AT = 0.0          # 续期成功：清掉冷却
     if saved:
         try:
             from . import web as web_mod

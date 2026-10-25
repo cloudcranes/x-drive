@@ -936,8 +936,11 @@
       <div class="maint-pane" id="maint-meta">
         <div class="meta-h">配置体检</div>
         <div class="kv" id="meta-conn"></div>
-        <div class="meta-h">待补刮番号 · 点一个填进输入框</div>
+        <div class="meta-h">元数据待补刮 · 点一个填进输入框</div>
         <div class="chips" id="meta-pending"></div>
+
+        <div class="meta-h">附件待推送（NFO / 封面 / 清单）· 点一个填进输入框</div>
+        <div class="chips" id="meta-attachment"></div>
 
         <div class="meta-h">番号 · 对照与纠正</div>
         <input id="meta-code" type="text" autocomplete="off" spellcheck="false"
@@ -1361,12 +1364,34 @@ function card(t) {
   return node;
 }
 
+// 弹层的统一收尾：把 keydown 监听器摘掉、把节点移除、解开背景滚动锁。
+//
+// 以前各处都是 `old.remove()` 直接把上一次的层扔掉 —— 但那次的
+// `document.addEventListener("keydown", onKey)` 还挂在 document 上。
+// 每开一次弹层就多一个监听器，Esc 会被触发好几次（关一层，关掉好几层）。
+// 现在统一走这个函数：监听器与节点一起收。
+const LAYER_CLEANUP = new Map();      // layer.id -> 清理函数
+
+function closeLayerEl(layer) {
+  if (!layer) return;
+  const fn = LAYER_CLEANUP.get(layer.id);
+  if (fn) {
+    LAYER_CLEANUP.delete(layer.id);
+    try { fn(); } catch (e) { /* 清理失败不该挡住关闭 */ }
+  }
+  layer.remove();
+  // 背景滚动锁：还有别的弹层开着就继续锁
+  const still = document.getElementById("detail-layer")
+             || document.getElementById("preview-layer")
+             || document.getElementById("player-layer");
+  document.body.style.overflow = still ? "hidden" : "";
+}
+
 // 归档详情弹层：海报 + 标题之外的全部信息。
 // 字段一律按「有才渲染」处理 —— 缺什么就少一行，不编。
 function showArchiveDetail(t) {
   const m = t.meta || {};
-  const old = document.getElementById("detail-layer");
-  if (old) old.remove();
+  closeLayerEl(document.getElementById("detail-layer"));
   const layer = el("div", "dlayer");
   layer.id = "detail-layer";
   // 三个出口（点遮罩 / Esc / 关闭）都走同一个 close：背景滚动锁必须成对解开，
@@ -1384,6 +1409,7 @@ function showArchiveDetail(t) {
   };
   layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
   document.addEventListener("keydown", onKey);
+  LAYER_CLEANUP.set(layer.id, () => document.removeEventListener("keydown", onKey));
   document.body.style.overflow = "hidden";
 
   const panel = el("div", "dpanel");
@@ -1607,8 +1633,7 @@ async function playArchive(t, btn) {
 // 播放器：原地铺一层。Esc / 点背景 / 关闭都退。
 // 多个画质档时给一排按钮（迅雷官方 API 的 medias），默认第一档。
 function openPlayer(code, data, src) {
-  const old = document.getElementById("player-layer");
-  if (old) old.remove();
+  closeLayerEl(document.getElementById("player-layer"));
   const layer = el("div", "dlayer player-layer");
   layer.id = "player-layer";
   const closeLayer = () => {
@@ -1624,6 +1649,7 @@ function openPlayer(code, data, src) {
   };
   layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
   document.addEventListener("keydown", onKey);
+  LAYER_CLEANUP.set(layer.id, () => document.removeEventListener("keydown", onKey));
   document.body.style.overflow = "hidden";
 
   const panel = el("div", "dpanel player-panel");
@@ -1721,6 +1747,11 @@ async function repairFaststart(code, btn, hint) {
     }
     // 重排是后台任务（十几分钟）。**不另起定时器** —— 页面本来就有 3 秒一轮的
     // 任务队列轮询（loadJobs），挂到它上面就行。
+    // 已经在等一个了：先把上一次的按钮解锁（不然它会一直卡在「修复中…」）
+    if (faststartWatch && faststartWatch.btn) {
+      faststartWatch.btn.disabled = false;
+      faststartWatch.btn.textContent = faststartWatch.label;
+    }
     faststartWatch = {jobId: d.job_id || "", btn, hint, label: old};
     if (btn) btn.textContent = "修复中…";
     queueFlash("已开始修复，进度在任务队列里");
@@ -3216,8 +3247,7 @@ function thumbWall(srcs, label) {
 
 // 番号详情：封面大图 + 全部字段 + 预览图墙（javbus 的「樣品圖像」）
 function showDetail(code, info) {
-  const old = document.getElementById("detail-layer");
-  if (old) old.remove();
+  closeLayerEl(document.getElementById("detail-layer"));
   const layer = el("div", "dlayer");
   layer.id = "detail-layer";
   // 三个出口（点遮罩 / Esc / 关闭）都走同一个 close：背景滚动锁必须成对解开，
@@ -3235,6 +3265,7 @@ function showDetail(code, info) {
   };
   layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
   document.addEventListener("keydown", onKey);
+  LAYER_CLEANUP.set(layer.id, () => document.removeEventListener("keydown", onKey));
   document.body.style.overflow = "hidden";
 
   const panel = el("div", "dpanel");
@@ -3293,8 +3324,7 @@ function showDetail(code, info) {
 
 // 单条磁力预览：按需查询，不批量打外部接口
 async function showMagnetPreview(item, btn) {
-  const old = document.getElementById("preview-layer");
-  if (old) old.remove();
+  closeLayerEl(document.getElementById("preview-layer"));
   if (btn) btn.disabled = true;
   let data = null;
   try {
@@ -3324,6 +3354,7 @@ async function showMagnetPreview(item, btn) {
   };
   layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
   document.addEventListener("keydown", onKey);
+  LAYER_CLEANUP.set(layer.id, () => document.removeEventListener("keydown", onKey));
   document.body.style.overflow = "hidden";
   const panel = el("div", "dpanel");
   const head = el("div", "dhead");
@@ -4026,20 +4057,40 @@ function renderMetaHealth(d) {
   const list = (d && d.pending) || [];
   if (!list.length) {
     pend.append(el("span", "chip plain", "没有待补刮的番号"));
-    return;
+  } else {
+    pend.append(el("span", "chip plain", `共 ${list.length} 个`));
+    for (const code of list.slice(0, 60)) {
+      const b = el("button", "chip", code);
+      b.type = "button";
+      b.title = "填进番号输入框并预览";
+      b.addEventListener("click", () => {
+        $("meta-code").value = code;
+        metaPreview();
+      });
+      pend.append(b);
+    }
+    if (list.length > 60) pend.append(el("span", "chip plain", `…另有 ${list.length - 60} 个`));
   }
-  pend.append(el("span", "chip plain", `共 ${list.length} 个`));
-  for (const code of list.slice(0, 60)) {
-    const b = el("button", "chip", code);
-    b.type = "button";
-    b.title = "填进番号输入框并预览";
-    b.addEventListener("click", () => {
-      $("meta-code").value = code;
-      metaPreview();
-    });
-    pend.append(b);
+  // 附件未推的清单 —— 与「元数据没刮到」分开列
+  const att = $("meta-attachment");
+  att.textContent = "";
+  const alist = (d && d.attachment_pending) || [];
+  if (!alist.length) {
+    att.append(el("span", "chip plain", "没有待推送附件的番号"));
+  } else {
+    att.append(el("span", "chip plain", `共 ${alist.length} 个`));
+    for (const code of alist.slice(0, 60)) {
+      const b = el("button", "chip", code);
+      b.type = "button";
+      b.title = "填进番号输入框并预览（同步附件才会推上去）";
+      b.addEventListener("click", () => {
+        $("meta-code").value = code;
+        metaPreview();
+      });
+      att.append(b);
+    }
+    if (alist.length > 60) att.append(el("span", "chip plain", `…另有 ${alist.length - 60} 个`));
   }
-  if (list.length > 60) pend.append(el("span", "chip plain", `…另有 ${list.length - 60} 个`));
 }
 
 async function loadMetaStatus() {

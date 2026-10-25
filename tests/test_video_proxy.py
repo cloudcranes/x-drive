@@ -81,13 +81,14 @@ def test_video_proxy_forwards_range_header(upstream, monkeypatch):
         headers = {"Content-Type": "video/mp4", "Content-Range": "bytes 0-1023/262144",
                    "Content-Length": "1024", "Accept-Ranges": "bytes"}
 
+        def __init__(self):
+            self.left = 1024          # 读完就返回空 —— 否则转发循环停不下来
+
         def read(self, n=-1):
-            data = seen.setdefault("data", b"")
-            if not data:
-                data = b"y" * 1024
-                seen["data"] = data
-            out, data = data, b""
-            return out
+            if self.left <= 0:
+                return b""
+            self.left -= 1024
+            return b"y" * 1024
 
         def __enter__(self):
             return self
@@ -105,7 +106,9 @@ def test_video_proxy_forwards_range_header(upstream, monkeypatch):
     sent = {}
     handler = web.Handler.__new__(web.Handler)
     handler.headers = {"Range": "bytes=0-1023"}
-    handler.wfile = type("W", (), {"write": lambda self, d: sent.setdefault("body", b"") or sent["body"].__iadd__(d)})()
+    def _write(d):
+        sent["body"] = sent.get("body", b"") + d   # bytes 不能原地加
+    handler.wfile = type("W", (), {"write": lambda self, d: _write(d)})()
     handler.send_response = lambda code: sent.setdefault("status", code)
     handler.send_header = lambda k, v: sent.setdefault("headers", {}).__setitem__(k, v)
     handler.end_headers = lambda: None

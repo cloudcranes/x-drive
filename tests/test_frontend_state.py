@@ -554,3 +554,58 @@ def test_play_reports_failure_instead_of_playing():
       assert.equal(stubs.alerts.length,1,"要告诉用户为什么");
       assert.ok(stubs.alerts[0].includes("没有 MIMK-1"),stubs.alerts[0]);
     ''')
+
+
+def test_layers_release_their_keydown_listener():
+    """弹层反复开关不能累积 keydown 监听器。
+
+    以前各处都是 `old.remove()` 把上一次的层扔掉，但那次注册的
+    `document.addEventListener("keydown", onKey)` 还挂在 document 上 ——
+    每开一次弹层就多一个监听器，Esc 会被触发好几次（关一层，关掉好几层）。
+    """
+    run_js(r'''
+      // 数一数 document 上的 keydown 监听器
+      let keyCount=0;
+      const realAdd=document.addEventListener.bind(document);
+      const realRemove=document.removeEventListener.bind(document);
+      const handlers=new Set();
+      document.addEventListener=(type,fn,...rest)=>{
+        if(type==="keydown"){keyCount++;handlers.add(fn);}
+        return realAdd(type,fn,...rest);
+      };
+      document.removeEventListener=(type,fn,...rest)=>{
+        if(type==="keydown"&&handlers.has(fn)){keyCount--;handlers.delete(fn);}
+        return realRemove(type,fn,...rest);
+      };
+      const t={id:"a",code:"ABC-1",files:["ABC-1.mp4"],meta:{title:"x"}};
+      for(let i=0;i<5;i++){
+        const node=card(t);
+        await node.querySelector(".card-cover").dispatch("click",{});
+        // 关掉
+        const layer=document.getElementById("detail-layer");
+        if(layer) layer.dispatch("click",{target:layer});
+      }
+      assert.equal(keyCount,0,"开了 5 次关掉 5 次，监听器不该剩下："+keyCount);
+    ''')
+
+
+def test_second_faststart_repair_unlocks_the_first_button():
+    """连点两次修复：上一次的按钮要解锁，不能永远卡在「修复中」。"""
+    run_js(r'''
+      let started=0;
+      stubs.confirm=()=>true;
+      stubs.fetch=async()=>{
+        const r={ok:true,status:200,statusText:"OK",
+          text:async()=>JSON.stringify({ok:true,job_id:"job-"+(++started),code:"ABC-1"})};
+        return r;
+      };
+      const mk=()=>{const b=document.createElement("button");b.textContent="修复可播性";return b;};
+      const b1=mk(), b2=mk();
+      await repairFaststart("ABC-1",b1,null);
+      // 第一次跑起来后，按钮是「禁用中」—— 这是对的（正在修，不该再点）
+      assert.equal(b1.disabled,true,"修复进行中，按钮应当禁用");
+      // 再点一次别的按钮：上一次的按钮要解锁，不能永远卡在「修复中」
+      await repairFaststart("ABC-1",b2,null);
+      assert.equal(b1.disabled,false,"第二次开始时上一次的按钮要解锁");
+      assert.equal(b2.disabled,true,"新按钮进入等待状态");
+    ''')

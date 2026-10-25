@@ -504,6 +504,26 @@ async def _probe_source(client: httpx.AsyncClient, source: str) -> dict:
     return await whatslink.lookup(client, source)
 
 
+def _direct_link_for(last: dict) -> str:
+    """取归档文件的直链（官方 API）。取不到返回空串。
+
+    注意：last["rel"] 是**目录**路径（迅雷云盘/X-Drive/MIMK-185），
+    而 direct_link 要的是**文件**路径 —— 传目录的话 resolve 拿到的是目录 id，
+    file_info 里没有 web_content_link，直链永远是空的。
+    """
+    from . import xunleipan
+
+    media = (last or {}).get("files") or []
+    rel = str((last or {}).get("rel") or "").strip("/")
+    if not media or not rel:
+        return ""
+    try:
+        return xunleipan.direct_link(f"{rel}/{media[0]}").get("link") or ""
+    except Exception as exc:            # 直链只是锦上添花
+        log.info("取 %s 的直链失败：%s", (last or {}).get("folder"), exc)
+        return ""
+
+
 async def run_task(
     cfg: Config,
     client: httpx.AsyncClient,
@@ -698,13 +718,7 @@ async def run_task(
                     **(task_store(cfg).get(job_id).get("extra") or {}),
                     "cleanup_pending": leftover})
 
-            link = ""
-            try:
-                from . import xunleipan
-                info2 = xunleipan.direct_link(last["rel"])
-                link = info2.get("link") or ""
-            except Exception as exc:            # 直链只是锦上添花
-                log.info("取 %s 的直链失败：%s", last["folder"], exc)
+            link = _direct_link_for(last)
 
             line = f"✅ {last['folder']} · {core.human_size(job_size)} · 云盘"
             if link:
