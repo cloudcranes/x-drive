@@ -307,3 +307,53 @@ def test_long_pending_only_reports_old_enough(tmp_path, monkeypatch):
     out = web.notify_long_pending(days=14, now=now)
     assert [o["code"] for o in out] == ["OLD-1"]
     assert hits == ["OLD-1"]
+
+
+def test_normalize_meta_maps_javbus_keys_to_lockable_names():
+    """javbus 那套键名要映射到 LOCKABLE 那套，否则补刮看不见站内的值。
+
+    实测踩过：站内有 date=2024-11-29（javbus 的键名），补刮预览却说
+    release_date「从 null 变成 2024-11-29」—— 站内明明有值，它却当成空的。
+    """
+    from app import metadata
+    out = metadata.normalize_meta({
+        "title": "标题", "date": "2024-11-29", "duration": "120 分钟",
+        "rating": "8.5", "cover": "http://x/c.jpg", "categories": ["剧情"],
+        "review": "简介",
+    })
+    assert out["release_date"] == "2024-11-29"
+    assert out["runtime"] == "120 分钟"
+    assert out["score"] == "8.5"
+    assert out["cover_url"] == "http://x/c.jpg"
+    assert out["genres"] == ["剧情"]
+    assert out["summary"] == "简介"
+    # 老键留着：不丢东西
+    assert out["date"] == "2024-11-29"
+    assert out["title"] == "标题"
+
+
+def test_normalize_meta_keeps_existing_new_names():
+    """已经有归一后的键名时，以它为准 —— 不许被老键覆盖。"""
+    from app import metadata
+    out = metadata.normalize_meta({"date": "2020-01-01", "release_date": "2024-11-29"})
+    assert out["release_date"] == "2024-11-29"
+
+
+def test_normalize_meta_ignores_blank_values():
+    """空值不占位：空的 date 不该把 release_date 写成空串。"""
+    from app import metadata
+    out = metadata.normalize_meta({"date": "", "duration": 0})
+    assert "release_date" not in out
+    assert "runtime" not in out
+
+
+def test_archive_record_stores_normalized_meta():
+    """新写的归档记录，meta 的键名就是站内统一那套。"""
+    from app import metadata
+    from pathlib import Path
+    rec = metadata.archive_record(
+        "MIMK-186", "clouddrive2:dest/MIMK-186", "", ["MIMK-186.mp4"], 100, "",
+        Path("/nonexistent"), scraped={"date": "2024-11-29", "title": "标题"},
+        manifest_files=["MIMK-186.mp4"])
+    assert rec["meta"]["release_date"] == "2024-11-29"
+    assert rec["meta"]["title"] == "标题"

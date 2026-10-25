@@ -1430,6 +1430,13 @@ function showArchiveDetail(t) {
   }
 
   const actions = el("div", "dactions");
+  // 手动刮削：按需去源站重抓一次元数据。
+  // 先看差异再决定写不写 —— 不做「点一下就悄悄覆盖已有字段」。
+  const scrapeBtn = el("button", "ghost", "手动刮削");
+  scrapeBtn.type = "button";
+  scrapeBtn.title = "重新抓一次元数据，先看差异再决定是否写入";
+  scrapeBtn.addEventListener("click", () => { manualScrape(t, closeLayer, scrapeBtn); });
+  actions.append(scrapeBtn);
   // 改名 / 删除：这两个是归档维护动作，放在详情里最合适 —— 卡片上不再挤按钮
   const ren = el("button", "ghost", "改名");
   ren.type = "button";
@@ -1455,6 +1462,66 @@ function showArchiveDetail(t) {
   panel.append(actions);
   layer.append(panel);
   document.body.append(layer);
+}
+
+// 手动刮削：先拉差异预览给用户看，确认了才写入。
+// 「刮不到就什么都不做」—— 不拿空结果覆盖已有元数据。
+const SCRAPE_FIELD_TEXT = {
+  title: "标题", original_title: "原题", summary: "简介", release_date: "发行日期",
+  runtime: "时长", director: "导演", maker: "片商", label: "发行商",
+  series: "系列", actors: "演员", genres: "类别", score: "评分",
+};
+
+async function manualScrape(t, closeLayer, btn) {
+  const code = t.code || t.id || "";
+  if (!code) { alert("这条归档没有番号"); return; }
+  if (btn) btn.disabled = true;
+  let data = null;
+  try {
+    data = await metaApi("/api/scrape/preview", {code});
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    alert("刮削预览失败：" + (e.message || e));
+    return;
+  }
+  if (btn) btn.disabled = false;
+  if (!data || !data.ok) {
+    alert("刮削失败：" + ((data && data.error) || "未知原因"));
+    return;
+  }
+  const changes = data.changes || {};
+  const keys = Object.keys(changes);
+  if (!keys.length) {
+    alert(data.found ? "没有需要更新的字段" : "源站没有这部片的信息");
+    return;
+  }
+  // 把差异摆给用户看：哪些字段会变、变成什么
+  const lines = keys.map(k => {
+    const c = changes[k] || {};
+    const name = SCRAPE_FIELD_TEXT[k] || k;
+    const from = (c.from === null || c.from === undefined || c.from === "") ? "（空）" : String(c.from);
+    const to = (c.to === null || c.to === undefined || c.to === "") ? "（空）" : String(c.to);
+    return `${name}：${from} → ${to}`;
+  });
+  if (!confirm(`${code}\n\n写入这些改动？\n\n` + lines.join("\n")
+    + `\n\n（已锁定的字段不会被覆盖；不动云盘文件）`)) return;
+
+  if (btn) btn.disabled = true;
+  try {
+    const d = await metaApi("/api/scrape/sync", {code, resync: true});
+    if (btn) btn.disabled = false;
+    if (!d || !d.ok) {
+      alert("写入失败：" + ((d && d.error) || "未知原因"));
+      return;
+    }
+    const n = Object.keys(d.changed || {}).length;
+    closeLayer();
+    queueFlash(n ? `已更新 ${n} 个字段` : "没有需要更新的字段");
+    load();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    alert("写入失败：" + (e.message || e));
+  }
 }
 
 // 删除归档：两段式。先问服务端「将删什么」，把番号和体积摆给用户看，

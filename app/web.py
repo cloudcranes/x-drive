@@ -2564,7 +2564,8 @@ def collect() -> dict:
                 "source": item.get("source") or "",
                 "is_magnet": (item.get("source") or "").lower().startswith("magnet:"),
                 # 元数据只读缓存，不在渲染时联网；没抓过的用 backfill 补
-                "meta": item.get("meta") or meta.cached(code) or {},
+                "meta": metadata.normalize_meta(
+                    item.get("meta") or meta.cached(code) or {}),
             }
         )
     items.sort(key=lambda t: t["at"] or "", reverse=True)
@@ -3417,7 +3418,7 @@ def scrape_preview(code: str) -> dict:
     code = codes.canonical(code) or (code or "").strip().upper()
     state = core.load_state(STATE)
     record = _find_archive_record(state, code)
-    old = (record.get("meta") or {})
+    old = metadata.normalize_meta(record.get("meta") or {})
     locks = set(record.get("locked") or [])
     fresh = {}
     if metatube.configured():
@@ -3468,7 +3469,7 @@ def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = 
     record = dict(_find_archive_record(state, code))
     if not record:
         return {"ok": False, "error": f"{code} 没有归档记录"}
-    old = dict(record.get("meta") or {})
+    old = metadata.normalize_meta(record.get("meta") or {})
     locks = set(record.get("locked") or [])
     locks |= set(lock)
     locks -= set(unlock)

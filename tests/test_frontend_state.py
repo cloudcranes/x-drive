@@ -68,11 +68,13 @@ const document={
   removeEventListener:(type,fn)=>{const l=docListeners[type]||[];const i=l.indexOf(fn);if(i>=0)l.splice(i,1);},
   dispatchEvent:(ev)=>{for(const f of docListeners[ev.type]||[])f(ev);return true;},
 };
-const ctx={console,assert,Node,els,flashes,opened,get,deferred,response,document,docListeners,
+const stubs={confirm:()=>true,metaApi:null,alerts:[]};
+const ctx={console,assert,Node,els,flashes,opened,get,deferred,response,document,docListeners,vm,stubs,
   AbortController,setTimeout,clearTimeout,
   $:get,el:(...args)=>new Node(...args),BASE:"",authInit:x=>x,
   gb:n=>String(n),fmt:n=>String(n||""),queueFlash:(message,error)=>flashes.push({message,error}),
-  localStorage:{getItem:()=>"1",setItem(){}},confirm:()=>true,
+  localStorage:{getItem:()=>"1",setItem(){}},confirm:(...a)=>stubs.confirm(...a),
+  alert:(msg)=>{stubs.alerts.push(String(msg));},
   window:{open:(...args)=>opened.push(args)},applyStorageScope(){},
   fetch:async()=>{throw new Error("unexpected fixture request")},load:()=>{},
   askRename:()=>{ctx.renamed=(ctx.renamed||0)+1},askDelete(){},applyFilter(){},
@@ -82,6 +84,9 @@ vm.createContext(ctx);
 function part(start,end) {const a=src.indexOf(start),b=src.indexOf(end,a+start.length);assert(a>=0&&b>a,start);vm.runInContext(src.slice(a,b),ctx);}
 part("async function subsApi(","async function renderSubs(");
 part("async function metaApi(","// 体检区：");
+// metaApi 走活桩：测试随时能替换（stubs.metaApi 没设就用原本的实现）
+vm.runInContext("const _metaApiReal=metaApi;"
+  + "metaApi=async(...a)=>stubs.metaApi?stubs.metaApi(...a):_metaApiReal(...a);",ctx);
 part("// ── 卡片\n","// 删除归档：");
 part("const mounted = new Map();","function applyFilter()");
 part("const STAGE_TEXT =","// ── 图片灯箱");
@@ -408,4 +413,59 @@ def test_seed_display_and_sort_do_not_turn_unknown_into_dead():
         resState.sort=mode;const sorted=sortCandidates(items);
         assert.deepEqual(sorted.slice(-2).map(i=>seedCount(i.seeders)),[0,0]);
       }
+    ''')
+
+
+def test_manual_scrape_previews_then_writes_only_after_confirm():
+    """手动刮削：先拉差异预览给用户看，确认了才写入。"""
+    run_js(r'''
+      const calls=[];
+      let confirmed=null;
+      stubs.confirm=(msg)=>{confirmed=msg;return true;};
+      stubs.metaApi=async(path,body)=>{
+        calls.push({path,body});
+        if(path==="/api/scrape/preview")return {ok:true,found:true,changes:{
+          title:{from:"旧标题",to:"新标题"},
+          release_date:{from:null,to:"2024-11-29"}}};
+        if(path==="/api/scrape/sync")return {ok:true,changed:{title:"新标题"}};
+        return {};};
+      const closed=[];
+      await manualScrape({code:"MIMK-186",id:"MIMK-186"},()=>closed.push(1),null);
+
+      assert.deepEqual(calls.map(c=>c.path),["/api/scrape/preview","/api/scrape/sync"]);
+      assert.ok(confirmed.includes("MIMK-186"),"确认框要写清番号");
+      assert.ok(confirmed.includes("标题"),"确认框要列出变化的字段");
+      assert.ok(confirmed.includes("旧标题")&&confirmed.includes("新标题"),
+                "确认框要摆出旧值与新值");
+      assert.equal(calls[1].body.resync,true,"写入要走 resync");
+      assert.equal(calls[1].body.code,"MIMK-186");
+      assert.deepEqual(closed,[1],"写完要关掉弹层");
+    ''')
+
+
+def test_manual_scrape_does_not_write_when_user_declines():
+    """用户不确认就不写 —— 不能悄悄覆盖已有字段。"""
+    run_js(r'''
+      const calls=[];
+      stubs.confirm=()=>false;
+      stubs.metaApi=async(path,body)=>{
+        calls.push(path);
+        if(path==="/api/scrape/preview")return {ok:true,found:true,changes:{title:{from:"旧",to:"新"}}};
+        return {ok:true,changed:{}};};
+      await manualScrape({code:"ABC-1",id:"ABC-1"},()=>{},null);
+      assert.deepEqual(calls,["/api/scrape/preview"],"用户拒绝就不该发写入请求");
+    ''')
+
+
+def test_manual_scrape_reports_when_source_has_nothing():
+    """源站查不到：只提示，不写入，也不假装成功。"""
+    run_js(r'''
+      const calls=[];
+      stubs.confirm=()=>true;
+      stubs.metaApi=async(path,body)=>{
+        calls.push(path);
+        if(path==="/api/scrape/preview")return {ok:true,found:false,changes:{}};
+        return {ok:true,changed:{}};};
+      await manualScrape({code:"ABC-1",id:"ABC-1"},()=>{},null);
+      assert.deepEqual(calls,["/api/scrape/preview"],"查不到就不该发写入请求");
     ''')

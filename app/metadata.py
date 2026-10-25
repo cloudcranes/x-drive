@@ -30,6 +30,47 @@ FORMAT_VERSION = 1
 LOCKABLE = ("title", "original_title", "summary", "release_date", "runtime", "director",
             "maker", "label", "series", "actors", "genres", "score")
 
+# 两条刮削源的字段名**不同构**，站内记录必须归一到 LOCKABLE 这套名字上。
+#
+#   javbus（meta.lookup 填的）  →  metatube（补刮填的）
+#   date         → release_date
+#   duration     → runtime
+#   rating       → score
+#   cover        → cover_url
+#   categories   → genres
+#
+# 不归一的后果很实在：站内记录的 `date`/`duration` 对 LOCKABLE 是**不可见**的，
+# 补刮会以为 release_date/runtime 是空的，写进 MetaTube 的值 —— 两套值
+# 挤在同一条记录里，界面读到的是哪套全看键名。实测 MIMK-186 就是这样：
+# 站内有 date=2024-11-29，补刮预览却说 release_date「从 null 变成 2024-11-29」。
+#
+# 归一方向：**站内记录统一成 LOCKABLE 那套**（metatube 的键名），因为
+# LOCKABLE、NFO、metadata.json 全是按它写的。
+_ALIAS = {
+    "date": "release_date",
+    "duration": "runtime",
+    "rating": "score",
+    "cover": "cover_url",
+    "categories": "genres",
+    "review": "summary",
+}
+
+
+def normalize_meta(rec: dict) -> dict:
+    """把一条元数据记录归一到站内那套字段名。
+
+    只**补**不**搬**：老键留着（`date` 还在），新键写上同一个值。
+    这样老记录不丢东西，新写的记录键名统一。
+    """
+    out = dict(rec or {})
+    for old, new in _ALIAS.items():
+        value = out.get(old)
+        if _blank(value):
+            continue
+        if _blank(out.get(new)):
+            out[new] = value
+    return out
+
 
 def _xml_escape(text: str) -> str:
     return (str(text or "").replace("&", "&amp;").replace("<", "&lt;")
@@ -182,6 +223,9 @@ def archive_record(code: str, path: str, link: str | None, files, size: int,
     manifest_files 是清单里的文件名，大小按 work 里的实际文件取；省略就用 files。
     """
     names = [str(p.name if isinstance(p, Path) else p) for p in (files or []) if p]
+    # 元数据统一字段名：javbus 那套（date/duration/…）补上映射到 LOCKABLE 的
+    # 键名上，不然后续补刮看不见站内的值（见 normalize_meta 的说明）。
+    scraped = normalize_meta(scraped or {})
     record = {
         "code": code,
         "path": path,
@@ -190,9 +234,9 @@ def archive_record(code: str, path: str, link: str | None, files, size: int,
         "size": int(size or 0),
         "source": (source or "")[:300],
         "at": at or time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "meta": dict(scraped or {}),
+        "meta": dict(scraped),
         "manifest": archive_manifest(work, manifest_files if manifest_files is not None
-                                     else names, dict(scraped or {}), code=code),
+                                     else names, dict(scraped), code=code),
         "scrape_pending": bool(pending),
     }
     if backend:
