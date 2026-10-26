@@ -500,11 +500,16 @@ def refresh_loop(interval: float | None = None, lead: float | None = None,
     while True:
         try:
             if _needs_refresh(margin):
-                log.info("迅雷凭据临近过期，主动续期")
+                log.info("迅雷凭据临近过期（margin %d 秒），主动续期", int(margin))
                 try:
                     out = auto_refresh()
                     if out.get("skipped"):
-                        log.info("主动续期跳过：%s", out.get("reason") or "")
+                        # auto_refresh 内部用的是**默认** margin（300 秒），
+                        # 比循环的 margin 严 —— 所以循环认为「该续」而它认为
+                        # 「还早」是正常的。日志要说清是哪个判据。
+                        log.info("主动续期未执行：%s（循环 margin %d 秒，"
+                                 "auto_refresh 判定用的是 300 秒）",
+                                 out.get("reason") or "", int(margin))
                     else:
                         failed_rounds = 0
                         log.info("主动续期成功，新 token 有效期 %s 秒",
