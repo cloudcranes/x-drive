@@ -93,8 +93,11 @@ SETTINGS_SPEC: dict[str, dict] = {
                     "label": "离线落地目录",
                     "note": "云盘里的目录，例如 迅雷云盘/我的资源；留空则不允许启用云添加"},
     "CLOUD_DEST": {"type": "str", "default": "", "group": "存储",
-                   "label": "归档根目录",
-                   "note": "整理后的位置，例如 迅雷云盘/X-Drive；留空 = 用「存储」里的归档根"},
+                   "label": "归档根目录（云添加目标）",
+                   "note": "整理后的位置，例如 迅雷云盘/X-Drive。"
+                           "留空 = 用下面的「归档根目录（兜底）」。"
+                           "「归档根目录（兜底）」留空时跟随这一项 —— "
+                           "两者本来指的是同一个地方"},
     "CLOUD_LAND_TIMEOUT": {"type": "float", "default": 7200.0, "group": "存储",
                            "label": "等落地上限 (秒)",
                            "note": "超过还没落地就判失败（迅雷侧可能没接收）"},
@@ -156,8 +159,10 @@ SETTINGS_SPEC: dict[str, dict] = {
                         "choices": ["rclone", "openlist", "clouddrive2"],
                         "note": "切换后只显示这个后端需要的参数；rclone 的 remote 与配置文件是启动参数，走 .env（RCLONE_REMOTE / RCLONE_CONFIG_HOST）"},
     "STORAGE_ROOT": {"type": "str", "default": "", "group": "存储",
-                     "label": "归档根目录",
-                     "note": "留空 = 沿用 DRIVE_ROOT（默认 X-Drive）；OpenList/CD2 里是虚拟路径。"
+                     "label": "归档根目录（兜底）",
+                     "note": "**一般不用填**：留空 = 跟随上面的「归档根目录」（云添加目标）。"
+                             "只有当老归档记在别处、而兜底路径要指向那个位置时才填。"
+                             "OpenList/CD2 里是虚拟路径。"
                              "上方「测试连接」会真去连一次，走云端的后端可能要几十秒"},
     # OpenList（自建，AList v3 兼容 REST）
     "OPENLIST_URL": {"type": "str", "default": "", "group": "存储", "only": "openlist",
