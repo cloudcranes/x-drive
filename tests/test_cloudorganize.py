@@ -90,6 +90,18 @@ def test_rename_keeps_extension():
     assert cloudorganize.renamed_files(plan, "ABC-123")[0][1] == "ABC-123.mkv"
 
 
+def test_renamed_single_video_with_subtitle_and_cover():
+    """单视频主体 + 伴生字幕与封面：字幕名对齐正片，封面用 cover.ext，方便媒体库。"""
+    files = [F("489155.com@MIMK-290.mp4", 4_000_000_000),
+             F("MIMK-290.zh.srt", 20_000),
+             F("cover.jpg", 150_000)]
+    plan = cloudorganize.plan("MIMK-290", files)
+    mapping = dict(cloudorganize.renamed_files(plan, "MIMK-290"))
+    assert mapping["489155.com@MIMK-290.mp4"] == "MIMK-290.mp4"
+    assert mapping["MIMK-290.zh.srt"] == "MIMK-290.zh.srt"
+    assert mapping["cover.jpg"] == "cover.jpg"
+
+
 # ─────────────────────────────────────────── 路径安全
 
 @pytest.mark.parametrize("bad", ["../evil", "a/b", "a\\b", "..", "sub/../x"])

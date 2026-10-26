@@ -225,19 +225,101 @@ def plan(source: str, files: list[dict], *, rename: bool = True,
 
 
 def renamed_files(plan_obj: Plan, folder_code: str) -> list[tuple[str, str]]:
-    """(原文件名, 新文件名)。单个文件用 `<番号><后缀>`，多个用 `<番号>-N<后缀>`。
+    """(原文件名, 新文件名)。
 
-    与本地 `pipeline.organize` 的命名保持一致，这样两条链路产出的归档目录
-    结构相同，前端与校核逻辑不用分叉。
+    规则（媒体库与播放器友好）：
+      · 区分视频主体与附属文件（字幕、封面）：
+        - 单个正片：正片直接叫 `<番号><后缀>`（如 ABC-123.mp4，不追加冗余序号）；
+          字幕对齐正片名（如 ABC-123.srt / ABC-123.zh.srt），使播放器自动挂载；
+          封面保留标准海报命名（cover.jpg 或 ABC-123.jpg）。
+        - 多个正片（多集/分卷）：正片按序号 `<番号>-N<后缀>`；字幕智能匹配对应分卷。
+        - 纯图片包（无正片）：依次按序号编号 `<番号>-N<后缀>`。
+      · 任何情况都有重名防护，确保目标文件名绝对唯一。
     """
     stem = re.sub(r"[^0-9A-Za-z-]+", "-", folder_code or "").strip("-") or "file"
+    moves = list(plan_obj.move)
+    if not moves:
+        return []
+
+    videos = [m for m in moves if _suffix(m) in VIDEO_EXT]
+    sidecars = [m for m in moves if m not in videos]
+
     out: list[tuple[str, str]] = []
-    if len(plan_obj.move) == 1:
-        src = plan_obj.move[0]
-        out.append((src, f"{stem}{_suffix(src) or '.mp4'}"))
+    used_targets: set[str] = set()
+
+    def _dedupe_name(base_name: str, ext: str) -> str:
+        candidate = f"{base_name}{ext}"
+        if candidate not in used_targets:
+            used_targets.add(candidate)
+            return candidate
+        idx = 2
+        while f"{base_name}-{idx}{ext}" in used_targets:
+            idx += 1
+        final_name = f"{base_name}-{idx}{ext}"
+        used_targets.add(final_name)
+        return final_name
+
+    # 场景 1：单个视频主体（最常见：单片 + 伴生字幕/封面）
+    if len(videos) == 1:
+        main_vid = videos[0]
+        ext = _suffix(main_vid) or ".mp4"
+        out.append((main_vid, _dedupe_name(stem, ext)))
+
+        for src in sidecars:
+            ext = _suffix(src)
+            lower = src.lower()
+            if ext in SIDECAR_EXT:
+                # 保留语言标签（如 .zh.srt / .chs.ass）
+                lang = re.search(r"\.((?:zh|chs|cht|chi|zho|cn|sc|tc|jp|ja|en)(?:-[a-zA-Z0-9]+)?)" + re.escape(ext) + r"$", lower)
+                target_stem = f"{stem}.{lang.group(1)}" if lang else stem
+                out.append((src, _dedupe_name(target_stem, ext)))
+            elif ext in IMAGE_EXT:
+                stem_lower = PurePosixPath(src).stem.lower()
+                target_stem = "cover" if stem_lower in ("cover", "poster", "folder", "thumb") else stem
+                out.append((src, _dedupe_name(target_stem, ext)))
+            else:
+                out.append((src, _dedupe_name(stem, ext)))
         return out
-    for index, src in enumerate(plan_obj.move, start=1):
-        out.append((src, f"{stem}-{index}{_suffix(src) or '.mp4'}"))
+
+    # 场景 2：多个视频主体（分卷 CD1/CD2 或多集）
+    if len(videos) > 1:
+        vid_numbered: dict[str, int] = {}
+        for index, v in enumerate(videos, start=1):
+            ext = _suffix(v) or ".mp4"
+            out.append((v, _dedupe_name(f"{stem}-{index}", ext)))
+            vid_numbered[v] = index
+
+        for src in sidecars:
+            ext = _suffix(src)
+            lower = src.lower()
+            if ext in SIDECAR_EXT:
+                matched_idx = None
+                for index in range(1, len(videos) + 1):
+                    if f"cd{index}" in lower or f"part{index}" in lower or f"-{index}" in lower or f"_{index}" in lower:
+                        matched_idx = index
+                        break
+                target_stem = f"{stem}-{matched_idx}" if matched_idx else f"{stem}-1"
+                lang = re.search(r"\.((?:zh|chs|cht|chi|zho|cn|sc|tc|jp|ja|en)(?:-[a-zA-Z0-9]+)?)" + re.escape(ext) + r"$", lower)
+                if lang:
+                    target_stem = f"{target_stem}.{lang.group(1)}"
+                out.append((src, _dedupe_name(target_stem, ext)))
+            elif ext in IMAGE_EXT:
+                stem_lower = PurePosixPath(src).stem.lower()
+                target_stem = "cover" if stem_lower in ("cover", "poster", "folder", "thumb") else stem
+                out.append((src, _dedupe_name(target_stem, ext)))
+            else:
+                out.append((src, _dedupe_name(stem, ext)))
+        return out
+
+    # 场景 3：无视频主体（纯图包或其他包）
+    if len(moves) == 1:
+        src = moves[0]
+        ext = _suffix(src)
+        out.append((src, _dedupe_name(stem, ext)))
+        return out
+    for index, src in enumerate(moves, start=1):
+        ext = _suffix(src)
+        out.append((src, _dedupe_name(f"{stem}-{index}", ext)))
     return out
 
 

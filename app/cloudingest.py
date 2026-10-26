@@ -220,11 +220,14 @@ async def wait_landing(backend, inbox: str, before: dict, *,
         rounds += 1
         if cancel_check and cancel_check():
             raise LandingTimeout("已停止")
-        if source and rounds % 3 == 1:
-            # 每三轮查一次：别把官方 API 打成筛子
-            why = check_offline_task(source)
-            if why:
-                raise LandingTimeout(f"迅雷侧拒绝了这次下载：{why}")
+
+        # 实时探测迅雷离线任务：报错立刻中断，成功则提速放行
+        off_state = OfflineState()
+        if source:
+            off_state = inspect_offline_task(source)
+            if off_state.is_error:
+                raise LandingTimeout(f"迅雷侧拒绝了这次下载：{off_state.error or '迅雷侧报任务失败'}")
+
         items = measure(backend, inbox)
         fresh = newcomers(before, items)
         if set(fresh) - known:
@@ -232,6 +235,11 @@ async def wait_landing(backend, inbox: str, before: dict, *,
             quiet = 0
         else:
             quiet += 1
+
+        # 若迅雷服务端已明确回报完成（COMPLETE/SUCCESS/100%），且网盘已有落地文件（>0字节），
+        # 1 轮指纹校验即放行，省去 30 秒盲等；否则严格等满 need 轮
+        need_rounds = 1 if (off_state.is_complete and any(items.get(k, {}).get("bytes", 0) > 0 for k in known)) else need
+
         # 每轮对全部已知条目重算指纹；被观测到变化就把稳定撤销（重新计 0）
         for name in known:
             item = items.get(name) or {"files": [], "count": 0, "bytes": 0}
@@ -239,7 +247,7 @@ async def wait_landing(backend, inbox: str, before: dict, *,
             last, hits = streak.get(name, (None, 0))
             hits = hits + 1 if fp == last else 1
             streak[name] = (fp, hits)
-            if hits >= need:
+            if hits >= need_rounds:
                 if name in settled and settled[name].total == int(item.get("bytes") or 0) \
                         and len(settled[name].files) == int(item.get("count") or 0):
                     continue                     # 没变，维持原判定
@@ -253,12 +261,18 @@ async def wait_landing(backend, inbox: str, before: dict, *,
                 settled.pop(name, None)
         if progress:
             try:
-                progress({name: {"count": items[name]["count"], "bytes": items[name]["bytes"]}
-                          for name in known if name in items}, rounds)
+                # 兼容现有 progress 签名 (snapshot, rounds) 以及带 percent 参数的扩展
+                extra_kwargs = {"percent": off_state.progress} if off_state.found else {}
+                try:
+                    progress({name: {"count": items[name]["count"], "bytes": items[name]["bytes"]}
+                              for name in known if name in items}, rounds, **extra_kwargs)
+                except TypeError:
+                    progress({name: {"count": items[name]["count"], "bytes": items[name]["bytes"]}
+                              for name in known if name in items}, rounds)
             except Exception:                   # noqa: BLE001 进度只是展示
                 pass
-        # 放行条件：所有已知条目都已（重新）稳定，且连续 need 轮没有新名字
-        if settled and len(settled) == len(known) and quiet >= need:
+        # 放行条件：所有已知条目都已（重新）稳定，且连续稳定轮次没有新名字（或迅雷已确认全部完成）
+        if settled and len(settled) == len(known) and (off_state.is_complete or quiet >= need_rounds):
             return sorted(settled.values(), key=lambda x: x.folder)
         if loop.time() > deadline:
             if settled:
@@ -269,6 +283,50 @@ async def wait_landing(backend, inbox: str, before: dict, *,
         # 下限给得很小：真正的节奏由设置项 CLOUD_POLL（默认 10s）决定，
         # 这里只是防止 poll=0 把 CPU 打满。写死 1 秒会让测试跑不动。
         await asyncio.sleep(max(0.01, float(poll)))
+
+
+@dataclass
+class OfflineState:
+    """迅雷离线任务状态快照。"""
+    found: bool = False
+    phase: str = ""
+    progress: int = 0
+    message: str = ""
+    error: str = ""
+
+    @property
+    def is_complete(self) -> bool:
+        p = self.phase.upper()
+        return self.found and ("COMPLETE" in p or "SUCCESS" in p or self.progress >= 100)
+
+    @property
+    def is_error(self) -> bool:
+        return self.found and "ERROR" in self.phase.upper()
+
+
+def inspect_offline_task(url: str, *, client=None) -> OfflineState:
+    """查迅雷离线任务的完整状态：阶段、进度百分比、人话原因。"""
+    if not url:
+        return OfflineState()
+    try:
+        from . import xunleipan as xp
+        info_hash = xp.info_hash_of(url)
+        task = xp.offline_task_by_hash(info_hash, client=client)
+    except Exception as exc:                    # noqa: BLE001 查不到不算失败
+        log.info("查迅雷离线任务状态失败（忽略）：%s", exc)
+        return OfflineState()
+    if not task:
+        return OfflineState()
+    phase = str(task.get("phase") or "")
+    prog = int(task.get("progress") or 0)
+    reason = (task.get("message") or task.get("error_detail") or "").strip()
+    return OfflineState(
+        found=True,
+        phase=phase,
+        progress=prog,
+        message=reason,
+        error=reason if "ERROR" in phase.upper() else "",
+    )
 
 
 def check_offline_task(url: str, *, client=None) -> str:
@@ -282,21 +340,10 @@ def check_offline_task(url: str, *, client=None) -> str:
 
     查不到就当「还在跑」—— 不能因为查不到就把正常的任务判死。
     """
-    if not url:
-        return ""
-    try:
-        from . import xunleipan as xp
-        info_hash = xp.info_hash_of(url)
-        task = xp.offline_task_by_hash(info_hash, client=client)
-    except Exception as exc:                    # noqa: BLE001 查不到不算失败
-        log.info("查迅雷离线任务状态失败（忽略）：%s", exc)
-        return ""
-    if not task:
-        return ""
-    phase = str(task.get("phase") or "")
-    if "ERROR" not in phase.upper():
-        return ""
-    reason = (task.get("message") or task.get("error_detail") or "").strip()
+    state = inspect_offline_task(url, client=client)
+    if state.is_error:
+        return state.error or "迅雷侧报任务失败"
+    return ""
     return reason or "迅雷侧报任务失败"
 
 

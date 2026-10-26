@@ -1373,11 +1373,15 @@ def _cloud_run(job_id: str, source: str, code: str, key: str,
     job_update(job_id, stage="cloud", percent=0.0, speed=0)
     submitted = _cloud_submit(backend, job_id, source, my_inbox)
 
-    def on_progress(count: int, total: int, _rounds: int) -> None:
+    def on_progress(count: int, total: int, _rounds: int, **kw) -> None:
         require_lease(job_id)
-        # 没有百分比：只报「已出现几个文件、多少字节」
-        job_update(job_id, downloaded=total, total=total,
-                   error="" if not count else f"云端落地中：{count} 个文件")
+        pct = kw.get("percent")
+        pct_val = float(pct) if pct is not None and pct > 0 else 0.0
+        msg = f"云端落地中：{count} 个文件" if count else "云端离线下载中…"
+        if pct is not None and pct > 0:
+            msg = f"云端离线中 {pct}% · {count} 个文件" if count else f"云端离线中 {pct}%"
+        job_update(job_id, downloaded=total, total=total, percent=pct_val,
+                   error="" if not count and not pct_val else msg)
 
     async def wait() -> list:
         return await cloudadd.wait_landing(

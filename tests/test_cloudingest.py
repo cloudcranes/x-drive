@@ -322,3 +322,17 @@ def test_cloud_ready_explains_why_not(monkeypatch):
                         lambda k, d=None: values.get(k, d))
     ok, why = web.cloud_ready()
     assert not ok and "落地目录" in why
+
+
+def test_fast_release_when_offline_complete(monkeypatch):
+    """迅雷 API 明确回 COMPLETE 时，网盘检测到新文件只需 1 轮指纹即放行，免除 30s 盲等。"""
+    b = FakeBackend()
+    b.script = [{"MIMK-288": {"a.mp4": 100}}] * 2
+    state = cloudingest.OfflineState(found=True, phase="PHASE_TYPE_COMPLETE", progress=100)
+    monkeypatch.setattr(cloudingest, "inspect_offline_task", lambda url, client=None: state)
+
+    landed = asyncio.run(cloudingest.wait_landing(
+        b, "inbox", {}, poll=0.01, timeout=3, stable=5, source="magnet:?xt=urn:btih:abc"))
+    assert len(landed) == 1
+    assert landed[0].folder == "MIMK-288"
+    assert landed[0].rounds == 1, "迅雷已完成时第 1 轮即放行，不必等满 stable=5 轮"

@@ -255,10 +255,10 @@
     box-shadow:0 16px 30px -22px rgba(0,0,0,.95), 0 0 22px -14px rgba(62,186,244,.75)}
   .card.hl{border-color:rgba(62,186,244,.6); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
 
-  /* 封面：等比填充，固定比例避免不同图尺寸把网格撑乱 */
+  /* 封面：等比填充，固定 800×538 比例（JavBus 官方封面规格）避免不同图尺寸把网格撑乱 */
   /* 底纹常驻：图还没回来（图床慢 / 代理还在超时重试）时，也别让人对着
      一块死黑猜「是不是页面挂了」。图片加载出来后整块盖住底纹。 */
-  .card-cover{aspect-ratio:16/9; overflow:hidden; border-bottom:1px solid var(--line-soft);
+  .card-cover{aspect-ratio:800/538; overflow:hidden; border-bottom:1px solid var(--line-soft);
     background:
       radial-gradient(120% 120% at 50% 0%, rgba(62,186,244,.06), transparent 62%),
       repeating-linear-gradient(135deg, rgba(255,255,255,.018) 0 6px, transparent 6px 14px),
@@ -274,7 +274,7 @@
     display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
   /* 海报卡：只留海报 + 标题。番号压在海报角上，列表一眼能认出来。 */
   .poster-card{gap:0}
-  .poster-card .card-cover{aspect-ratio:3/4; border-bottom:none; position:relative; cursor:pointer}
+  .poster-card .card-cover{aspect-ratio:800/538; border-bottom:none; position:relative; cursor:pointer}
   .poster-card .card-cover:focus-visible{outline:2px solid var(--cyan); outline-offset:-2px}
   .poster-card .card-title{padding:8px 11px 10px; font-size:12px; line-height:1.4;
     -webkit-line-clamp:2; color:var(--text-2)}
@@ -423,8 +423,8 @@
   .dhead{display:flex; align-items:center; gap:10px; margin-bottom:12px}
   .dcode{font-family:var(--mono); font-size:14px; font-weight:700; color:var(--text); margin-right:auto}
   .dtop{display:flex; gap:14px; align-items:flex-start}
-  /* 图还没回来时也占住 16:9 的位置：否则 0 高，图一加载整块内容往下跳 */
-  .dcover{width:220px; border-radius:8px; flex:none; aspect-ratio:16/9; object-fit:cover;
+  /* 图还没回来时也占住 800×538 的位置：否则 0 高，图一加载整块内容往下跳 */
+  .dcover{width:220px; border-radius:8px; flex:none; aspect-ratio:800/538; object-fit:cover;
     background:linear-gradient(160deg,rgba(62,186,244,.06),transparent 62%),#0a0a0a}
   .dmeta{display:flex; flex-direction:column; gap:5px; min-width:0}
   .dtitle{font-size:13px; line-height:1.5; color:var(--text); margin-bottom:4px}
@@ -758,7 +758,7 @@
     .lb-nav.next{right:8px}
     .lightbox{padding:14px}
     .dtop{flex-direction:column}
-    .dcover{width:100%; max-height:190px; object-fit:cover}
+    .dcover{width:100%; aspect-ratio:800/538; max-height:none; object-fit:cover}
     .dpanel{padding:13px}
     .dhead{margin-bottom:10px}
   }

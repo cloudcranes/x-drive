@@ -641,11 +641,16 @@ async def run_task(
 
             phase = time.monotonic()
 
-            def on_progress(count: int, total: int, rounds: int) -> None:
+            def on_progress(count: int, total: int, rounds: int, **kw) -> None:
                 job_size = total
                 require_lease(cfg, job_id)
-                task_update(cfg, job_id, downloaded=total, total=total,
-                            error="" if not count else f"云端落地中：{count} 个文件")
+                pct = kw.get("percent")
+                pct_val = float(pct) if pct is not None and pct > 0 else 0.0
+                msg = f"云端落地中：{count} 个文件" if count else "云端离线下载中…"
+                if pct is not None and pct > 0:
+                    msg = f"云端离线中 {pct}% · {count} 个文件" if count else f"云端离线中 {pct}%"
+                task_update(cfg, job_id, downloaded=total, total=total, percent=pct_val,
+                            error="" if not count and not pct_val else msg)
 
             # 死种换源：迅雷解析失败（0 个做种）时换候选池里的下一条，
             # 而不是反复撞同一条。按 infohash 判同源 —— 同一种子换不同 tracker

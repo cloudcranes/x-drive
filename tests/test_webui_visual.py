@@ -203,8 +203,8 @@ def test_archive_card_is_poster_only_with_detail_popup():
     assert "手动刮削" in detail, "详情里要有手动刮削入口"
     assert "/api/scrape/preview" in detail, "手动刮削要先拉差异预览"
     assert "/api/scrape/sync" in detail, "确认后才写入"
-    # 海报是竖版，比例与网格列宽都要跟着改
-    assert ".poster-card .card-cover{aspect-ratio:3/4" in styles, "海报卡应是竖版比例"
+    # 封面按 javbus 800×538 比例
+    assert ".poster-card .card-cover{aspect-ratio:800/538" in styles, "卡片封面应是 800×538 比例"
     assert "minmax(196px,1fr)" in styles, "网格列宽要适配竖版海报"
 
 

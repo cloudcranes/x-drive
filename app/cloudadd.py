@@ -101,12 +101,15 @@ async def wait_landing(backend, my_inbox: str, before: dict, source: str, *,
     PHASE_TYPE_ERROR（"解析失败，请重试或更换链接"），但目录这边什么都不会
     有 —— 不查的话任务会干等两小时。
     """
-    def on_progress(snapshot: dict, rounds: int) -> None:
+    def on_progress(snapshot: dict, rounds: int, **kw) -> None:
         if progress is None:
             return
         count = sum(int(v.get("count") or 0) for v in snapshot.values())
         total = sum(int(v.get("bytes") or 0) for v in snapshot.values())
-        progress(count, total, rounds)
+        try:
+            progress(count, total, rounds, **kw)
+        except TypeError:
+            progress(count, total, rounds)
 
     return await cloudingest.wait_landing(
         backend, my_inbox, before,
@@ -198,7 +201,12 @@ def clean_sources(backend, pending_cleanup, *, lease_check: LeaseCheck | None = 
             receipt = cloudorganize.cleanup_source(backend, src_root, plan, dst_root)
             if event is not None:
                 event("stage", f"cleaned {src_root}/{plan.source}（{receipt}）")
-            shells.append(cloudorganize.source_shell_path(src_root, plan))
+            shell = cloudorganize.source_shell_path(src_root, plan)
+            if shell not in shells:
+                shells.append(shell)
+            # 任务专属收件目录空了也顺便安全清理，避免收件目录留下一地空文件夹
+            if src_root and src_root not in shells:
+                shells.append(src_root)
         except Exception as exc:        # noqa: BLE001 清理失败只挂账
             log.warning("清理源目录 %s/%s 失败：%s", src_root, plan.source, exc)
             leftover.append({"source": plan.source, "src_root": src_root,
