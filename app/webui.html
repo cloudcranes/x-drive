@@ -1663,11 +1663,10 @@ async function playArchive(t, btn) {
   // **探到文件头没有 moov** → 浏览器会一直转圈（它得先拉到 5.6GB 末尾才知道
   // 数据在哪）。这时直接说清楚 + 给修复入口，别让人对着圈圈发呆。
   if (data.playable === false) {
-    if (!confirm(`${code}\n\n这个文件的 MP4 索引在文件末尾，浏览器会一直转圈。\n\n`
-      + `需要先「修复可播性」（把索引提到文件头），才能播放。\n`
-      + `· 5GB 的片子大约半小时\n· 要下载整片再传回，过程中占本地盘\n\n`
-      + `现在去修复吗？`)) return;
-    openPlayer(code, data, src, true);   // 开着播放器，把修复按钮摆出来
+    // 索引不在头部 —— **但不拦播放**。实测 Chrome 会自己去末尾取 moov，
+    // 7 秒就起播（早先这里拦住不让播，是错的）。
+    // 只是把「修复可播性」摆出来备用（Safari 等较保守的实现可能需要）。
+    openPlayer(code, data, src, true);
     return;
   }
   if (data.playable === null) {
@@ -1732,8 +1731,10 @@ function openPlayer(code, data, src, knownUnplayable) {
   hint.append(hintText);
   // **已经探明不能播**：别让用户对着转圈等 —— 直接把原因和出路摆出来
   if (knownUnplayable) {
+    // 只是提示，**不是**「播不了」—— Chrome 会自己去末尾取索引。
     hint.style.display = "flex";
-    hintText.textContent = "这个 MP4 的索引在文件末尾，浏览器会一直转圈（它得先拉到末尾才知道数据在哪）。修复后就能播。";
+    hintText.textContent = "这个 MP4 的索引在文件末尾。多数浏览器会自己去末尾取"
+      + "（通常几秒就起播）；若一直转圈，可点「修复可播性」把索引提到文件头。";
   }
   const fixBtn = el("button", "ghost", "修复可播性");
   fixBtn.type = "button";
@@ -1745,8 +1746,8 @@ function openPlayer(code, data, src, knownUnplayable) {
     if (video.readyState === 0 && !video.error) {
       hint.style.display = "flex";
       if (!knownUnplayable) {
-        hintText.textContent = "还在缓冲。这个 MP4 的索引在文件末尾时浏览器会这样"
-          + "（它得先拉到末尾才知道数据在哪）—— 若一直转圈，点「修复可播性」。";
+        hintText.textContent = "还在缓冲（首次播放要拉一段数据）。"
+          + "若一直转圈，点「修复可播性」把索引提到文件头。";
       }
     }
   }, 6000);
