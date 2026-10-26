@@ -865,19 +865,57 @@ def list_files(parent_id: str = "", limit: int = 100, *, client=None,
 def file_info(file_id: str, *, client=None) -> dict:
     """单文件详情：直链与各档转码流都在这里。
 
-    返回 {name, link, medias: [{name, url}]}；link 是 web_content_link（原始
-    画质）。medias 里 `原始画质` 那条按脚本约定也用 web_content_link。
+    返回 {name, link, medias: [{name, url}]}。
+
+    **link 用加速档（medias[].link.url），不用 web_content_link**：
+    同一份文件，两个 URL 的速度差 **20 倍**（实测 2026-10-26，MIMK-186）：
+      · web_content_link（普通）→ 0.08 MB/s（读 256KB 要 3.3 秒）
+      · medias[].link（加速）  → 1.57 MB/s（0.2 秒）
+    参数差别（实测）：
+      · spr  = flow → **vip**（走 SVIP 加速通道 —— 这就是迅雷 App 快的根因）
+      · ms/th = 5242880/5242880 → **10000000/1000000**（分片大小与超时）
+      · vb   = 0 → **真实码率**；vc = — → **h264**
+    加速档还自带 `token_type: TOKEN_TYPE_ACCELERATION` 与 expire，
+    说明它是**专门的加速令牌**，不是普通下载链接改个参数。
+
+    加速档取不到时（老文件 / 没开）退回 web_content_link —— 不能因此
+    就没直链。
     """
     data = _get(f"/drive/v1/files/{quote(str(file_id), safe='')}", client=client)
-    link = str(data.get("web_content_link") or "")
+    plain = str(data.get("web_content_link") or "")
     medias = []
+    accel = ""
     for item in data.get("medias") or []:
         name = str(item.get("media_name") or "")
-        url = link if name == "原始画质" else str((item.get("link") or {}).get("url") or "")
+        item_link = item.get("link") or {}
+        url = str(item_link.get("url") or "")
+        # 「原始画质」那条：优先用**它自己的** link（带加速参数），
+        # 没有才退回 web_content_link。
+        if not url:
+            url = plain
         if url:
             medias.append({"name": name, "url": url})
+            if name == "原始画质" and url and url != plain:
+                accel = url
+    link = accel or plain
+    # 加速档自带的 token（TOKEN_TYPE_ACCELERATION）：实测带不带都能下，
+    # 但带上更接近迅雷 App 的行为，也更可能在服务端命中更快的通道。
+    accel_token = ""
+    accel_token_type = ""
+    for item in data.get("medias") or []:
+        if str(item.get("media_name") or "") == "原始画质":
+            item_link = item.get("link") or {}
+            accel_token = str(item_link.get("token") or "")
+            accel_token_type = str(item_link.get("token_type") or "")
+            break
     return {"name": str(data.get("name") or ""), "link": link, "medias": medias,
-            "size": int(data.get("size") or 0)}
+            "size": int(data.get("size") or 0),
+            # 加速档单独给出来：调用方要能判断「这条是不是加速的」
+            "accelerated": bool(accel),
+            "plain_link": plain,
+            "accel_token": accel_token,
+            "accel_token_type": accel_token_type,
+            "expire": str(((data.get("medias") or [{}])[0].get("link") or {}).get("expire") or "")}
 
 
 def resolve(path: str, *, client=None) -> str:

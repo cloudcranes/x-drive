@@ -123,24 +123,55 @@ def test_list_files_parses_items(monkeypatch):
     assert items[0]["kind"] == "drive#file"
 
 
-def test_file_info_returns_web_content_link_and_medias(monkeypatch):
-    """脚本的「显示文件链接」用 web_content_link；播放列表用 medias 各档。"""
+def test_file_info_prefers_accelerated_link_for_original_quality(monkeypatch):
+    """「原始画质」优先用**加速档**（medias[].link.url），不是 web_content_link。
+
+    实测（2026-10-26，MIMK-186，同一份文件两个 URL）：
+    · web_content_link（普通）→ 0.08 MB/s（读 256KB 要 3.3 秒）
+    · medias[].link（加速）  → 1.57 MB/s（0.2 秒）—— **快 20 倍**
+    参数差别：spr=flow→**vip**（SVIP 加速通道，这就是迅雷 App 快的根因）、
+    ms/th=5242880→10000000/1000000、vb=0→真实码率、vc=—→h264。
+    加速档还自带 token_type=TOKEN_TYPE_ACCELERATION 与 expire。
+    """
     _env(monkeypatch)
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
             "id": "f1", "name": "MIMK-290.mp4", "size": 4408303886,
-            "web_content_link": "https://dl.example/v1/signed",
+            "web_content_link": "https://vod-plain/x?a=1",
             "medias": [
-                {"media_name": "原始画质", "link": {"url": "https://ignored"}},
+                {"media_name": "原始画质",
+                 "link": {"url": "https://vod-accel/x?b=2",
+                          "token": "ACCEL-TOKEN",
+                          "token_type": "TOKEN_TYPE_ACCELERATION",
+                          "expire": "2026-10-26T23:55:00+08:00"}},
                 {"media_name": "720P", "link": {"url": "https://dl.example/720"}},
             ]})
 
     info = xunleipan.file_info("f1", client=client(handler))
-    assert info["link"] == "https://dl.example/v1/signed"
-    # 「原始画质」按脚本约定用 web_content_link，不是 medias 里的 url
-    assert info["medias"][0] == {"name": "原始画质", "url": "https://dl.example/v1/signed"}
+    assert info["link"] == "https://vod-accel/x?b=2", "应当用加速档"
+    assert info["accelerated"] is True
+    assert info["plain_link"] == "https://vod-plain/x?a=1"
+    assert info["accel_token"] == "ACCEL-TOKEN"
+    assert info["accel_token_type"] == "TOKEN_TYPE_ACCELERATION"
+    assert info["medias"][0] == {"name": "原始画质", "url": "https://vod-accel/x?b=2"}
     assert info["medias"][1] == {"name": "720P", "url": "https://dl.example/720"}
+
+
+def test_file_info_falls_back_to_plain_when_no_accelerated_link(monkeypatch):
+    """拿不到加速档就退回普通档 —— 不能因此就没直链。"""
+    _env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "id": "f1", "name": "MIMK-290.mp4", "size": 100,
+            "web_content_link": "https://dl.example/v1/signed",
+            "medias": [{"media_name": "原始画质"}]})
+
+    info = xunleipan.file_info("f1", client=client(handler))
+    assert info["link"] == "https://dl.example/v1/signed"
+    assert info["accelerated"] is False
+    assert info["medias"][0] == {"name": "原始画质", "url": "https://dl.example/v1/signed"}
 
 
 def test_api_error_raises_pan_error(monkeypatch):
