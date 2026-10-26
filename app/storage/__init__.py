@@ -103,8 +103,25 @@ def kind() -> str:
 
 
 def root() -> str:
-    """归档根目录。没在网页配过就看老环境变量 DRIVE_ROOT，再不行 X-Drive。"""
+    """归档根目录。
+
+    优先级：
+      1. 设置里的 STORAGE_ROOT（网页「归档根目录」）
+      2. **CLOUD_DEST**（云添加的落地目标）—— 两者本来指的是同一个地方：
+         云添加把片子整理到 CLOUD_DEST 下，而全局根是「兜底路径」。
+         这两个不一致时，兜底会指向一个不存在的位置（旧记录因此报「路径
+         不存在」—— 实测 MIMK-267 就是：全局根已是 Downloads/downloads/test，
+         而实际文件在 迅雷云盘/X-Drive 下）。
+         所以留空时直接跟随 CLOUD_DEST，别让它跑到别处去。
+      3. 老环境变量 DRIVE_ROOT
+      4. X-Drive
+    """
     value = str(_val("STORAGE_ROOT") or "").strip()
+    if not value:
+        try:
+            value = str(_val("CLOUD_DEST") or "").strip()
+        except Exception:                       # noqa: BLE001 取不到就往下走
+            value = ""
     if not value:
         value = os.getenv("DRIVE_ROOT", "X-Drive")
     return value.strip("/") or "X-Drive"
