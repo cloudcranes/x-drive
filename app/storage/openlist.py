@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -28,7 +29,17 @@ from urllib.parse import quote
 import httpx
 
 from .. import netalias
-from .base import AuthError, Backend, FileEntry, Progress, StorageError
+from .base import AuthError, Backend, FileEntry, Progress, Quota, StorageError
+
+log = logging.getLogger("x-drive.storage.openlist")
+
+
+def _as_int(value: object) -> int:
+    """把接口回的容量字段变成整数。缺失/脏数据一律当 0，不猜。"""
+    try:
+        return int(value)          # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 PER_PAGE = 200                      # 服务端上限 500，取 200 留余量
 CHUNK_RETRY = 6                     # 分片被流控（429/409）时的重试上限
@@ -324,6 +335,36 @@ class OpenList(Backend):
         self._api("POST", "/api/fs/rename", {"path": self._p(src), "name": new_name})
 
     # ── 自检
+    # ── 容量
+    def quota(self, probe_path: str = "") -> Quota:
+        """问云盘容量。
+
+        OpenList 没有「针对某个目录」的容量概念 —— 配额是**存储驱动**级别的
+        （每个挂载点一个 total/used/free）。这里走管理员接口
+        GET /api/admin/storage/list，把所有挂载点的剩余空间加起来当成
+        「还能放多少」。
+
+        拿不到就返回空 Quota：这个接口要管理员权限，普通账号会 403，
+        那时宁可说「问不到」也别报 0（0 会被读成「磁盘满了」）。
+        """
+        try:
+            if not self._token:
+                self.login()
+            # _api 返回的是 body["data"]，storage/list 的 data 已经是数组
+            payload = self._api("GET", "/api/admin/storage/list") or []
+        except (AuthError, StorageError) as exc:
+            log.warning("问 openlist 容量失败：%s", exc)
+            return Quota()
+        total = used = free = 0
+        items = payload if isinstance(payload, list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            total += _as_int(item.get("total_capacity"))
+            used += _as_int(item.get("used_capacity"))
+            free += _as_int(item.get("free_capacity"))
+        return Quota(total=total, used=used, free=free)
+
     def check(self, probe_path: str = "") -> tuple[bool, str]:
         try:
             if not self._token:

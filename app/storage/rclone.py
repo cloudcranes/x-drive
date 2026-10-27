@@ -9,12 +9,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .base import AuthError, Backend, FileEntry, Progress, StorageError
+from .base import AuthError, Backend, FileEntry, Progress, Quota, StorageError
+
+log = logging.getLogger("x-drive.storage.rclone")
 
 # 这些字样出现时不是抖动，是配置/权限问题：重试只会把配额撞得更死
 # 配置/权限类：重试一万次也一样。rclone 的「没这个 remote / 配置文件里没这一段」
@@ -22,6 +25,34 @@ from .base import AuthError, Backend, FileEntry, Progress, StorageError
 AUTH_HINTS = ("unauthorized", "invalid_grant", "forbidden", "permission denied",
               "401", "403", "doesn't exist", "directory not found", "not found",
               "didn't find section", "config file", "no such remote")
+
+# rclone about 的单位：二进制（KiB/MiB…）与十进制（KB/MB…）都见过
+_SIZE_UNITS = {
+    "b": 1,
+    "kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3,
+    "tib": 1024 ** 4, "pib": 1024 ** 5,
+    "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3,
+    "tb": 1000 ** 4, "pb": 1000 ** 5,
+}
+
+
+def _parse_size(text: str) -> int:
+    """"1.234 GiB" → 字节数。解析不了就返回 0（宁可说没数据，也不报假数）。"""
+    parts = (text or "").split()
+    if not parts:
+        return 0
+    try:
+        value = float(parts[0])
+    except ValueError:
+        return 0
+    unit = parts[1].strip().lower() if len(parts) > 1 else "b"
+    # rclone 有时写成 "GiB" 也可能写成 "G"，两种都认
+    factor = _SIZE_UNITS.get(unit)
+    if factor is None:
+        factor = _SIZE_UNITS.get(unit[:1])
+    if factor is None:
+        factor = 1
+    return int(value * factor)
 
 
 def _default_run(*args: str, timeout: float = 7200.0) -> tuple[int, str, str]:
@@ -136,6 +167,27 @@ class Rclone(Backend):
         self._run("moveto", self.spec(src), self.spec(dst), timeout=1800.0)
 
     # ── 自检
+    def quota(self, probe_path: str = "") -> Quota:
+        """问云盘容量。走 `about remote:`，那是云端配额（单个轻请求）。
+
+        输出格式是「数值 单位」，单位可能是 B/KiB/MiB/GiB/TiB/PiB（rclone 用
+        二进制单位）或 B/KB/MB/GB/TB/PB（十进制）。这里按 1024 进制还原成字节，
+        差异不到 10%，够报个大概。
+        """
+        rc, out, err = self.run("about", f"{self.remote}:", timeout=20.0)
+        if rc != 0:
+            log.warning("问 rclone %s 容量失败：%s", self.remote, (err or "").strip()[:200])
+            return Quota()
+        values: dict[str, int] = {}
+        for line in (out or "").splitlines():
+            key, _, rest = line.partition(":")
+            key = key.strip().lower()
+            if key not in ("total", "used", "free"):
+                continue
+            values[key] = _parse_size(rest.strip())
+        return Quota(total=values.get("total", 0), used=values.get("used", 0),
+                     free=values.get("free", 0))
+
     def check(self, probe_path: str = "") -> tuple[bool, str]:
         """探一次：能不能连上、能不能写。
 

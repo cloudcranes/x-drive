@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import main, store
+from app.storage import base as storage_base
 
 
 def cfg_for(tmp_path):
@@ -51,6 +52,33 @@ def _run(tmp_path, monkeypatch, cfg, handler_name):
 
 
 # ─────────────────────────────────────────── /status
+
+def test_status_reports_cloud_capacity_not_local_disk(tmp_path, monkeypatch):
+    """空间指标问的是**云盘**：本地下载取消后，报本地磁盘剩余没有参考价值。"""
+    cfg = cfg_for(tmp_path)
+    monkeypatch.setattr(main.cloudadd, "ready", lambda get: (True, "ok"))
+    monkeypatch.setattr(main.storage, "quota", lambda: storage_base.Quota(
+        total=20 * 1024 ** 4, used=40 * 1024 ** 3, free=19 * 1024 ** 4))
+
+    sent = _run(tmp_path, monkeypatch, cfg, "on_status")
+
+    text = sent[0]
+    assert "云盘剩余" in text
+    assert "20.00TB" in text
+    assert "磁盘" not in text, "不该再报本地磁盘"
+
+
+def test_status_capacity_unknown_does_not_claim_zero(tmp_path, monkeypatch):
+    """问不到容量要说「无法探测」，不能写 0B（那会被读成「云盘满了」）。"""
+    cfg = cfg_for(tmp_path)
+    monkeypatch.setattr(main.cloudadd, "ready", lambda get: (True, "ok"))
+    monkeypatch.setattr(main.storage, "quota", lambda: storage_base.Quota())
+
+    sent = _run(tmp_path, monkeypatch, cfg, "on_status")
+
+    assert "无法探测" in sent[0]
+    assert "0B" not in sent[0]
+
 
 def test_status_shows_active_today_and_gate_closed(tmp_path, monkeypatch):
     cfg = cfg_for(tmp_path)

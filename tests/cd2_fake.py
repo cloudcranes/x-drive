@@ -53,6 +53,9 @@ class FakeCd2:
     server: object = None
     port: int = 0
     get_space: object = None
+    # 每次问容量时记下问的是哪一层：CD2 的 "/" 是聚合根，数字离谱，
+    # 适配器必须问归档根那一层 —— 这个列表用来断言它问对了。
+    space_paths: list = field(default_factory=list)
     # 云添加：AddOfflineFiles 只登记，过 land_after 秒后「迅雷侧」才把文件放进来
     offline_accepted: list = field(default_factory=list)
     offline_files: list = field(default_factory=list)   # (落地时刻, 目录, {文件名: 字节})
@@ -99,7 +102,7 @@ class FakeCd2:
             "DeleteFilePermanently": (pb.FileRequest, pb.FileOperationResult,
                                       lambda r, c: self.delete_one(r, c, permanent=True)),
             "GetSpaceInfo": (pb.FileRequest, pb.SpaceInfo,
-                             lambda r, c: (self.get_space or _default_space)(r, c)),
+                             self.space_info),
             "GetUploadFileCount": (Empty, pb.GetUploadFileCountResult,
                                    lambda r, c: pb.GetUploadFileCountResult(
                                        fileCount=len(self.uploads))),
@@ -269,6 +272,11 @@ class FakeCd2:
                           for f, n in self.files.items()}
             return pb.FileOperationResult(success=True, resultFilePaths=[dst])
         return pb.FileOperationResult(success=False, errorMessage="no such path")
+
+    def space_info(self, req, ctx):
+        """记下问的是哪一层，再回空间数字。"""
+        self.space_paths.append(req.path)
+        return (self.get_space or _default_space)(req, ctx)
 
     def move_file(self, req, _ctx):
         moved = []

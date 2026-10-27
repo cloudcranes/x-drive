@@ -52,6 +52,25 @@ class FileEntry:
     size: int = 0
 
 
+@dataclass(frozen=True)
+class Quota:
+    """云盘容量：总共多少、用了多少、还剩多少。字节为单位。
+
+    为什么要有这个：本地下载取消后（2026-10-25）文件全程在云盘里，
+    「还剩多少空间」是唯一有意义的空间指标 —— 报本地磁盘剩余空间
+    对用户毫无参考价值，甚至会误导（以为本机磁盘满了就不能下了）。
+    """
+
+    total: int = 0
+    used: int = 0
+    free: int = 0
+
+    @property
+    def known(self) -> bool:
+        """有没有真的问到数。拿不到时各字段为 0，别把 0 当成「用满了」。"""
+        return self.total > 0 or self.used > 0 or self.free > 0
+
+
 Progress = Callable[[float, str], None]
 """进度回调：(0..1, 一句人话)。没有可信进度的后端可以不回调。"""
 
@@ -114,4 +133,13 @@ class Backend(Protocol):
 
         probe_path 是「在归档根目录下探测写权限」——有些后端（CloudDrive2）
         的 "/" 是聚合根，不允许建目录，只能在某个云盘目录里试。
+        """
+
+    # ── 容量
+    def quota(self, probe_path: str = "") -> Quota:
+        """问云盘还剩多少空间。拿不到就返回空的 Quota（known=False）。
+
+        probe_path 是「问哪一层的容量」：CloudDrive2 的 "/" 是聚合根，
+        报出来的数字离谱（各家云盘容量简单相加，还含未挂载的占位），
+        必须问归档根目录那一层。
         """

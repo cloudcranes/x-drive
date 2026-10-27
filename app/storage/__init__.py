@@ -23,7 +23,7 @@ from pathlib import Path
 
 from .. import netalias
 from .. import settings as settings_mod
-from .base import AuthError, Backend, FileEntry, StorageError
+from .base import AuthError, Backend, FileEntry, Quota, StorageError
 from .rclone import Rclone
 
 log = logging.getLogger("x-drive.storage")
@@ -243,6 +243,29 @@ def snapshot() -> dict:
             # 容器内填宿主机 LAN 地址会被自动改写成 host.docker.internal，
             # 面板据此提一句，免得用户以为「我明明填的是 192.168.1.170」
             "net": netalias.describe()}
+
+
+def quota() -> Quota:
+    """问云盘还剩多少空间。
+
+    本地下载取消后（2026-10-25）文件全程在云盘里，「还剩多少」是唯一有意义
+    的空间指标 —— 报本地磁盘剩余空间对用户没有参考价值。
+
+    问不到就返回空 Quota（known=False），别把 0 当成「满了」。
+    """
+    try:
+        backend = get()
+    except Exception as exc:                     # 后端没配好：问不了就是问不了
+        log.warning("取存储后端失败，问不到容量：%s", exc)
+        return Quota()
+    probe = getattr(backend, "quota", None)
+    if probe is None:                            # 契约外的后端：没有就是没有
+        return Quota()
+    try:
+        return probe(root())
+    except Exception as exc:                     # 网络/权限：不让它带走整条命令
+        log.warning("问云盘容量失败：%s", exc)
+        return Quota()
 
 
 def check() -> dict:

@@ -984,12 +984,32 @@ async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text(f"🗑 已删除 {key}（文件在 Drive 回收站，可恢复）")
 
 
+def quota_text(quota) -> str:
+    """云盘容量说成人话：「19.9TB / 20.0TB」或「19.9TB 可用」。
+
+    问不到数就说问不到，不写「0B」—— 那会被读成「云盘满了」。
+    """
+    if quota is None or not getattr(quota, "known", False):
+        return "无法探测"
+    total = int(getattr(quota, "total", 0) or 0)
+    used = int(getattr(quota, "used", 0) or 0)
+    free = int(getattr(quota, "free", 0) or 0)
+    if total > 0:
+        return f"{core.human_size(free)} / {core.human_size(total)}（已用 {core.human_size(used)}）"
+    if free > 0:
+        return f"{core.human_size(free)} 可用"
+    return "无法探测"
+
+
 async def on_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """`/status`：只读汇总运行状态，纯本地读取、零副作用。
 
     用户在手机上想看一眼「现在什么情况」，不能开电脑看网页面板。这里只读
-    bot 自己那几份本地状态（任务表 / metrics / 用量 / 磁盘 / 待补跑 / 闸门），
+    bot 自己那几份状态（任务表 / 云盘容量 / 待补跑 / 闸门），
     **不 import app.web**：web 是另一个进程，有自己的 STORE/STATE 路径。
+
+    空间指标问的是**云盘**而不是本地磁盘：本地下载取消后（2026-10-25）文件
+    全程在云盘里，报本地剩余空间对用户没有参考价值。
     """
     message, user = update.effective_message, update.effective_user
     if not message or not user:
@@ -1012,12 +1032,17 @@ async def on_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     # 任务表是两边共用的，stage 也只有一处真相。
     done, failed = today_counts(cfg)
     cloud_ok, cloud_why = cloudadd.ready(cfg.get)
+    # 云盘容量：本地下载取消后文件全程在云盘里，「还剩多少空间」要问云端，
+    # 报本地磁盘剩余空间对用户毫无参考价值（甚至会误导成「本机满了不能下」）。
+    # 问云端是网络请求，放线程里跑，别把 bot 的事件循环堵住。
+    quota = await asyncio.to_thread(storage.quota)
 
     lines = ["📊 状态"]
     lines.append(f"· 进行中 {len(active)} 个"
                  + ("（含等额度的）" if any(j.get("stage") == "deferred" for j in active) else ""))
     lines.append(f"· 今日完成 {done} · 失败 {failed}")
     lines.append("· 云添加 " + ("可用" if cloud_ok else f"不可用（{cloud_why}）"))
+    lines.append("· 云盘剩余 " + quota_text(quota))
     lines.append(f"· 待补跑 {len(load_pending(cfg))} 条")
     if not gate["open"]:
         lines.append(f"⛔ 调度闸门关闭：{gate['reason']}")
@@ -1072,7 +1097,7 @@ async def on_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "• 没写番号时从文件名里识别，识别不到归到「未分类-时间」\n"
             "• `/retry` 或 `/retry <磁力>` → 重试失败的任务\n"
             "• `/list` → 查看已归档的番号\n"
-            "• `/status` → 查看运行状态（进行中 / 今日完成 / 磁盘 / 闸门）\n"
+            "• `/status` → 查看运行状态（进行中 / 今日完成 / 云盘容量 / 闸门）\n"
             "• `/subs` → 查看订阅列表\n"
             "• `/del <番号>` → 查看将删除的目录，加 `--yes` 执行\n"
             "• `/commands` → 命令列表\n"
@@ -1232,7 +1257,7 @@ async def bootstrap(application: Application) -> None:
 # 顺序 = 菜单里显示的顺序（按日常使用频率排，不按字母）。
 COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("find", "on_find", "只列候选磁力，不下载"),
-    ("status", "on_status", "运行状态：进行中/今日完成/上传/磁盘/闸门"),
+    ("status", "on_status", "运行状态：进行中/今日完成/云盘容量/闸门"),
     ("subs", "on_subs", "查看订阅列表"),
     ("list", "on_list", "已归档番号与 Drive 链接"),
     ("retry", "on_retry", "重试失败任务"),

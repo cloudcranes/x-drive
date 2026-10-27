@@ -25,7 +25,7 @@ from urllib.parse import quote, urlsplit
 from google.protobuf.empty_pb2 import Empty
 
 from .. import netalias
-from .base import (AuthError, Backend, FileEntry, NotFoundError, Progress,
+from .base import (AuthError, Backend, FileEntry, NotFoundError, Progress, Quota,
                     StorageError)
 from .cd2_grpc import UNARY, STREAM_IN, STREAM_OUT, Cd2Channel
 from .proto import CloudDrive_pb2 as pb
@@ -550,6 +550,26 @@ class CloudDrive2(Backend):
                              pb.FileOperationResult)
         if not res.success:
             raise StorageError(f"clouddrive2 改名失败：{res.errorMessage or '未知原因'}")
+
+    # ── 容量
+    def quota(self, probe_path: str = "") -> "Quota":
+        """问归档根那一层的容量。
+
+        必须问 probe_path（归档根）而不是 "/"：CD2 的 "/" 是聚合根，
+        报出来的是各家云盘容量简单相加、还含未挂载占位的离谱数字
+        （实测 10553213.2GB）。根目录那一层才是用户真正在用的空间。
+        """
+        try:
+            self.chan.login()
+            space = self.chan.call(
+                "GetSpaceInfo", pb.FileRequest(path=self._p(probe_path)),
+                pb.SpaceInfo)
+        except (StorageError, AuthError) as exc:
+            log.warning("问 clouddrive2 容量失败：%s", exc)
+            return Quota()
+        return Quota(total=int(space.totalSpace or 0),
+                     used=int(space.usedSpace or 0),
+                     free=int(space.freeSpace or 0))
 
     # ── 自检
     def check(self, probe_path: str = "") -> tuple[bool, str]:
