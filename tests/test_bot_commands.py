@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -56,10 +57,17 @@ def test_status_shows_active_today_and_gate_closed(tmp_path, monkeypatch):
     st = store.Store(cfg.jobs_db)
     st.start("j1", "SSIS-123", "magnet:a")
     st.update("j1", stage="downloading")
-    # 今日 metrics：ok 2、error 1
+    # 今日完成/失败按**任务表**算：网页侧归档的任务不进 metrics.json 的 total，
+    # 拿 metrics 统计会把网页上的成果全漏掉（曾经恒显示「今日完成 0」）。
+    now = time.time()
+    st.start("j2", "SSIS-124", "magnet:b")
+    st.update("j2", stage="done")
+    st.start("j3", "SSIS-125", "magnet:c")
+    st.update("j3", stage="failed")
+    # metrics.json 里故意写一份过时的计数：它不该影响 /status 的数字
     os.makedirs(os.path.dirname(cfg.metrics_path), exist_ok=True)
     with open(cfg.metrics_path, "w", encoding="utf-8") as fh:
-        json.dump({"total": {"ok": 2, "error": 1}, "updated": "today"}, fh)
+        json.dump({"total": {"ok": 99, "error": 99}, "updated": "today"}, fh)
     # 闸门关闭
     store.write_reconcile_mark({"source": "b.db"}, cfg.jobs_db)
     # 云添加可用（现在只有这一条下载链路，状态里要报它）
@@ -69,9 +77,32 @@ def test_status_shows_active_today_and_gate_closed(tmp_path, monkeypatch):
 
     text = sent[0]
     assert "进行中 1 个" in text
-    assert "今日完成 2 · 失败 1" in text
+    assert "今日完成 1 · 失败 1" in text
     assert "云添加 可用" in text
     assert "闸门关闭" in text
+
+
+def test_status_today_counts_ignore_other_days(tmp_path, monkeypatch):
+    """"今日"只算当天建的：昨天完成的不算今天的完成。"""
+    cfg = cfg_for(tmp_path)
+    st = store.Store(cfg.jobs_db)
+    old = time.time() - 86400 * 3
+    st.start("j1", "SSIS-123", "magnet:a")
+    st.update("j1", stage="done")
+    # 把这条挪到三天前
+    with st._conn() as conn:
+        conn.execute("UPDATE jobs SET created_at=?, updated_at=? WHERE id=?",
+                     (old, old, "j1"))
+
+    assert main.today_counts(cfg) == (0, 0)
+
+
+def test_status_today_counts_survive_broken_db(tmp_path, monkeypatch):
+    """任务表读不出来时返回 0，不抛 —— /status 是只读命令，不能把 bot 带走。"""
+    cfg = cfg_for(tmp_path)
+    monkeypatch.setattr(main, "task_store", lambda cfg: (_ for _ in ()).throw(
+        RuntimeError("db locked")))
+    assert main.today_counts(cfg) == (0, 0)
 
 
 def test_status_empty_state_does_not_crash(tmp_path, monkeypatch):

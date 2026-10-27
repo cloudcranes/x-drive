@@ -243,6 +243,32 @@ def task_event(cfg: Config, job_id: str, kind: str, detail: str = "") -> None:
         log.warning("记录任务 %s 的事件 %s 失败：%s", job_id, kind, exc)
 
 
+def today_counts(cfg: Config, now: float | None = None) -> tuple[int, int]:
+    """今天的（完成数，失败数）。按任务表算，与网页的每日汇总同一口径。
+
+    为什么不用 metrics.json 的 total：那个计数器只有 bot 的 deliver() 会写，
+    网页侧只写阶段耗时（record_timing）。在网页上归档的任务不会进 total，
+    于是 /status 恒显示「今日完成 0」—— 数字看着对，其实漏了全部网页任务。
+    任务表两边共用，stage 也只有一处真相。
+    """
+    now = time.time() if now is None else now
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    done = failed = 0
+    try:
+        for job in task_store(cfg).recent(200):
+            created = job.get("created_at") or 0
+            if time.strftime("%Y-%m-%d", time.localtime(created)) != day:
+                continue
+            stage = job.get("stage")
+            if stage == "done":
+                done += 1
+            elif stage == "failed":
+                failed += 1
+    except Exception as exc:
+        log.warning("统计今日任务数失败：%s", exc)
+    return done, failed
+
+
 def scheduling_gate(cfg: Config) -> dict:
     """bot 侧的调度闸门：与网页端共用同一判据（库内标记 ∪ 同目录旁路文件）。
 
@@ -980,11 +1006,11 @@ async def on_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         active = []
     # 闸门：恢复后待对账时调度是关的，运维最该知道这件事
     gate = scheduling_gate(cfg)
-    # 今日完成/失败：metrics.snapshot 里 total 是 {ok, partial, error, ...}
-    snap = metrics.snapshot(cfg.metrics_path)
-    total = snap.get("total") or {}
-    done = int(total.get("ok", 0)) + int(total.get("partial", 0))
-    failed = sum(int(v) for k, v in total.items() if k not in ("ok", "partial"))
+    # 今日完成/失败：**按任务表算**，不读 metrics.json 的 total。
+    # total 只有 bot 自己那条路径（deliver）会写，网页侧只写阶段耗时，
+    # 于是「今天在网页上归档了 3 部」在 /status 里恒显示 0 —— 数字是假的。
+    # 任务表是两边共用的，stage 也只有一处真相。
+    done, failed = today_counts(cfg)
     cloud_ok, cloud_why = cloudadd.ready(cfg.get)
 
     lines = ["📊 状态"]
