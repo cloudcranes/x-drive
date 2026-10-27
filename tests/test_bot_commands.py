@@ -80,6 +80,72 @@ def test_status_capacity_unknown_does_not_claim_zero(tmp_path, monkeypatch):
     assert "0B" not in sent[0]
 
 
+def test_account_lists_membership_and_quota(tmp_path, monkeypatch):
+    """/account：会员、每日下载限额、各盘容量。用完额度要显式说出来。"""
+    cfg = cfg_for(tmp_path)
+    info = {
+        "name": "18367438244", "id": "814926528",
+        "is_vip": True, "vip_level": 7, "vip_type": "5",
+        "vip_expires_at": "2027-05-12T16:00:00Z",
+        "quota_hit": True,
+        "quota_title": "今日3个免费下载任务数已用完，开通会员不限次数",
+        "disks": [{"path": "/downloads/", "usage": 421781487616,
+                   "limit": 2048267386880}],
+        "product": "群晖", "client_version": "3.21.0", "download_version": "9.1",
+    }
+
+    class FakeXl:
+        def __init__(self, *a, **kw):
+            pass
+
+        def client(self):
+            class Ctx:
+                async def __aenter__(self):
+                    return object()
+
+                async def __aexit__(self, *a):
+                    return False
+            return Ctx()
+
+        async def account(self, client):
+            return info
+
+    monkeypatch.setattr(main.xunlei, "Xunlei", FakeXl)
+
+    sent = _run(tmp_path, monkeypatch, cfg, "on_account")
+
+    text = sent[0]
+    assert "迅雷账号" in text
+    assert "18367438244" in text
+    assert "会员" in text and "7" in text
+    assert "已用完" in text, "额度用完必须说出来"
+    assert "/downloads/" in text
+
+
+def test_account_reports_failure_without_crashing(tmp_path, monkeypatch):
+    """面板连不上时给一句人话，不能把 bot 带崩。"""
+    cfg = cfg_for(tmp_path)
+
+    class FakeXl:
+        def __init__(self, *a, **kw):
+            pass
+
+        def client(self):
+            class Ctx:
+                async def __aenter__(self):
+                    raise RuntimeError("连接失败")
+
+                async def __aexit__(self, *a):
+                    return False
+            return Ctx()
+
+    monkeypatch.setattr(main.xunlei, "Xunlei", FakeXl)
+
+    sent = _run(tmp_path, monkeypatch, cfg, "on_account")
+
+    assert "查不到" in sent[0]
+
+
 def test_status_shows_active_today_and_gate_closed(tmp_path, monkeypatch):
     cfg = cfg_for(tmp_path)
     st = store.Store(cfg.jobs_db)

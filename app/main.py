@@ -1049,6 +1049,52 @@ async def on_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text("\n".join(lines))
 
 
+async def on_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/account`：迅雷账号信息 —— 用户名、会员、每日下载限额、各盘容量。
+
+    为什么单独一个命令：每日下载限额（非会员每天 3 个免费下载任务）是这套
+    部署最常撞的坎 —— 磁盘还剩很多，任务却提交不上去。它只在面板的
+    `/device/info` 里，云盘官方 API 那套接口拿不到。
+    """
+    message, user = update.effective_message, update.effective_user
+    if not message or not user:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if user.id not in cfg.allowed:
+        return
+
+    xl = xunlei.Xunlei(cfg.xunlei_url, cfg.xunlei_parent, cfg.tmp_root, cfg.xunlei_token)
+    try:
+        async with xl.client() as client:
+            info = await xl.account(client)
+    except Exception as exc:
+        await message.reply_text(f"❌ 查不到迅雷账号信息：{str(exc)[:300]}")
+        return
+
+    lines = ["👤 迅雷账号"]
+    if info.get("name"):
+        lines.append(f"· 用户 {info['name']}（id {info['id']}）")
+    if info.get("is_vip"):
+        expires = info.get("vip_expires_at") or ""
+        lines.append(f"· 会员 level {info['vip_level']}"
+                     + (f" · 到期 {expires[:10]}" if expires else ""))
+    else:
+        lines.append("· 非会员")
+    # 每日下载限额：用完了就说清楚，别只报「失败」
+    if info.get("quota_hit"):
+        title = info.get("quota_title") or "今日下载任务数已用完"
+        lines.append(f"⛔ {title}")
+        lines.append("  明天 00:10 后自动恢复，或开通会员不限次数")
+    for disk in info.get("disks") or []:
+        limit = int(disk.get("limit") or 0)
+        usage = int(disk.get("usage") or 0)
+        if not limit:
+            continue
+        lines.append(f"· {disk['path']} 已用 {core.human_size(usage)} / "
+                     f"{core.human_size(limit)}")
+    await message.reply_text("\n".join(lines))
+
+
 async def on_subs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """`/subs`：只读列出订阅，与网页面板共用同一张任务库里的 state 表（键 "subs"）。
 
@@ -1099,6 +1145,7 @@ async def on_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "• `/list` → 查看已归档的番号\n"
             "• `/status` → 查看运行状态（进行中 / 今日完成 / 云盘容量 / 闸门）\n"
             "• `/subs` → 查看订阅列表\n"
+            "• `/account` → 迅雷账号信息（会员 / 每日下载限额 / 各盘容量）\n"
             "• `/del <番号>` → 查看将删除的目录，加 `--yes` 执行\n"
             "• `/commands` → 命令列表\n"
             "• `/help` → 本说明"
@@ -1259,6 +1306,7 @@ COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("find", "on_find", "只列候选磁力，不下载"),
     ("status", "on_status", "运行状态：进行中/今日完成/云盘容量/闸门"),
     ("subs", "on_subs", "查看订阅列表"),
+    ("account", "on_account", "迅雷账号：会员/下载限额/各盘容量"),
     ("list", "on_list", "已归档番号与 Drive 链接"),
     ("retry", "on_retry", "重试失败任务"),
     ("del", "on_delete", "删除归档目录（加 --yes 执行）"),
@@ -1525,7 +1573,7 @@ def main() -> None:
     handlers = {
         "on_find": on_find, "on_retry": on_retry, "on_list": on_list,
         "on_status": on_status, "on_subs": on_subs, "on_delete": on_delete,
-        "on_help": on_help, "on_commands": on_commands,
+        "on_help": on_help, "on_commands": on_commands, "on_account": on_account,
     }
     for name, handler_name, _ in COMMANDS + EXTRA_COMMANDS:
         handler = handlers.get(handler_name)

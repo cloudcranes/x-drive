@@ -128,6 +128,45 @@ class Xunlei:
         return body
 
     # ------------------------------------------------------------ 查询
+    async def account(self, client) -> dict:
+        """账号信息：用户名、会员、每日下载限额、各盘容量。
+
+        面板的 `/device/info` 是唯一能给全这些的接口（云盘官方 API 那套
+        只有 `/drive/v1/about`，没有会员和限额）。
+
+        每日下载限额尤其要看：非会员每天只有 3 个免费下载任务（实测提示
+        「今日3个免费下载任务数已用完，开通会员不限次数」），用完了就得等
+        隔天 —— 这是部署这套东西最常撞上的坎，比磁盘容量更早成为瓶颈。
+        """
+        body = await self.call(client, "GET", "/device/info",
+                               params={"space": await self.space(client)})
+        user = body.get("user") or {}
+        vip = user.get("vip") or {}
+        groups = user.get("group") or []
+        limit = body.get("task_daily_limit") or {}
+        # 限额提示语在 messages/title 里：只有「已用完」时它才非空
+        quota_hit = bool(limit.get("title") or limit.get("messages"))
+        return {
+            "name": user.get("name") or "",
+            "id": str(user.get("id") or ""),
+            "is_vip": bool(vip.get("is_vip")),
+            "vip_level": int(vip.get("level") or 0),
+            "vip_type": str(vip.get("vastype") or ""),
+            "vip_expires_at": (groups[0].get("expires_at") if groups else "") or "",
+            "quota_hit": quota_hit,
+            "quota_title": str(limit.get("title") or ""),
+            # 各盘：/downloads/ 与 /data/（本机挂载的盘）
+            "disks": [
+                {"path": d.get("path") or "",
+                 "usage": int(d.get("usage") or 0),
+                 "limit": int(d.get("limit") or 0)}
+                for d in (body.get("downloads") or [])
+            ],
+            "product": str(body.get("product_name") or ""),
+            "client_version": str(body.get("client_version") or ""),
+            "download_version": str(body.get("download_version") or ""),
+        }
+
     async def space(self, client) -> str:
         """真实 space 名（`device_id#<hex>`）：device/info/watch 的 target。"""
         if self._space:
