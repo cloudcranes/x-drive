@@ -1075,6 +1075,7 @@ async def on_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "• `/status` → 查看运行状态（进行中 / 今日完成 / 磁盘 / 闸门）\n"
             "• `/subs` → 查看订阅列表\n"
             "• `/del <番号>` → 查看将删除的目录，加 `--yes` 执行\n"
+            "• `/commands` → 命令列表\n"
             "• `/help` → 本说明"
         )
 
@@ -1219,6 +1220,73 @@ def fresh_update(update, max_age: int = 900) -> bool:
 async def bootstrap(application: Application) -> None:
     """post_init 里只做注册，补跑放后台，避免拖慢启动。"""
     application.create_task(resume_pending(application))
+    # 命令菜单也要自己注册：Telegram 那份菜单存在服务端，换 token、重装、
+    # 别人手动改过都会让它跟代码漂移。启动时对一次账最省心。
+    application.create_task(sync_commands(application))
+
+
+# ---------------------------------------------------------------- 命令清单
+
+# 命令清单是「注册处理器」与「Telegram 菜单」的唯一真相：
+# 加一个命令只改这一处，处理器和菜单自动同步，不会出现「代码里有、菜单里没有」。
+# 顺序 = 菜单里显示的顺序（按日常使用频率排，不按字母）。
+COMMANDS: tuple[tuple[str, str, str], ...] = (
+    ("find", "on_find", "只列候选磁力，不下载"),
+    ("status", "on_status", "运行状态：进行中/今日完成/上传/磁盘/闸门"),
+    ("subs", "on_subs", "查看订阅列表"),
+    ("list", "on_list", "已归档番号与 Drive 链接"),
+    ("retry", "on_retry", "重试失败任务"),
+    ("del", "on_delete", "删除归档目录（加 --yes 执行）"),
+    ("commands", "on_commands", "命令列表"),
+    ("help", "on_help", "命令说明"),
+)
+
+# /start 与 /help 共用同一个处理器，但要一起出现在菜单里
+EXTRA_COMMANDS: tuple[tuple[str, str, str], ...] = (
+    ("start", "on_help", "开始使用"),
+)
+
+
+def command_menu() -> list[tuple[str, str]]:
+    """给 Telegram 菜单用的 (命令, 说明) 列表。"""
+    rows = [(name, desc) for name, _, desc in COMMANDS]
+    rows.extend((name, desc) for name, _, desc in EXTRA_COMMANDS)
+    return rows
+
+
+async def sync_commands(application: Application) -> None:
+    """把命令清单同步到 Telegram 菜单。
+
+    为什么每次启动都做：菜单存在 Telegram 服务端，不在本进程里。改了代码、
+    换了 token、或者有人在 BotFather 里动过手，客户端里那个 `/` 菜单就跟
+    代码对不上了 —— 用户看到的命令列表是错的。与其信它，不如每次启动对一次账。
+
+    失败只记日志：菜单没同步成不该拦住 bot 干活。
+    """
+    try:
+        await application.bot.set_my_commands(command_menu())
+        log.info("已注册命令菜单：%s", " ".join(f"/{n}" for n, _ in command_menu()))
+    except Exception as exc:
+        log.warning("注册命令菜单失败（不影响使用）：%s", exc)
+
+
+async def on_commands(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/commands`：在会话里直接列出全部命令。
+
+    客户端的 `/` 菜单不一定人人会找（有的客户端干脆不显示），所以聊天里
+    也要能问得到。这份清单和 Telegram 菜单同源，不会对不上。
+    """
+    message = update.effective_message
+    if not message:
+        return
+    cfg: Config = ctx.application.bot_data["cfg"]
+    if update.effective_user and update.effective_user.id not in cfg.allowed:
+        return
+    lines = ["📖 命令列表"]
+    for name, desc in command_menu():
+        lines.append(f"/{name} — {desc}")
+    lines.append("也可以直接发磁力或番号，我按番号搜资源并下载归档。")
+    await message.reply_text("\n".join(lines))
 
 
 async def resume_pending(application: Application) -> None:
@@ -1428,13 +1496,18 @@ def main() -> None:
     app.add_handler(
         MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, on_message)
     )
-    app.add_handler(CommandHandler("find", on_find))
-    app.add_handler(CommandHandler("retry", on_retry))
-    app.add_handler(CommandHandler("list", on_list))
-    app.add_handler(CommandHandler("status", on_status))
-    app.add_handler(CommandHandler("subs", on_subs))
-    app.add_handler(CommandHandler("del", on_delete))
-    app.add_handler(CommandHandler(["help", "start"], on_help))
+    # 命令处理器按清单逐个注册：清单是唯一真相，加命令只改 COMMANDS 一处。
+    handlers = {
+        "on_find": on_find, "on_retry": on_retry, "on_list": on_list,
+        "on_status": on_status, "on_subs": on_subs, "on_delete": on_delete,
+        "on_help": on_help, "on_commands": on_commands,
+    }
+    for name, handler_name, _ in COMMANDS + EXTRA_COMMANDS:
+        handler = handlers.get(handler_name)
+        if handler is None:            # 清单里写了但处理器没了：别静默少一个命令
+            log.error("命令清单里的 %s 没有对应处理器，已跳过", handler_name)
+            continue
+        app.add_handler(CommandHandler(name, handler))
     log.info(
         "启动：remote=%s root=%s 并发=%d 待补跑=%d",
         cfg.remote, cfg.drive_root, cfg.concurrency, len(app.bot_data["pending"]),
