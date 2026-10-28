@@ -89,16 +89,24 @@ def test_check_offline_task_ignores_query_errors(monkeypatch):
 
 
 def test_wait_landing_fails_fast_on_offline_error(monkeypatch):
-    """迅雷报解析失败 → 立刻抛，别干等。"""
+    """迅雷报解析失败 → 立刻抛，别干等。
+
+    钉的是「别让用户在 cloud 阶段盲等」：迅雷回 PHASE_TYPE_ERROR 时网盘那边
+    永远不会出现内容，只有查离线任务才能知道，查到了就该当轮中断。
+    """
     import asyncio
 
     calls = {"n": 0}
 
     def boom(*a, **k):
         calls["n"] += 1
-        return "解析失败，请重试或更换链接"
+        return cloudingest.OfflineState(
+            found=True, phase="PHASE_TYPE_ERROR",
+            error="解析失败，请重试或更换链接")
 
-    monkeypatch.setattr(cloudingest, "check_offline_task", boom)
+    # wait_landing 读的是 inspect_offline_task（check_offline_task 只是它的
+    # 薄封装，给别处用）；打桩要打真正被调用的那个
+    monkeypatch.setattr(cloudingest, "inspect_offline_task", boom)
     monkeypatch.setattr(cloudingest, "measure", lambda *a, **k: {})
 
     with pytest.raises(cloudingest.LandingTimeout) as ei:

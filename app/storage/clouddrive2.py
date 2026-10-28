@@ -35,7 +35,10 @@ log = logging.getLogger("x-drive.storage.cd2")
 FINISHED, ERROR = 5, 2          # pb.Status_*：Finished / Error
 
 # CD2 报「路径不存在」的各种说法（不同版本/不同接口措辞不一样）
-_NOT_FOUND_MARKS = ("not found", "not_found", "找不到", "no such file", "不存在")
+# 「no such dir」是实测原话：列出不存在的目录时 CD2 回
+#     NOT_FOUND: no such dir /inbox/task
+# 只写 "no such file" 会漏掉目录那一种，于是「目录还没建」被当成「读失败」。
+_NOT_FOUND_MARKS = ("not found", "not_found", "找不到", "no such", "不存在")
 
 
 def _is_not_found(text: str) -> bool:

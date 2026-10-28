@@ -19,7 +19,7 @@ import pytest
 
 from app import cloudadd, cloudorganize
 from app.storage import clouddrive2 as cd2mod
-from app.storage.base import StorageError
+from app.storage.base import NotFoundError, StorageError
 from tests.cd2_fake import FakeCd2
 
 
@@ -148,7 +148,13 @@ def test_remove_empty_shells_reports_backend_without_support(fake, cd2, monkeypa
 # ─────────────────────────────────────────── 端到端：清理 → 空壳收尾
 
 def test_clean_sources_removes_the_shell_after_cleanup(fake, cd2):
-    """整理成功后，源目录壳被一并收掉（收件目录不再越积越多）。"""
+    """整理成功后，源目录壳与任务专属收件目录都被收掉（不越积越多）。
+
+    注意「收件目录」有两层含义：
+      · 任务专属的 `inbox/task` —— 设计上**要删**（每个任务留一个空文件夹，
+        一个月就是几百个，这正是本模块存在的原因）；
+      · 共享的 `inbox` 本身 —— 绝不能动，别的任务还要往里落。
+    """
     root = "inbox/task"
     fake.add_file(f"/{root}/SEED-1/main.mp4", 4096)
     fake.add_file(f"/{root}/SEED-1/ad.txt", 12)
@@ -161,8 +167,14 @@ def test_clean_sources_removes_the_shell_after_cleanup(fake, cd2):
     leftover = cloudadd.clean_sources(cd2, [{"plan": plan, "src_root": root, "dst_root": "dest"}])
 
     assert leftover == [], f"不该有残留：{leftover}"
-    assert "SEED-1" not in cd2.list_dirs(root), "空壳应当被删"
-    assert "task" in cd2.list_dirs("inbox"), "收件目录本身不动"
+    # 壳删干净了 —— 再列那个目录就是「路径不存在」（契约：目录不存在应抛）
+    with pytest.raises(NotFoundError):
+        cd2.list_dirs(f"{root}/SEED-1")
+    # 任务专属收件目录也收掉了（避免每次云添加留一个空文件夹）
+    with pytest.raises(NotFoundError):
+        cd2.list_dirs(root)
+    # 但共享的 inbox 根必须还在
+    assert "inbox" in cd2.list_dirs(""), "共享收件根不能被连带删掉"
 
 
 def test_clean_sources_keeps_shell_when_unknown_content_remains(fake, cd2):

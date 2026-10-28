@@ -5,6 +5,7 @@
 的用例随本地下载一起删掉了（那些逻辑在已删除的 app/pipeline.py 里）。
 """
 import base64
+import datetime
 import contextlib
 import http.client
 import io
@@ -626,8 +627,12 @@ def _panel(monkeypatch, tasks):
     return Xl()
 
 def test_clean_panel_errors_only_old_failures(monkeypatch):
-    old = "2026-10-01T00:00:00+08:00"
-    fresh = "2026-10-22T00:00:00+08:00"
+    # 日期必须相对 now 算：写死绝对时间会变成时间炸弹 ——
+    # 2026-10-29 就踩到了：'fresh' 写的是 2026-10-22，前一天还是 6 天前，
+    # 过了零点刚好跨过 7 天阈值，于是它也被判成「旧失败」，测试无故变红。
+    now = datetime.datetime.now().astimezone()
+    old = (now - datetime.timedelta(days=30)).isoformat()
+    fresh = (now - datetime.timedelta(days=1)).isoformat()
     _panel(monkeypatch, [
         {"id": "A", "name": "old-err", "phase": "PHASE_TYPE_ERROR", "updated": old},
         {"id": "B", "name": "new-err", "phase": "PHASE_TYPE_ERROR", "updated": fresh},
@@ -637,6 +642,7 @@ def test_clean_panel_errors_only_old_failures(monkeypatch):
     assert [i["id"] for i in plan["delete"]] == ["A"]
     assert "confirm" in plan["hint"]
 
+
 def test_clean_panel_errors_confirm_deletes(monkeypatch):
     removed = []
     class Xl:
@@ -645,7 +651,8 @@ def test_clean_panel_errors_confirm_deletes(monkeypatch):
     monkeypatch.setattr(web, "xunlei_client", lambda: Xl())
     monkeypatch.setattr(web, "panel_tasks", lambda: {"tasks": [
         {"id": "A", "name": "old-err", "phase": "PHASE_TYPE_ERROR",
-         "updated": "2026-10-01T00:00:00+08:00"}]})
+         "updated": (datetime.datetime.now().astimezone()
+                     - datetime.timedelta(days=30)).isoformat()}]})
     out = web.clean_panel_errors(7, confirm=True)
     assert out["deleted"] == ["A"] and removed == ["A"]
 

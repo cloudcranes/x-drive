@@ -16,7 +16,7 @@ from __future__ import annotations
 import time
 from urllib.parse import urlsplit
 
-from .base import AuthError, StorageError
+from .base import AuthError, NotFoundError, StorageError
 from .proto import CloudDrive_pb2 as pb
 
 SERVICE = "clouddrive.CloudDriveFileSrv"
@@ -134,6 +134,14 @@ class Cd2Channel:
         if code in (grpc.StatusCode.UNAUTHENTICATED, grpc.StatusCode.PERMISSION_DENIED,
                     grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.FAILED_PRECONDITION):
             return AuthError(f"clouddrive2 鉴权/参数错误：{text}")
+        # NOT_FOUND 要单独分出来（2026-10-28 修）：CD2 对不存在的目录回
+        #     NOT_FOUND: no such dir /inbox/task
+        # 以前一律翻成 StorageError，于是「目录还不存在」被当成「读失败」——
+        # 清理完空壳后再列一次源目录、或提交前给还不存在的收件目录拍快照，
+        # 都会把正常流程变成失败任务。NotFoundError 是 StorageError 的子类，
+        # 不关心这个区别的调用方行为不变。
+        if code == grpc.StatusCode.NOT_FOUND:
+            return NotFoundError(f"clouddrive2 路径不存在（{text}）")
         return StorageError(f"clouddrive2 调用失败：{text}")
 
     def _expiring(self) -> bool:

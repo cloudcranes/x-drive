@@ -353,3 +353,73 @@ def test_delete_file_reports_when_captcha_still_refused(monkeypatch):
     with pytest.raises(xunleipan.PanError) as err:
         xunleipan.delete_file("f1", client=client(handler))
     assert "captcha" in str(err.value)
+
+
+# ─────────────────────────────────────────── 翻页解析路径
+
+def test_walk_paginates_past_first_page(monkeypatch):
+    """目录条目多时，目标可能在后面的页 —— 不翻页就永远解析不到。
+
+    2026-10-28 实测：某账号云盘根目录 500 条（494 条是删了又重建留下的墓碑），
+    `X-Drive` 排在第 6 页。只读第一页时 `resolve()` 返回空，直链只能退回 CD2
+    内网地址（浏览器打不开），表现为「获取迅雷云盘直链失败」。
+    """
+    _env(monkeypatch)
+    pages = {
+        "": {"files": [{"id": "t1", "name": "_xdrive_healthcheck",
+                        "kind": "drive#folder", "trashed": True}],
+             "next_page_token": "p2"},
+        "p2": {"files": [{"id": "xd", "name": "X-Drive",
+                          "kind": "drive#folder", "trashed": False}],
+               "next_page_token": ""},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = request.url.params.get("page_token", "")
+        return httpx.Response(200, json=pages[token])
+
+    c = client(handler)
+    try:
+        fid = xunleipan.resolve("X-Drive", client=c)
+    finally:
+        c.close()
+    assert fid == "xd", "第二页的目录也要能解析到"
+
+
+def test_iter_files_stops_when_no_more_pages(monkeypatch):
+    """没有 next_page_token / 空页就收手，不能无限翻。"""
+    _env(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"files": [
+            {"id": "a", "name": "A", "kind": "drive#folder", "trashed": False}]})
+
+    c = client(handler)
+    try:
+        items = list(xunleipan.iter_files("", client=c))
+    finally:
+        c.close()
+    assert [i["name"] for i in items] == ["A"]
+    assert calls["n"] == 1, "已到尽头就只该请求一次"
+
+
+def test_iter_files_respects_max_pages(monkeypatch):
+    """接口万一一直给 next_page_token，也不能无限翻。"""
+    _env(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={
+            "files": [{"id": "a", "name": "A", "kind": "drive#folder", "trashed": False}],
+            "next_page_token": "always-more"})
+
+    c = client(handler)
+    try:
+        items = list(xunleipan.iter_files("", client=c, max_pages=3))
+    finally:
+        c.close()
+    assert calls["n"] == 3
+    assert len(items) == 3

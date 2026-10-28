@@ -941,14 +941,44 @@ def resolve(path: str, *, client=None) -> str:
     return ""
 
 
+def iter_files(parent_id: str = "", *, client=None, page_size: int = 100,
+               max_pages: int = 30):
+    """逐页列目录，把每一页的条目都吐出来（生成器）。
+
+    为什么需要翻页（2026-10-28 实测）：云盘根目录可能有几百条 —— 其中一个
+    账号实测 500 条（494 条是删了又重建留下的墓碑）。`list_files` 只取第一页
+    （100 条），于是排在后面的活目录**永远看不见** —— 归档根 `X-Drive` 就排在
+    第 6 页，导致 `resolve()` 解析路径失败，直链只能退回 CD2 内网地址
+    （浏览器打不开），表现为「获取迅雷云盘直链失败」。
+
+    max_pages 是防跑飞的上限：接口万一不给 next_page_token 的尽头信号，
+    也不能无限翻。
+    """
+    token = ""
+    for _ in range(max(1, int(max_pages))):
+        params: dict = {"limit": page_size}
+        if parent_id:
+            params["parent_id"] = parent_id
+        if token:
+            params["page_token"] = token
+        data = _get("/drive/v1/files", params, client=client)
+        batch = data.get("files") or []
+        for item in batch:
+            yield item
+        token = str(data.get("next_page_token") or "")
+        if not token or not batch:
+            return
+
+
 def _walk(parts: list[str], *, client=None) -> str:
     parent = ""
     found = ""
     for part in parts:
         hit = ""
-        for item in list_files(parent, client=client):
-            if item["name"] == part and not item["trashed"]:
-                hit = item["id"]
+        # 必须翻页找：目录里条目多时目标可能在后面的页（见 iter_files 的说明）
+        for item in iter_files(parent, client=client):
+            if item.get("name") == part and not item.get("trashed"):
+                hit = str(item.get("id") or "")
                 break
         if not hit:
             return ""
