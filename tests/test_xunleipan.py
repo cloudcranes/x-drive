@@ -123,6 +123,43 @@ def test_list_files_parses_items(monkeypatch):
     assert items[0]["kind"] == "drive#file"
 
 
+def test_list_files_drops_tombstones_in_active_view(monkeypatch):
+    """默认列表会把 trashed=true 的墓碑一起吐回来，必须滤掉。
+
+    2026-10-28 实测：自检每 180 秒建删一次探针目录，一个月在云盘根目录留下
+    478 条同名 `_xdrive_healthcheck`（全部 trashed=true，网页看不到，但 API
+    每次都返回）。不过滤的话调用方会以为目录里塞满了垃圾。
+    """
+    _env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"files": [
+            {"id": "live", "name": "X-Drive", "kind": "drive#folder", "trashed": False},
+            {"id": "dead1", "name": "_xdrive_healthcheck", "kind": "drive#folder", "trashed": True},
+            {"id": "dead2", "name": "_xdrive_healthcheck", "kind": "drive#folder", "trashed": True},
+        ]})
+
+    items = xunleipan.list_files("", client=client(handler))
+
+    assert [i["name"] for i in items] == ["X-Drive"], "墓碑不该出现在活目录列表里"
+
+
+def test_list_files_trashed_only_returns_trashed(monkeypatch):
+    """要回收站就只给回收站 —— 活目录条目不能混进来（照着删会误删真数据）。"""
+    _env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "trashed" in request.url.params.get("filters", "")
+        return httpx.Response(200, json={"files": [
+            {"id": "live", "name": "X-Drive", "kind": "drive#folder", "trashed": False},
+            {"id": "dead", "name": "旧片", "kind": "drive#file", "trashed": True},
+        ]})
+
+    items = xunleipan.list_files("", trashed=True, client=client(handler))
+
+    assert [i["name"] for i in items] == ["旧片"]
+
+
 def test_file_info_prefers_accelerated_link_for_original_quality(monkeypatch):
     """「原始画质」优先用**加速档**（medias[].link.url），不是 web_content_link。
 

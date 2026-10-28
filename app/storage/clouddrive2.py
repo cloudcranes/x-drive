@@ -594,8 +594,14 @@ class CloudDrive2(Backend):
             base = probe_path.strip("/")
             probe = f"{base}/_xdrive_healthcheck" if base else "_xdrive_healthcheck"
             try:
+                # **建完不删**（2026-10-28 实测改的）：
+                # 这个自检每 180 秒跑一次，以前每次「建一个 + 删一个」，看着干净，
+                # 实则每次删除都会在迅雷云盘留下一条 trashed=true 的墓碑 ——
+                # 一个月下来根目录列表里堆了 478 条同名 `_xdrive_healthcheck`
+                # （网页看不到，但 API 每次列目录都把它们吐回来，越列越慢）。
+                # 留着固定一个目录：写入路径照样每轮都过一遍 ensure_dir（幂等，
+                # 只读挂载或权限掉了照样报错），但不再制造垃圾。
                 self.ensure_dir(probe)
-                self.purge(probe)
             except StorageError as exc:
                 return False, (f"clouddrive2 {self.chan.target}: 能登录，但"
                                f"{'/' + base if base else '根目录'} 下建不了目录：{exc}")

@@ -208,7 +208,24 @@ def test_check_probes_inside_archive_root(fake, tmp_path):
     cd2.ensure_dir("X-Drive")
     ok, detail = cd2.check(probe_path="X-Drive")
     assert ok and "/X-Drive" in detail
-    assert not [d for d in fake.dirs if d.endswith("_xdrive_healthcheck")], "探针要自己清掉"
+    assert [d for d in fake.dirs if d.endswith("_xdrive_healthcheck")], "探针要落在归档根下"
+
+
+def test_check_keeps_probe_dir_instead_of_churning(fake):
+    """探针目录**建完不删**：自检每 180 秒一次，删一次就在云盘留一条墓碑。
+
+    2026-10-28 实测：老实现「建一个 + 删一个」，一个月在迅雷云盘根目录堆了
+    478 条同名 `_xdrive_healthcheck`（网页看不到，但 API 每次列目录都吐回来）。
+    改成留一个固定目录后，重复自检不再新增任何条目。
+    """
+    cd2 = backend(fake)
+    cd2.ensure_dir("X-Drive")
+
+    for _ in range(3):
+        cd2.check(probe_path="X-Drive")
+
+    probes = [d for d in fake.dirs if d.endswith("_xdrive_healthcheck")]
+    assert len(probes) == 1, f"重复自检只该留一个探针目录，实际 {probes}"
 
 
 def test_check_says_why_root_is_not_writable(fake):

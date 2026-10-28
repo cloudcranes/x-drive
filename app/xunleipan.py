@@ -837,12 +837,17 @@ def list_files(parent_id: str = "", limit: int = 100, *, client=None,
 
     trashed=True 时只返回**回收站**里的条目。
 
-    注意两处坑（都是实测踩出来的）：
+    注意三处坑（都是实测踩出来的）：
       · 过滤参数是 `filters={"trashed":{"eq":true}}`；传 `trashed=true` 或
         `filter=trash` 会被**静默忽略**，返回的仍是根目录全量；
       · 即便用了 filters，服务端仍会把**活目录**条目一起返回（只是带
         trashed=false 标志）。所以必须在客户端再按标志过滤一遍 ——
         照着未过滤的列表删，会把 X-Drive 这种活目录误移进回收站。
+      · **反过来也一样**：默认列表会把 trashed=true 的条目一起吐回来。
+        这些是「删了又同名重建」留下的墓碑（实测：自检每 180 秒建删一次
+        探针目录，一个月堆了 478 条同名 `_xdrive_healthcheck`）。网页里
+        看不到它们，但 API 每次都返回 —— 不过滤的话调用方会以为目录里塞满了
+        垃圾。所以 trashed=False 时也得按标志过滤掉。
     """
     params: dict = {"limit": limit}
     if parent_id:
@@ -856,8 +861,8 @@ def list_files(parent_id: str = "", limit: int = 100, *, client=None,
                  "kind": item.get("kind") or "",
                  "phase": str(item.get("phase") or ""),
                  "trashed": bool(item.get("trashed"))}
-        if trashed and not entry["trashed"]:
-            continue                       # 活目录条目：不在回收站，跳过
+        if trashed != entry["trashed"]:
+            continue                       # 要回收站就跳过活的，要活目录就跳过墓碑
         out.append(entry)
     return out
 
