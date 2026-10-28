@@ -303,6 +303,10 @@
   .tag.vid{color:var(--cyan); border-color:rgba(62,186,244,.32); background:rgba(62,186,244,.07)}
   .tag.img{color:var(--violet); border-color:rgba(201,163,255,.3); background:rgba(201,163,255,.06)}
   .tag.warn{color:#ffc98a; border-color:rgba(255,201,138,.3); background:rgba(255,201,138,.06)}
+  /* 「已添加」标记：绿色=同一个资源（别再下了），黄色=同番号别的版本 */
+  .tag.added{color:#7ee2a8; border-color:rgba(126,226,168,.34); background:rgba(126,226,168,.08)}
+  .tag.added-code{color:#ffd479; border-color:rgba(255,212,121,.3); background:rgba(255,212,121,.07)}
+  .sub-row.already{opacity:.72}
   /* 窄卡片（手机上两列约 180px）里，时间 + 改名 + 删除 + 链接挤一行会把
      「改名 / 删除」压成竖排两行，所以允许折行、每项都不许断行。 */
   .card-foot{display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin-top:auto;
@@ -2407,6 +2411,18 @@ function renderCandidates(items, got, info) {
     row.append(el("span", "tag " + (item.has_subtitle ? "vid" : ""),
                   item.has_subtitle ? "字幕" : (item.is_hd ? "高清" : "磁力")));
     row.append(el("span", "nm", item.size_text || "体积未知"));
+    // 云盘里已经有的：标出来并禁用提交 —— 再加一遍是纯重复，
+    // 白占一次迅雷落地和每日 3 个的任务额度。
+    if (item.added_exact) {
+      const badge = el("span", "tag added", "已添加");
+      badge.title = "云盘里已经有这个资源了（infohash 相同）";
+      row.append(badge);
+      row.classList.add("already");
+    } else if (item.added_code) {
+      const badge = el("span", "tag added-code", "已有别的版本");
+      badge.title = "这个番号云盘里已经有别的版本（infohash 不同，可能是不同压制组）";
+      row.append(badge);
+    }
     const seed = seedCount(item.seeders);
     // 做种数**不论多少都要显示**：0 种子的候选迅雷云盘会「解析失败」，
     // 而之前 0 种子什么都不显示 —— 用户看不出哪条能下，只能凭体积猜
@@ -2429,8 +2445,15 @@ function renderCandidates(items, got, info) {
     pv.addEventListener("click", () => showMagnetPreview(item, pv));
     acts.append(pv);
     const dl = el("button", null, "提交云添加");
-    dl.title = "提交到任务队列（磁力直接进迅雷云盘，按番号去重）";
-    dl.addEventListener("click", () => downloadCandidate(got, item, dl));
+    if (item.added_exact) {
+      // 已经在云盘里了：别让用户再点一次白等一轮落地
+      dl.disabled = true;
+      dl.textContent = "已在云盘";
+      dl.title = "这个资源云盘里已经有了（infohash 相同），不用再下一遍";
+    } else {
+      dl.title = "提交到任务队列（磁力直接进迅雷云盘，按番号去重）";
+      dl.addEventListener("click", () => downloadCandidate(got, item, dl));
+    }
     acts.append(dl);
     row.append(acts);
     list.append(row);

@@ -28,9 +28,9 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import (cloudadd, codes, core, meta, metadata, metrics, metatube, storage,
-               retry, settings as settings_mod, sources, store, whatslink,
-               workspace, xunlei)
+from . import (added, cloudadd, codes, core, meta, metadata, metrics, metatube,
+               storage, retry, settings as settings_mod, sources, store,
+               whatslink, workspace, xunlei)
 
 log = logging.getLogger("x-drive")
 
@@ -1242,6 +1242,13 @@ async def on_find(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         info = await meta.lookup(code)
     except Exception as exc:
         log.info("取 %s 元数据失败：%s", code, exc)
+    # 对比云盘里已添加的资源：已经有的直接标出来，别让用户白等一轮落地
+    try:
+        index = await asyncio.to_thread(
+            added.build_for, cfg.state_path, cfg.jobs_db)
+        added.annotate(items, index, code)
+    except Exception as exc:
+        log.info("查云盘已添加资源失败（不影响搜索结果）：%s", exc)
     head = f"🔍 {code} 共 {len(items)} 条候选（点链接直接转发给我即可下载）"
     if info:
         bits = [info.get("date"), info.get("duration"), info.get("maker")]
@@ -1252,8 +1259,14 @@ async def on_find(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 + (f"{' · '.join(b for b in bits if b)}\n" if any(bits) else "")
                 + head)
     lines = [head]
+    exact = sum(1 for it in items if it.get("added_exact"))
+    if exact:
+        lines.append(f"⚠️ 有 {exact} 条**云盘里已经有了**（标 ✅），重复添加没有意义")
+    elif any(it.get("added_code") for it in items):
+        lines.append("ℹ️ 这个番号云盘里已经有别的版本了")
     for i, item in enumerate(items, start=1):
         tags = "·".join(t for t in (
+            "✅已添加" if item.get("added_exact") else "",
             "字幕" if item.get("has_subtitle") else "",
             "高清" if item.get("is_hd") else "",
             f"{item['seeders']}种" if item.get("seeders") else "",

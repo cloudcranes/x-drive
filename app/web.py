@@ -33,8 +33,8 @@ from uuid import uuid4
 
 import httpx
 
-from . import (backlog, cleanup, cloudadd, cloudingest, cloudorganize, codes, core,
-               find, imgcache, meta, metadata, metatube, notify, preview, retry,
+from . import (added, backlog, cleanup, cloudadd, cloudingest, cloudorganize, codes,
+               core, find, imgcache, meta, metadata, metatube, notify, preview, retry,
                settings as settings_mod, sources, storage, store, subscribe, workspace,
                xunlei, xunleipan)
 
@@ -2993,6 +2993,12 @@ def magnet_search(code: str, limit: int = 8) -> dict:
         items, info = asyncio.run(main())
     except Exception as exc:
         return {"ok": False, "code": code, "error": str(exc)[:200]}
+    # 对比云盘里已添加的资源：已经有的标出来，省得白等一轮落地
+    try:
+        index = added.build_for(STATE, jobs_db_path())
+        added.annotate(items, index, code)
+    except Exception as exc:
+        log.info("查云盘已添加资源失败（不影响搜索结果）：%s", exc)
     return {"ok": True, "code": code, "items": items,
             "info": info or meta.cached(code) or {}}
 

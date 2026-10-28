@@ -177,6 +177,20 @@ def test_resource_rows_offer_explicit_download():
     assert "下载" not in body, "候选的入口不该再叫「下载」（本地下载已取消）"
 
 
+def test_added_badge_blocks_duplicate_submit():
+    """云盘里已有的候选：标出来并禁用提交，别让用户白等一轮落地。"""
+    js = script(html())
+    body = js[js.index("function renderCandidates"):js.index("// ── 顶栏类型切换")]
+    assert "added_exact" in body, "要看候选是不是已添加"
+    assert "added_code" in body, "同番号别的版本也要提示"
+    assert "已在云盘" in body, "按钮要说明为什么不能提交"
+    assert "dl.disabled = true" in body, "已添加的候选不该能提交"
+    # 两类标记的样式都要有，否则用户看不出区别
+    styles = css(html())
+    assert ".tag.added" in styles, "已添加要有样式"
+    assert ".tag.added-code" in styles, "同番号别的版本要有样式"
+
+
 def test_archive_card_is_poster_only_with_detail_popup():
     """归档卡片只留海报 + 标题；详细信息在点开的弹层里。"""
     page = html()
