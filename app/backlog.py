@@ -26,6 +26,11 @@ log = logging.getLogger("x-drive.backlog")
 PENDING, QUEUED, SKIPPED, DONE = "pending", "queued", "skipped", "done"
 # 没有磁力的作品不必每轮都查：5 分钟后、20 分钟后、1 小时、6 小时… 逐步退避
 BACKOFF = (300, 1200, 3600, 21600, 86400)
+# 连续几次查不到磁力就自动放弃：资源可能永远不出现，留在待办里只是白占名额
+MAX_MISSES = 3
+# note 里出现这些字眼 = 这次没找到可用的磁力
+# （筛选不通过不算：那是条件没满足，条件以后可能改，条目要留着）
+MISS_HINTS = ("还没有磁力", "没有磁力", "候选都试过了")
 # 每次多备几个候选：队头没磁力时不必等下一轮，也别一次抓太多
 EXTRA_CANDIDATES = 3
 
@@ -77,6 +82,16 @@ def due(data: dict, sub_key: str, limit: int, now: float | None = None) -> list[
     return [code for _, code in ready[:max(1, int(limit)) + EXTRA_CANDIDATES]]
 
 
+def is_miss(note: str) -> bool:
+    """note 说的是不是「这次没找到磁力」。
+
+    筛选不通过（未满足筛选/超过上限/非高清）不算 —— 那是条件没满足，
+    条件以后可能改，条目要留着。
+    """
+    text = note or ""
+    return any(h in text for h in MISS_HINTS)
+
+
 def mark(data: dict, sub_key: str, code: str, state: str, note: str = "",
          job_id: str | None = None) -> None:
     item = (data.get(sub_key) or {}).get(code.upper())
@@ -90,6 +105,10 @@ def mark(data: dict, sub_key: str, code: str, state: str, note: str = "",
         tries = int(item.get("tries") or 0) + 1
         item["tries"] = tries
         item["next_at"] = time.time() + BACKOFF[min(tries, len(BACKOFF) - 1)]
+        # 连续多次查不到磁力 = 这部大概永远不会出现：自动忽略，不再占名额
+        if tries >= MAX_MISSES and is_miss(note):
+            item["state"] = SKIPPED
+            item["note"] = f"{note[:160]}（连续{tries}次没找到磁力，已自动忽略）"
 
 
 # 同一个番号最多换几条候选：换太多次是在浪费带宽和时间，且往往说明资源本身有问题
@@ -105,9 +124,9 @@ def note_tried(data: dict, sub_key: str, code: str, magnet: str) -> bool:
     item = (data.get(sub_key) or {}).get(code.upper())
     if not item:
         return False
-    from . import xunlei
+    from . import xunleipan
 
-    btih = xunlei.info_hash_of(magnet or "") or (magnet or "")[:60]
+    btih = xunleipan.info_hash_of(magnet or "") or (magnet or "")[:60]
     tried = list(item.get("tried") or [])
     if btih and btih not in tried:
         tried.append(btih)

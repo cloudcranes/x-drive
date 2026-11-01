@@ -53,6 +53,30 @@ def test_pending_items_survive_prune():
     assert "D-1" in data["s"], "pending 不能删"
     assert "D-2" not in data["s"], "已结束的老记录可以清"
 
+def test_missing_magnet_auto_skips_after_three_tries():
+    """连续 3 次查不到磁力 → 自动忽略，不再占名额。"""
+    data = {}
+    backlog.remember(data, "s", [item("F-1", "2020-01-01")], "2026-01-01")
+    for _ in range(2):
+        backlog.mark(data, "s", "F-1", backlog.PENDING, "还没有磁力")
+        assert data["s"]["F-1"]["state"] == backlog.PENDING
+    backlog.mark(data, "s", "F-1", backlog.PENDING, "还没有磁力")
+    assert data["s"]["F-1"]["state"] == backlog.SKIPPED
+    assert data["s"]["F-1"]["tries"] == 3
+    assert "自动忽略" in data["s"]["F-1"]["note"]
+    # 自动忽略后不再回到候选
+    assert backlog.due(data, "s", limit=5) == []
+
+
+def test_filter_rejection_is_not_auto_skipped():
+    """筛选不通过不是「没磁力」：条件以后可能改，条目要留着。"""
+    data = {}
+    backlog.remember(data, "s", [item("G-1", "2020-01-01")], "2026-01-01")
+    for _ in range(4):
+        backlog.mark(data, "s", "G-1", backlog.PENDING, "未满足筛选：6 条非高清")
+    assert data["s"]["G-1"]["state"] == backlog.PENDING
+
+
 def test_counts_by_state():
     data = {}
     backlog.remember(data, "s", [item("E-1", "2020-01-01"), item("E-2", "2020-01-02")], "2026-01-01")
