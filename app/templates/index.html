@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>x-drive · X-Media Hub</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✕</text></svg>">
+  <!-- ponytail: 零构建单文件（CDN Vue3 + Tailwind），换来的代价是首屏要拉两个 CDN 且不可离线；需要离线/内网部署时改成本地 vendor 脚本。 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    body { background:#07090e; color:#f1f5f9; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif; }
+    .glass-nav { background:rgba(11,15,25,.88); backdrop-filter:blur(16px); border-bottom:1px solid rgba(255,255,255,.08); }
+    .card-dark { background:#0c101a; border:1px solid rgba(255,255,255,.06); }
+    .poster-hover:hover { transform:translateY(-4px); box-shadow:0 16px 32px -8px rgba(0,0,0,.8), 0 0 18px rgba(56,189,248,.2); border-color:rgba(56,189,248,.4); }
+    .row-hover:hover { background:#111827; }
+    .tab-active { color:#38bdf8; border-color:#38bdf8; background:rgba(56,189,248,.08); }
+    ::-webkit-scrollbar { width:6px; height:6px; }
+    ::-webkit-scrollbar-track { background:#07090e; }
+    ::-webkit-scrollbar-thumb { background:#1e293b; border-radius:3px; }
+    .line-clamp-2 { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .line-clamp-1 { display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+    /* 隐私磨砂：封面默认打码，点顶栏按钮切换（旧版 privacy-covers 的移植） */
+    .privacy-blur { filter: blur(16px) saturate(.72); transform: scale(1.08); }
+    .privacy-tag { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); z-index:5;
+      padding:3px 10px; border-radius:8px; background:rgba(0,0,0,.65); color:#94a3b8;
+      font-size:10px; font-family:ui-monospace,SFMono-Regular,monospace; letter-spacing:.1em;
+      border:1px solid rgba(148,163,184,.3); pointer-events:none; backdrop-filter:blur(2px); white-space:nowrap; }
+  </style>
+</head>
+<body class="min-h-screen">
+<div id="app" class="min-h-screen flex flex-col">
+
+  <!-- ── 顶栏 ─────────────────────────────────────────── -->
+  <header class="glass-nav sticky top-0 z-50 px-4 md:px-6 py-3 flex items-center justify-between gap-3">
+    <div class="flex items-center gap-6 min-w-0">
+      <div class="flex items-center gap-3 cursor-pointer shrink-0" @click="go('library')">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-sky-500/20">X</div>
+        <span class="text-base md:text-lg font-bold tracking-wider text-slate-100 hidden sm:inline">X-MEDIA <span class="text-[10px] px-1.5 py-0.5 rounded bg-sky-950/80 text-sky-400 border border-sky-800/60 font-mono">HUB</span></span>
+      </div>
+      <nav class="flex items-center gap-1 overflow-x-auto">
+        <button v-for="p in pages" :key="p.id" @click="go(p.id)"
+          :class="['px-3 py-1.5 rounded-lg text-xs md:text-sm font-medium transition-all flex items-center gap-1.5 border border-transparent whitespace-nowrap',
+                   page === p.id ? 'tab-active' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40']">
+          <span>{{ p.icon }}</span><span>{{ p.name }}</span>
+          <span v-if="p.badge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">{{ p.badge }}</span>
+        </button>
+      </nav>
+    </div>
+    <div class="flex items-center gap-3 shrink-0">
+      <div class="relative hidden sm:block w-56 md:w-72">
+        <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">🔍</span>
+        <input v-model="q" type="text" placeholder="搜索番号 / 标题 / 演员"
+          class="w-full pl-9 pr-7 py-1.5 bg-slate-900/90 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500">
+        <span v-if="q" @click="q=''" class="absolute inset-y-0 right-0 pr-2 flex items-center cursor-pointer text-slate-500 hover:text-slate-300">✕</span>
+      </div>
+      <button @click="togglePrivacy" :class="['px-2.5 py-1.5 rounded-lg text-xs border transition-colors',
+               privacyCovers ? 'bg-sky-950/60 border-sky-800/60 text-sky-400' : 'bg-slate-800 border-slate-700/60 text-slate-400 hover:bg-slate-700']"
+        :title="privacyCovers ? '封面已打码，点击取消' : '封面未打码，点击开启'" id="privacy-toggle">🫥</button>
+      <div :class="['flex items-center gap-2 text-[10px] md:text-xs font-mono px-2.5 py-1.5 rounded-lg border',
+                   online ? 'text-emerald-400 bg-emerald-950/40 border-emerald-900/60' : 'text-rose-400 bg-rose-950/40 border-rose-900/60']">
+        <span :class="['w-2 h-2 rounded-full', online ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500']"></span>
+        <span>{{ online ? 'ONLINE' : 'OFFLINE' }}</span>
+      </div>
+      <button @click="reload" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs" title="刷新数据">⟳</button>
+    </div>
+  </header>
+
+  <main class="flex-1 w-full mx-auto max-w-7xl p-4 md:p-6">
+    <div v-if="err" class="mb-4 px-4 py-3 rounded-lg bg-rose-950/50 border border-rose-900/60 text-rose-300 text-xs">{{ err }}</div>
+
+    <!-- ── 页 1：媒体库 ─────────────────────────────── -->
+    <section v-if="page === 'library'" class="space-y-5">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="card-dark rounded-xl p-4">
+          <div class="text-[11px] text-slate-400">归档作品</div>
+          <div class="text-2xl font-bold font-mono text-slate-100 mt-1">{{ stats.tasks || 0 }}</div>
+        </div>
+        <div class="card-dark rounded-xl p-4">
+          <div class="text-[11px] text-slate-400">文件 / 体积</div>
+          <div class="text-2xl font-bold font-mono text-sky-400 mt-1">{{ stats.files || 0 }} <span class="text-xs text-slate-500 font-normal">{{ stats.size_text || '' }}</span></div>
+        </div>
+        <div class="card-dark rounded-xl p-4">
+          <div class="text-[11px] text-slate-400">系列</div>
+          <div class="text-2xl font-bold font-mono text-slate-100 mt-1">{{ stats.series || 0 }}</div>
+        </div>
+        <div class="card-dark rounded-xl p-4">
+          <div class="text-[11px] text-slate-400">在传任务</div>
+          <div class="text-2xl font-bold font-mono text-emerald-400 mt-1">{{ activeJobs.length }} <span class="text-xs text-slate-500 font-normal">个</span></div>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 border-b border-slate-800/80 pb-3">
+        <select v-model="kindFilter" class="bg-slate-900 border border-slate-800 text-xs text-slate-300 rounded px-2.5 py-1.5 focus:outline-none">
+          <option value="all">全部</option><option value="video">只看视频</option><option value="image">只看图片</option>
+        </select>
+        <select v-model="seriesFilter" class="bg-slate-900 border border-slate-800 text-xs text-slate-300 rounded px-2.5 py-1.5 focus:outline-none max-w-[10rem]">
+          <option value="">全部系列</option>
+          <option v-for="s in seriesList" :key="s" :value="s">{{ s }}</option>
+        </select>
+        <select v-model="sortBy" class="bg-slate-900 border border-slate-800 text-xs text-slate-300 rounded px-2.5 py-1.5 focus:outline-none">
+          <option value="new">最新入库</option><option value="size">体积最大</option><option value="code">番号</option>
+        </select>
+        <span class="text-xs text-slate-500 font-mono ml-auto">{{ library.length }} / {{ tasks.length }}</span>
+      </div>
+
+      <!-- 在线搜索（javbus.master.us.kg 经 /api/find）：输入即搜，与本地过滤并存 -->
+      <div v-if="findLoading || findItems.length" class="card-dark rounded-xl p-4 border border-sky-900/40">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-xs font-bold text-sky-400">🌐 在线搜索</span>
+          <span class="text-[10px] text-slate-500 font-mono">javbus · {{ findItems.length }} 条</span>
+          <span v-if="findLoading" class="text-[10px] text-slate-500 animate-pulse">搜索中…</span>
+          <span v-if="findCached" class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400">缓存</span>
+          <span v-if="findError" class="text-[10px] text-rose-400">{{ findError }}</span>
+          <span class="ml-auto text-[10px] text-slate-600">点击卡片查看详情 / 搜磁力</span>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+          <div v-for="it in findItems" :key="it.code" class="rounded-lg overflow-hidden bg-slate-900/60 border border-slate-800 hover:border-sky-700/60 transition-colors group cursor-pointer" @click="openFound(it)">
+            <div class="relative aspect-[3/2] overflow-hidden bg-slate-900">
+              <img v-if="it.cover" :src="coverSrc(it.cover)" loading="lazy" referrerpolicy="no-referrer"
+                :class="['w-full h-full object-cover', privacyCovers && 'privacy-blur']" @error="onCoverError($event)">
+              <div v-else class="w-full h-full flex items-center justify-center text-slate-600/40 font-mono text-sm">NO COVER</div>
+              <span v-if="privacyCovers && it.cover" class="privacy-tag">隐私模糊</span>
+              <span v-if="have(it.code)" class="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-950/80 text-emerald-400 border border-emerald-800/60">已入库</span>
+            </div>
+            <div class="p-2">
+              <div class="font-mono text-[11px] font-bold text-sky-400">{{ it.code }}</div>
+              <div class="text-[10px] text-slate-400 line-clamp-2 mt-0.5 leading-snug">{{ it.title }}</div>
+              <div class="text-[10px] text-slate-600 mt-1 font-mono">{{ it.date || '' }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="!library.length" class="text-center text-slate-500 text-xs py-16">没有匹配的作品</div>
+      <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+        <article v-for="t in library" :key="t.code || t.id" @click="openDetail(t)"
+          class="card-dark rounded-xl overflow-hidden flex flex-col poster-hover transition-all duration-300 cursor-pointer group">
+          <div class="relative aspect-[3/2] overflow-hidden bg-slate-900">
+            <img v-if="t.meta && t.meta.cover" :src="coverSrc(t.meta.cover)" loading="lazy" decoding="async" referrerpolicy="no-referrer"
+              :class="['w-full h-full object-cover group-hover:scale-105 transition-transform duration-500', privacyCovers && 'privacy-blur']"
+              @error="onCoverError($event)">
+            <div v-else class="w-full h-full bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center text-slate-600/40 font-mono font-black text-xl">NO COVER</div>
+            <span v-if="privacyCovers && t.meta && t.meta.cover" class="privacy-tag">隐私模糊</span>
+            <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-black/20"></div>
+            <div class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
+              <div class="w-11 h-11 rounded-full bg-sky-500/90 text-white flex items-center justify-center text-lg pl-0.5 shadow-lg shadow-sky-500/50">▶</div>
+            </div>
+            <div class="absolute top-2 left-2 flex flex-col gap-1 items-start">
+              <span v-if="t.watch && t.watch.done" class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-black/75 text-emerald-400 border border-emerald-700/60">已看</span>
+              <span v-else-if="t.watch && t.watch.pct > 0" class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-black/75 text-amber-400 border border-amber-700/60">{{ Math.round(t.watch.pct) }}%</span>
+              <span v-if="t.cat === 'image'" class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-900/80 text-slate-300 border border-slate-700/60">图片</span>
+            </div>
+            <div class="absolute bottom-2 left-2 right-2 flex justify-between items-end gap-2">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-black/70 text-slate-300 line-clamp-1">{{ (t.meta && t.meta.categories && t.meta.categories[0]) || t.kind }}</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-black/70 text-slate-400 shrink-0">{{ t.size_text }}</span>
+            </div>
+          </div>
+          <div class="p-3 flex-1 flex flex-col justify-between">
+            <div>
+              <div class="font-mono text-xs font-bold text-sky-400">{{ t.code || t.id }}</div>
+              <h3 class="text-[11px] text-slate-300 mt-1 line-clamp-2 leading-relaxed">{{ (t.meta && t.meta.title) || t.path || '' }}</h3>
+            </div>
+            <div class="mt-2 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400 gap-2">
+              <span class="truncate">{{ actorsOf(t) }}</span>
+              <span class="font-mono text-slate-500 shrink-0">{{ (t.meta && t.meta.date) || t.at || '' }}</span>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- ── 页 2：资产清单 ───────────────────────────── -->
+    <section v-if="page === 'rows'" class="space-y-5">
+      <div class="flex items-center justify-between border-b border-slate-800/80 pb-3">
+        <h1 class="text-lg md:text-xl font-bold text-slate-100">📋 资产清单 <span class="text-xs font-normal text-slate-500 font-mono">({{ library.length }} 条)</span></h1>
+        <input v-model="q" type="text" placeholder="搜索（顶部搜索框同步）" class="sm:hidden bg-slate-900 border border-slate-800 text-xs text-slate-200 rounded px-2.5 py-1.5">
+      </div>
+      <div class="card-dark rounded-xl overflow-hidden border border-slate-800">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs border-collapse min-w-[46rem]">
+            <thead>
+              <tr class="bg-slate-900/80 text-slate-400 border-b border-slate-800 font-mono">
+                <th class="py-3 px-3 w-12 text-center">#</th>
+                <th class="py-3 px-3 w-28">番号</th>
+                <th class="py-3 px-3">标题 / 目录</th>
+                <th class="py-3 px-3 w-40">演员</th>
+                <th class="py-3 px-3 w-20">类型</th>
+                <th class="py-3 px-3 w-24">体积</th>
+                <th class="py-3 px-3 w-24">状态</th>
+                <th class="py-3 px-3 w-28 text-center">操作</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/60">
+              <tr v-for="(t, idx) in library" :key="t.code || t.id" class="row-hover transition-colors group">
+                <td class="py-2.5 px-3 text-center font-mono text-slate-600">{{ String(idx + 1).padStart(3, '0') }}</td>
+                <td class="py-2.5 px-3">
+                  <span class="px-2 py-0.5 rounded font-mono font-bold text-xs bg-slate-800/80 text-sky-400 border border-slate-700/60">{{ t.code || t.id }}</span>
+                </td>
+                <td class="py-2.5 px-3">
+                  <div class="font-medium text-slate-200 group-hover:text-white transition-colors line-clamp-1">{{ (t.meta && t.meta.title) || '' }}</div>
+                  <div class="text-[10px] font-mono text-slate-500 truncate mt-0.5">{{ t.path }}</div>
+                </td>
+                <td class="py-2.5 px-3 text-slate-300 line-clamp-1">{{ actorsOf(t) }}</td>
+                <td class="py-2.5 px-3 font-mono text-slate-400">{{ t.cat === 'image' ? '图片' : '视频' }}</td>
+                <td class="py-2.5 px-3 font-mono text-slate-400">{{ t.size_text }}</td>
+                <td class="py-2.5 px-3">
+                  <span v-if="t.watch && t.watch.done" class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-950/60 text-emerald-400 border border-emerald-900/80">已看</span>
+                  <span v-else-if="t.cleanup_pending && t.cleanup_pending.length" class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-950/60 text-amber-400 border border-amber-900/80">待清理</span>
+                  <span v-else class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-400 border border-slate-700/60">已入库</span>
+                </td>
+                <td class="py-2.5 px-3 text-center">
+                  <div class="flex items-center justify-center gap-1.5">
+                    <button @click="openDetail(t)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors">详情</button>
+                    <button @click="play(t)" class="px-2 py-1 rounded bg-sky-950 hover:bg-sky-900 text-sky-400 hover:text-sky-200 border border-sky-800/50 transition-colors">播放</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 页 3：队列与订阅 ─────────────────────────── -->
+    <section v-if="page === 'queue'" class="space-y-5">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div class="card-dark rounded-xl p-4">
+          <div class="text-[11px] text-slate-400">在传任务</div>
+          <div class="text-2xl font-bold font-mono text-emerald-400 mt-1">{{ activeJobs.length }}</div>
+          <div class="text-[10px] text-slate-500 mt-1">{{ doneJobs.length }} 已完成</div>
+        </div>
+        <div class="card-dark rounded-xl p-4">
+          <div class="text-[11px] text-slate-400">待办积压</div>
+          <div class="text-2xl font-bold font-mono text-amber-400 mt-1">{{ backlogCounts.pending || 0 }}</div>
+          <div class="text-[10px] text-slate-500 mt-1">跳过 {{ backlogCounts.skipped || 0 }} · 完成 {{ backlogCounts.done || 0 }}</div>
+        </div>
+        <div class="card-dark rounded-xl p-4">
+          <div class="text-[11px] text-slate-400">订阅</div>
+          <div class="text-2xl font-bold font-mono text-sky-400 mt-1">{{ subs.length }}</div>
+          <div class="text-[10px] text-slate-500 mt-1">{{ subsOn }} 已启用</div>
+        </div>
+        <div class="card-dark rounded-xl p-4">
+          <div class="text-[11px] text-slate-400">归档占用</div>
+          <div class="text-2xl font-bold font-mono text-slate-100 mt-1">{{ stats.size_text || '—' }}</div>
+          <div class="text-[10px] text-slate-500 mt-1">{{ stats.files || 0 }} 个文件</div>
+        </div>
+      </div>
+
+      <div class="card-dark rounded-xl p-5 border border-slate-800 space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-slate-200">在传任务</h2>
+          <form class="flex items-center gap-2" @submit.prevent="addDownload">
+            <input v-model="magnet" type="text" placeholder="磁力链接 / 直链" class="bg-slate-900 border border-slate-800 text-xs text-slate-200 rounded px-2.5 py-1.5 w-56 font-mono focus:outline-none focus:border-sky-500">
+            <button type="submit" class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-medium text-white">加入</button>
+          </form>
+        </div>
+        <div v-if="!activeJobs.length" class="text-xs text-slate-500 py-6 text-center">当前没有在传任务</div>
+        <div v-else class="space-y-3">
+          <div v-for="j in activeJobs" :key="j.id" class="p-3.5 rounded-lg bg-slate-900/60 border border-slate-800 space-y-2">
+            <div class="flex items-center justify-between text-xs gap-3">
+              <span class="font-mono font-bold text-sky-400 truncate">{{ j.code || j.name || j.id }}</span>
+              <span class="font-mono text-slate-400 shrink-0">{{ j.speed || 0 }} B/s · {{ j.percent || 0 }}%</span>
+            </div>
+            <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+              <div class="bg-sky-500 h-full rounded-full transition-all" :style="{ width: Math.min(100, Number(j.percent) || 0) + '%' }"></div>
+            </div>
+            <div class="flex justify-between items-center text-[10px] text-slate-500 font-mono gap-3">
+              <span class="truncate">{{ j.stage || '' }} {{ j.folder || '' }}</span>
+              <span class="shrink-0">{{ j.downloaded || 0 }} / {{ j.total || 0 }}</span>
+            </div>
+            <div class="flex justify-end">
+              <button @click="stopJob(j)" class="px-2 py-1 rounded bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-900/60 text-[10px]">停止</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 待办积压中心：分组查看 + 重试/忽略（旧版待办中心的移植） -->
+      <div class="card-dark rounded-xl p-5 border border-slate-800 space-y-3">
+        <div class="flex items-center gap-2 flex-wrap">
+          <h2 class="text-sm font-bold text-slate-200">⏳ 待办积压</h2>
+          <button v-for="g in backlogGroupList" :key="g.k" @click="backlogGroup = g.k"
+            :class="['px-2 py-1 rounded-full text-[10px] font-mono border transition-colors',
+              backlogGroup === g.k ? 'bg-sky-950/70 text-sky-300 border-sky-800' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300']">
+            {{ g.label }} {{ g.n }}
+          </button>
+        </div>
+        <div v-if="!backlogRows.length" class="text-xs text-slate-500 py-6 text-center">该分组下没有待办</div>
+        <div v-else class="divide-y divide-slate-800/60 max-h-96 overflow-y-auto">
+          <div v-for="b in backlogRows" :key="b.sub + ':' + b.code" class="py-2.5 flex items-start gap-3 text-xs">
+            <div class="flex-1 min-w-0 space-y-1">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-mono font-bold text-sky-400">{{ b.code }}</span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400">{{ b.state }}</span>
+                <span v-if="b.title" class="text-slate-400 truncate max-w-md">{{ b.title }}</span>
+              </div>
+              <div class="text-[10px] text-slate-500 flex items-center gap-2 flex-wrap font-mono">
+                <span>{{ b.sub }}</span>
+                <span v-if="b.tries != null">已试 {{ b.tries }} 次</span>
+                <span v-if="b.next_at">{{ fmtNextAt(b.next_at) }}</span>
+              </div>
+              <div v-if="b.why" class="text-[10px] text-amber-400/80">{{ b.why }}</div>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0 pt-1" v-if="b.state !== 'DONE'">
+              <button @click="backlogRetry(b)" class="px-2 py-1 rounded bg-emerald-950 text-emerald-300 border border-emerald-900/60 text-[10px] hover:bg-emerald-900">立刻重试</button>
+              <button @click="backlogIgnore(b)" class="px-2 py-1 rounded bg-slate-800 text-slate-300 border border-slate-700/60 text-[10px] hover:bg-slate-700">忽略</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-dark rounded-xl p-5 border border-slate-800 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-slate-200">订阅</h2>
+          <button @click="openSubForm()" class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-medium text-white">＋ 新增订阅</button>
+        </div>
+        <div v-if="!subs.length" class="text-xs text-slate-500 py-4 text-center">没有订阅，点右上角「新增订阅」开始</div>
+        <div v-else class="divide-y divide-slate-800/60">
+          <div v-for="s in subs" :key="s.id || s.key" class="py-2.5 flex items-center gap-3 text-xs flex-wrap">
+            <span class="font-mono font-bold text-sky-400 w-24">{{ s.name || s.id }}</span>
+            <span class="text-slate-400">{{ s.kind === 'series' ? '系列' : (s.kind === 'actor' ? '演员' : '来源') }}</span>
+            <span class="font-mono text-slate-500">每轮 ≤{{ s.max_per_run }}</span>
+            <span class="font-mono text-slate-500">≤{{ s.max_size_gb }}GB</span>
+            <span class="text-slate-500 truncate flex-1 min-w-[8rem]">{{ s.last_result || '—' }}</span>
+            <button @click="toggleSub(s)" :class="['px-2 py-1 rounded text-[10px] border', s.enabled ? 'bg-emerald-950/60 text-emerald-400 border-emerald-900/60' : 'bg-slate-800 text-slate-400 border-slate-700/60']">{{ s.enabled ? '已启用' : '已停用' }}</button>
+            <button @click="runSub(s)" class="px-2 py-1 rounded bg-sky-950 text-sky-400 border border-sky-800/50 text-[10px]">立即跑</button>
+            <button @click="openSubForm(s)" class="px-2 py-1 rounded bg-slate-800 text-slate-300 border border-slate-700/60 text-[10px] hover:bg-slate-700">编辑</button>
+            <button @click="removeSub(s)" class="px-2 py-1 rounded bg-rose-950 text-rose-300 border border-rose-900/60 text-[10px] hover:bg-rose-900">删除</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 页 4：设置 ───────────────────────────────── -->
+    <section v-if="page === 'settings'" class="space-y-5">
+      <div class="flex items-center justify-between border-b border-slate-800/80 pb-3">
+        <div>
+          <h1 class="text-lg md:text-xl font-bold text-slate-100">⚙️ 系统设置</h1>
+          <p class="text-[11px] text-slate-400 mt-1">改完点保存，热更新立即生效</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span v-if="saveMsg" class="text-[11px] font-mono" :class="saveOk ? 'text-emerald-400' : 'text-rose-400'">{{ saveMsg }}</span>
+          <button @click="saveSettings" class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-medium text-white">保存修改</button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div v-for="(items, group) in settingsGroups" :key="group" class="card-dark rounded-xl p-4 border border-slate-800 space-y-3">
+          <h2 class="text-xs font-bold text-slate-300 border-b border-slate-800 pb-2">{{ group }}</h2>
+          <div v-for="(it, key) in items" :key="key" class="flex items-center gap-3">
+            <label class="flex-1 text-[11px] text-slate-400 leading-tight">
+              {{ it.label || key }}
+              <span class="block text-[9px] text-slate-600 font-mono">{{ key }} · 来源 {{ it.source }}</span>
+            </label>
+            <input v-if="it.type === 'bool'" type="checkbox" v-model="draft[key]" class="w-4 h-4 rounded bg-slate-900 border-slate-800 text-sky-500 focus:ring-sky-500">
+            <input v-else-if="it.type === 'int' || it.type === 'float'" type="number" step="any" v-model.number="draft[key]"
+              class="w-28 bg-slate-900 border border-slate-800 text-xs text-slate-200 rounded px-2 py-1 font-mono focus:outline-none focus:border-sky-500">
+            <input v-else type="text" v-model="draft[key]" class="w-40 bg-slate-900 border border-slate-800 text-xs text-slate-200 rounded px-2 py-1 font-mono focus:outline-none focus:border-sky-500">
+          </div>
+        </div>
+        <div v-if="!settingsGroups || !Object.keys(settingsGroups).length" class="text-xs text-slate-500 py-10 text-center col-span-full">没有可编辑的设置</div>
+      </div>
+
+      <div class="flex items-center gap-4 text-[10px] text-slate-600 pt-2 flex-wrap">
+        <span>旧版高级面板</span>
+        <a href="/legacy#/subs" class="text-sky-500 underline">订阅详情</a>
+        <a href="/legacy#/maint" class="text-sky-500 underline">维护台</a>
+        <a href="/legacy#/logs" class="text-sky-500 underline">运行日志</a>
+        <a href="/legacy" class="text-sky-500 underline">全部旧功能</a>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── 详情弹层 ─────────────────────────────────────── -->
+  <div v-if="detail" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" @click.self="detail = null">
+    <div class="card-dark max-w-3xl w-full rounded-2xl overflow-hidden border border-slate-700 shadow-2xl max-h-[90vh] flex flex-col">
+      <div class="p-5 space-y-4 overflow-y-auto">
+        <div class="flex justify-between items-start gap-4">
+          <div class="min-w-0">
+            <span class="px-2 py-0.5 rounded text-xs font-mono font-bold bg-sky-950 text-sky-400 border border-sky-800">{{ detail.code || detail.id }}</span>
+            <h2 class="text-base font-bold text-slate-100 mt-2">{{ (detail.meta && detail.meta.title) || '' }}</h2>
+            <div class="text-[11px] text-slate-500 font-mono mt-1 truncate">{{ detail.path }}</div>
+          </div>
+          <button @click="detail = null" class="text-slate-400 hover:text-white text-lg shrink-0">✕</button>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-[220px_1fr] gap-4">
+          <div>
+            <img v-if="detail.meta && detail.meta.cover" :src="coverSrc(detail.meta.cover)" referrerpolicy="no-referrer"
+              class="w-full rounded-lg border border-slate-800 object-cover" style="aspect-ratio:3/2" @error="onCoverError($event)">
+            <div v-else class="w-full rounded-lg bg-slate-900 text-slate-600 font-mono text-xs flex items-center justify-center" style="aspect-ratio:3/2">NO COVER</div>
+          </div>
+          <div class="grid grid-cols-2 gap-x-3 gap-y-2 text-xs text-slate-300 font-mono">
+            <div><span class="text-slate-500">主演:</span> {{ actorsOf(detail) || '—' }}</div>
+            <div><span class="text-slate-500">日期:</span> {{ (detail.meta && detail.meta.date) || '—' }}</div>
+            <div><span class="text-slate-500">时长:</span> {{ (detail.meta && detail.meta.duration) || '—' }}</div>
+            <div><span class="text-slate-500">体积:</span> {{ detail.size_text }}</div>
+            <div><span class="text-slate-500">片商:</span> {{ (detail.meta && detail.meta.publisher) || '—' }}</div>
+            <div><span class="text-slate-500">系列:</span> {{ (detail.meta && detail.meta.series) || detail.series || '—' }}</div>
+            <div class="col-span-2"><span class="text-slate-500">分类:</span> {{ ((detail.meta && detail.meta.categories) || []).join(' / ') || '—' }}</div>
+            <div class="col-span-2"><span class="text-slate-500">文件:</span> {{ (detail.files || []).join(', ') || '—' }}</div>
+            <div v-if="detail.watch && detail.watch.pct" class="col-span-2"><span class="text-slate-500">观看进度:</span> {{ Math.round(detail.watch.pct) }}%</div>
+          </div>
+        </div>
+
+        <!-- 剩余图片：previews 图墙 + 打开大图（旧版 thumbWall 的移植） -->
+        <div v-if="previewsOf(detail).length" class="px-5 space-y-2">
+          <div class="text-xs text-slate-500 font-mono">🖼 预览图 × {{ previewsOf(detail).length }}</div>
+          <div class="grid grid-cols-3 sm:grid-cols-4 gap-2">
+            <div v-for="(p, i) in previewsOf(detail)" :key="i" class="relative aspect-video rounded-lg overflow-hidden bg-slate-900 cursor-zoom-in group" @click="openLightbox(previewsOf(detail), i)">
+              <img :src="coverSrc(p)" loading="lazy" referrerpolicy="no-referrer"
+                :class="['w-full h-full object-cover group-hover:scale-105 transition-transform duration-300', privacyCovers && 'privacy-blur']" @error="onCoverError($event)">
+              <span v-if="privacyCovers" class="privacy-tag">隐私模糊</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 图片包画廊入口（cat === image 不进播放器，走逐文件直链画廊） -->
+        <div v-if="detail.cat === 'image' && (detail.files || []).length" class="px-5">
+          <button @click="openGallery(detail)" class="w-full py-2.5 rounded-lg bg-fuchsia-950/60 border border-fuchsia-900/50 text-xs font-bold text-fuchsia-300 hover:bg-fuchsia-900/60">🖼 打开图片画廊（{{ detail.files.length }} 张）</button>
+        </div>
+
+        <!-- 磁力搜索区：番号 → /api/magnets，选中可预览 / 入队 -->
+        <div class="px-5 space-y-2">
+          <button @click="searchMagnets(detail)" :disabled="magnetBusy"
+            class="w-full py-2.5 rounded-lg bg-slate-800 border border-slate-700 text-xs font-bold text-slate-200 hover:bg-slate-700 disabled:opacity-50">
+            🧲 {{ magnetItems.length ? '刷新磁力结果' : '搜磁力（javbus / sukebei / bt4g）' }}
+          </button>
+          <div v-if="magnetItems.length" class="rounded-lg border border-slate-800 divide-y divide-slate-800/60 max-h-72 overflow-y-auto">
+            <div v-for="(mg, i) in magnetItems" :key="i" class="p-2.5 flex items-start gap-3 text-xs">
+              <div class="flex-1 min-w-0 space-y-1">
+                <div class="text-slate-300 line-clamp-1">{{ mg.title }}</div>
+                <div class="text-[10px] text-slate-500 font-mono flex items-center gap-2 flex-wrap">
+                  <span>{{ mg.size_text || '未知体积' }}</span>
+                  <span v-if="mg.seeders != null">⬆ {{ mg.seeders }}</span>
+                  <span v-if="mg.has_subtitle" class="text-emerald-400">字幕</span>
+                  <span v-if="mg.is_hd" class="text-sky-400">HD</span>
+                  <span class="text-slate-600">{{ mg.source }}</span>
+                  <span v-if="mg.added" class="text-emerald-400">已添加</span>
+                </div>
+                <div v-if="mg.preview" class="pt-1">
+                  <div class="text-[10px] text-slate-400 font-mono">whatslink: {{ mg.preview.info.name }} · {{ fmtBytes(mg.preview.info.size) }}</div>
+                  <div v-if="mg.preview.info.screenshots && mg.preview.info.screenshots.length" class="flex gap-1.5 mt-1 overflow-x-auto">
+                    <img v-for="(s, j) in mg.preview.info.screenshots" :key="j" :src="'/proxy?u=' + encodeURIComponent(s)"
+                      class="h-14 rounded cursor-zoom-in" :class="privacyCovers && 'privacy-blur'" @click="openShot(s)" @error="$event.target.style.display='none'">
+                  </div>
+                </div>
+              </div>
+              <div class="flex flex-col gap-1.5 shrink-0">
+                <button @click="previewMagnet(mg)" :disabled="mg._peek" class="px-2 py-1 rounded bg-slate-800 text-slate-300 border border-slate-700/60 text-[10px] hover:bg-slate-700 disabled:opacity-50">{{ mg.preview ? '重试预览' : '预览' }}</button>
+                <button @click="addMagnet(mg.magnet)" class="px-2 py-1 rounded bg-sky-950 text-sky-300 border border-sky-800/60 text-[10px] hover:bg-sky-900">加入队列</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap justify-end gap-2 pt-1 border-t border-slate-800">
+          <button @click="toggleFav(detail)" class="px-3 py-2 rounded-lg bg-slate-800 text-xs text-slate-300 hover:bg-slate-700">{{ detail.watch && detail.watch.fav ? '★ 取消收藏' : '☆ 收藏' }}</button>
+          <button @click="toggleDone(detail)" class="px-3 py-2 rounded-lg bg-slate-800 text-xs text-slate-300 hover:bg-slate-700">{{ detail.watch && detail.watch.done ? '标为未看' : '标为已看' }}</button>
+          <button @click="rename(detail)" class="px-3 py-2 rounded-lg bg-slate-800 text-xs text-slate-300 hover:bg-slate-700">重命名</button>
+          <button @click="remove(detail)" class="px-3 py-2 rounded-lg bg-rose-950 text-xs text-rose-300 hover:bg-rose-900 border border-rose-900/60">删除</button>
+          <button v-if="detail.cat !== 'image'" @click="play(detail)" class="px-4 py-2 rounded-lg bg-sky-600 text-xs font-bold text-white hover:bg-sky-500 shadow-lg shadow-sky-600/30">立即串流播放</button>
+          <button v-else @click="openGallery(detail)" class="px-4 py-2 rounded-lg bg-fuchsia-600 text-xs font-bold text-white hover:bg-fuchsia-500 shadow-lg shadow-fuchsia-600/30">查看图片</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 详情内大图 lightbox -->
+    <div v-if="lightbox.show" class="fixed inset-0 z-[70] bg-black/95 flex items-center justify-center" @click.self="lightbox.show = false">
+      <button @click="lightbox.show = false" class="absolute top-4 right-5 text-slate-400 hover:text-white text-2xl">✕</button>
+      <button v-if="lightbox.list.length > 1" @click="lightboxStep(-1)" class="absolute left-3 text-3xl text-slate-500 hover:text-white px-3">‹</button>
+      <img :src="lightboxUrl(lightbox.list[lightbox.i])" class="max-h-[88vh] max-w-[92vw] object-contain">
+      <button v-if="lightbox.list.length > 1" @click="lightboxStep(1)" class="absolute right-3 text-3xl text-slate-500 hover:text-white px-3">›</button>
+      <div class="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs text-slate-500 font-mono">{{ lightbox.i + 1 }} / {{ lightbox.list.length }}</div>
+    </div>
+  </div>
+
+  <!-- ── 订阅表单弹层（新增 / 编辑） ──────────────────── -->
+  <div v-if="subForm" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" @click.self="subForm = null">
+    <div class="w-full max-w-lg card-dark rounded-xl border border-slate-800 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-bold text-slate-100">{{ subForm.id ? '✏️ 编辑订阅' : '➕ 新增订阅' }}</h3>
+        <button @click="subForm = null" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div class="space-y-3">
+        <label class="block">
+          <span class="text-[11px] text-slate-400">演员 / 系列 ID 或主页链接 <span class="text-slate-600">（如 SSIS 或 https://www.javbus.com/star/…）</span></span>
+          <input v-model.trim="subForm.actor" type="text" :disabled="!!subForm.id"
+            class="mt-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500 disabled:opacity-50">
+        </label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block">
+            <span class="text-[11px] text-slate-400">类型</span>
+            <select v-model="subForm.kind" :disabled="!!subForm.id" class="mt-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500 disabled:opacity-50">
+              <option value="actor">演员</option>
+              <option value="series">系列</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-[11px] text-slate-400">来源</span>
+            <select v-model="subForm.source" :disabled="!!subForm.id" class="mt-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500 disabled:opacity-50">
+              <option value="javbus">javbus</option>
+              <option value="javdb">javdb</option>
+            </select>
+          </label>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block">
+            <span class="text-[11px] text-slate-400">每轮最多入库</span>
+            <input v-model.number="subForm.max_per_run" type="number" min="1" class="mt-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500">
+          </label>
+          <label class="block">
+            <span class="text-[11px] text-slate-400">单个体积上限 (GB)</span>
+            <input v-model.number="subForm.max_size_gb" type="number" min="0" step="0.5" class="mt-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500">
+          </label>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block">
+            <span class="text-[11px] text-slate-400">最小体积 (GB)</span>
+            <input v-model.number="subForm.filters.min_size_gb" type="number" min="0" step="0.5" class="mt-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500">
+          </label>
+          <label class="block">
+            <span class="text-[11px] text-slate-400">最少做种数</span>
+            <input v-model.number="subForm.filters.min_seeders" type="number" min="0" class="mt-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500">
+          </label>
+        </div>
+        <div class="flex items-center gap-4 text-xs text-slate-300">
+          <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" v-model="subForm.filters.require_subtitle" class="accent-sky-500"> 需要字幕</label>
+          <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" v-model="subForm.filters.require_hd" class="accent-sky-500"> 只要 HD</label>
+          <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" v-model="subForm.filters.full_series" class="accent-sky-500"> 全量回填</label>
+        </div>
+        <label class="block">
+          <span class="text-[11px] text-slate-400">必须包含关键词 <span class="text-slate-600">（逗号分隔，任一命中才收）</span></span>
+          <input v-model="subForm.filters.include_keywords" type="text" placeholder="如 无码破解,中文字幕"
+            class="mt-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500">
+        </label>
+        <label class="block">
+          <span class="text-[11px] text-slate-400">排除关键词 <span class="text-slate-600">（逗号分隔，命中即丢弃）</span></span>
+          <input v-model="subForm.filters.exclude_keywords" type="text" placeholder="如 素人,VR"
+            class="mt-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500">
+        </label>
+      </div>
+      <div class="flex justify-end gap-2 pt-1">
+        <button @click="subForm = null" class="px-4 py-2 rounded-lg bg-slate-800 text-xs text-slate-300 hover:bg-slate-700">取消</button>
+        <button @click="saveSub" :disabled="subSaving" class="px-4 py-2 rounded-lg bg-sky-600 text-xs font-bold text-white hover:bg-sky-500 disabled:opacity-50">{{ subSaving ? '保存中…' : '保存' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 播放器 ───────────────────────────────────────── -->
+  <div v-if="player" class="fixed inset-0 z-[60] bg-black/80 backdrop-blur-xl flex flex-col md:flex-row">
+    <!-- 画面区 -->
+    <div class="flex-1 flex flex-col min-w-0 min-h-0 relative">
+      <!-- 顶栏：渐隐蒙版，不挡画面 -->
+      <div class="absolute inset-x-0 top-0 z-10 px-4 md:px-6 py-3 md:py-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent pointer-events-none">
+        <div class="flex items-start justify-between gap-3">
+          <div class="pointer-events-auto min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="font-mono text-[11px] font-bold text-sky-400 tracking-widest">{{ player.code }}</span>
+              <span v-if="player.resume" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30">续播 {{ player.resume }}</span>
+            </div>
+            <div class="text-xs md:text-sm text-slate-300 truncate mt-1 max-w-[62vw] md:max-w-[42vw]">{{ player.title }}</div>
+          </div>
+          <div class="pointer-events-auto flex items-center gap-2 shrink-0">
+            <div v-if="player.medias.length > 1" class="hidden sm:flex items-center gap-0.5 p-0.5 rounded-lg bg-black/40 border border-white/10 backdrop-blur">
+              <button v-for="(m, i) in player.medias" :key="i" @click="switchMedia(m)"
+                class="px-2 py-1 rounded-md text-[10px] font-mono transition-colors"
+                :class="player.src === m.url ? 'bg-sky-500 text-slate-900 font-bold' : 'text-slate-400 hover:text-slate-100 hover:bg-white/10'">{{ m.name || ('画质 ' + (i + 1)) }}</button>
+            </div>
+            <button @click="closePlayer" title="关闭 (Esc)"
+              class="w-8 h-8 rounded-lg bg-black/40 border border-white/10 text-slate-300 hover:bg-white/10 hover:text-white text-sm leading-none">✕</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 舞台 -->
+      <div class="flex-1 min-h-0 flex items-center justify-center p-2 md:p-6 pt-16 md:pt-14" @click.self="closePlayer">
+        <div class="relative w-full h-full flex items-center justify-center">
+          <video ref="video" class="max-w-full max-h-full rounded-xl bg-black object-contain shadow-2xl shadow-black/60 ring-1 ring-white/10"
+            :src="player.src" :poster="player.cover"
+            controls autoplay playsinline preload="metadata"
+            @timeupdate="onTime" @loadedmetadata="onMeta" @waiting="player.loading = true"
+            @canplay="player.loading = false" @playing="player.loading = false"
+            @ended="onEnded" @dblclick="toggleFullscreen"></video>
+          <div v-if="player.loading" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div class="w-9 h-9 rounded-full border-2 border-white/15 border-t-sky-400 animate-spin"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底栏：进度读数 + 提示 -->
+      <div class="shrink-0 px-4 md:px-6 pb-3 md:pb-4 pt-1 bg-gradient-to-t from-black/80 via-black/30 to-transparent">
+        <div v-if="player.dur" class="flex items-center gap-3 mb-2">
+          <div class="flex-1 h-1 rounded-full bg-white/10 overflow-hidden">
+            <div class="h-full bg-sky-500/80 rounded-full transition-[width]" :style="{width: Math.min(100, (player.pos / player.dur) * 100) + '%'}"></div>
+          </div>
+          <span class="text-[10px] font-mono text-slate-400 shrink-0">{{ fmtTime(player.pos) }} / {{ fmtTime(player.dur) }}</span>
+        </div>
+        <div v-if="player.notice" class="p-2.5 text-[11px] text-amber-300 bg-amber-950/40 border border-amber-900/40 rounded-lg flex items-center gap-3">
+          <span class="flex-1">{{ player.notice }}</span>
+          <button v-if="player.unplayable" @click="repairFaststart"
+            class="px-3 py-1.5 rounded-lg bg-amber-900/70 hover:bg-amber-800/70 text-xs text-amber-100 shrink-0">
+            修复可播性（十几分钟）
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 侧栏：影片信息 -->
+    <aside class="hidden md:flex w-72 shrink-0 flex-col border-l border-white/10 bg-black/40 overflow-y-auto">
+      <div class="p-4">
+        <img v-if="player.cover" :src="player.cover" class="w-full rounded-lg ring-1 ring-white/10" :alt="player.code">
+        <div class="mt-4 space-y-2.5 text-[11px]">
+          <div class="font-mono text-sm font-bold text-sky-400">{{ player.code }}</div>
+          <div class="text-slate-300 leading-relaxed">{{ player.title }}</div>
+          <dl class="pt-3 mt-3 border-t border-white/10 space-y-2">
+            <div v-if="player.meta && player.meta.duration" class="flex gap-2"><dt class="text-slate-500 w-12 shrink-0">时长</dt><dd class="text-slate-300">{{ player.meta.duration }}</dd></div>
+            <div v-if="player.meta && player.meta.date" class="flex gap-2"><dt class="text-slate-500 w-12 shrink-0">日期</dt><dd class="text-slate-300">{{ player.meta.date }}</dd></div>
+            <div v-if="player.meta && player.meta.maker" class="flex gap-2"><dt class="text-slate-500 w-12 shrink-0">片商</dt><dd class="text-slate-300">{{ player.meta.maker }}</dd></div>
+            <div v-if="player.series" class="flex gap-2"><dt class="text-slate-500 w-12 shrink-0">系列</dt><dd class="text-slate-300">{{ player.series }}</dd></div>
+            <div v-if="player.meta && player.meta.actors && player.meta.actors.length" class="flex gap-2"><dt class="text-slate-500 w-12 shrink-0">主演</dt><dd class="text-slate-300">{{ (player.meta.actors || []).join('、') }}</dd></div>
+            <div v-if="player.files && player.files.length" class="flex gap-2"><dt class="text-slate-500 w-12 shrink-0">文件</dt><dd class="text-slate-300 font-mono break-all">{{ (player.files || []).join(', ') }}</dd></div>
+          </dl>
+        </div>
+        <div class="pt-4 mt-4 border-t border-white/10 text-[10px] font-mono text-slate-600 leading-relaxed">
+          空格 播放/暂停 · ←→ 快退快进 10s · ↑↓ 音量 · F 全屏 · Esc 关闭
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ── 图片画廊弹层（图片包专属，逐文件取直链，不走视频取流） ── -->
+  <div v-if="gallery.open" class="fixed inset-0 z-[60] bg-black/90 backdrop-blur-xl flex flex-col">
+    <div class="flex items-center gap-3 px-5 py-3 border-b border-white/10 shrink-0">
+      <span class="font-mono font-bold text-sky-400 text-sm">{{ gallery.code }}</span>
+      <span class="text-xs text-slate-400">图片包 · {{ gallery.files.length }} 张</span>
+      <span v-if="gallery.loading" class="text-xs text-slate-500 animate-pulse">解析直链中…</span>
+      <button @click="closeGallery" class="ml-auto text-slate-400 hover:text-white text-lg">✕ 关闭</button>
+    </div>
+    <div class="flex-1 overflow-y-auto p-5">
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+        <div v-for="(g, i) in gallery.items" :key="i" class="relative aspect-[3/2] rounded-lg overflow-hidden bg-slate-900 cursor-zoom-in group" @click="g.src && openShotUrl(g.src)">
+          <img v-if="g.src" :src="g.src" loading="lazy" referrerpolicy="no-referrer"
+            class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">
+          <div v-else class="w-full h-full flex items-center justify-center">
+            <span v-if="!g.err" class="text-[10px] text-slate-500 animate-pulse font-mono">取直链…</span>
+            <span v-else class="text-[10px] text-rose-400 font-mono">失败 <button class="underline" @click.stop="galleryResolve(g, i)">重试</button></span>
+          </div>
+          <div class="absolute bottom-0 inset-x-0 bg-black/60 px-2 py-1 text-[9px] font-mono text-slate-400 truncate">{{ g.name }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── toast ────────────────────────────────────────── -->
+  <div v-if="toastMsg" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-[70] px-4 py-2.5 rounded-lg text-xs font-mono border"
+    :class="toastOk ? 'bg-emerald-950/90 text-emerald-300 border-emerald-800/60' : 'bg-rose-950/90 text-rose-300 border-rose-800/60'">{{ toastMsg }}</div>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
+
+const BASE = location.origin;
+// 若通过 http://user:pass@host 打开，浏览器会把凭据留在 location，
+// 直接 fetch 相对地址会抛 "URL that includes credentials"。这里取出凭据并抹掉地址栏。
+const AUTH_HEADER = (() => {
+  const m = location.href.match(/^(https?:\/\/)([^/@]+)@/);
+  if (!m) return null;
+  try { history.replaceState(null, "", location.href.replace(m[0], m[1])); } catch (e) {}
+  try { return "Basic " + btoa(decodeURIComponent(m[2])); } catch (e) { return null; }
+})();
+function authInit(init) {
+  init = init || {};
+  if (AUTH_HEADER) init.headers = Object.assign({}, init.headers, {Authorization: AUTH_HEADER});
+  return init;
+}
+async function api(path, opts) {
+  const o = Object.assign({cache: "no-store"}, opts || {});
+  o.headers = Object.assign({"Content-Type": "application/json"}, o.headers || {});
+  const r = await fetch(BASE + path, authInit(o));
+  let j = null;
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((j && j.error) || (r.status + " " + path));
+  return j || {};
+}
+const post = (path, body) => api(path, {method: "POST", body: JSON.stringify(body || {})});
+
+const COVER_R2 = "https://covers.master.us.kg/javbus/www.javbus.com";
+function fmtTime(sec) {
+  sec = Math.max(0, Math.floor(Number(sec) || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  const pad = n => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+function coverSrc(u) {
+  u = String(u || "");
+  if (!u) return "";
+  const jb = u.match(/^https?:\/\/(?:www\.)?javbus\.com(\/pics\/.*)$/i)
+    || u.match(/^https?:\/\/javbus\.img\.master\.us\.kg(\/pics\/.*)$/i);
+  if (jb) return COVER_R2 + jb[1];
+  if (u.startsWith("https://covers.master.us.kg/")) return u;
+  const dmm = u.match(/^https?:\/\/(pics\.dmm\.co\.jp|awsimgsrc\.dmm\.co\.jp)(\/.*)$/i);
+  if (dmm) return "https://covers.master.us.kg/javbus/" + dmm[1].toLowerCase() + dmm[2];
+  return BASE + "/proxy?u=" + encodeURIComponent(u);
+}
+
+createApp({
+  setup() {
+    const page = ref("library");
+    const q = ref("");
+    const kindFilter = ref("all");
+    const seriesFilter = ref("");
+    const sortBy = ref("new");
+    const tasks = ref([]);
+    const stats = ref({});
+    const jobs = ref([]);
+    const subs = ref([]);
+    const backlogCounts = ref({});
+    const settingsItems = ref({});
+    const draft = ref({});
+    const online = ref(false);
+    const err = ref("");
+    const detail = ref(null);
+    const player = ref(null);
+    const video = ref(null);
+    const toastMsg = ref("");
+    const saveMsg = ref("");
+    const saveOk = ref(true);
+    const magnet = ref("");
+
+    // ── 新增功能 refs（隐私磨砂 / 在线搜索 / 待办 / 订阅表单 / 磁力 / 画廊） ──
+    const privacyCovers = ref(localStorage.getItem("privacyCovers") !== "0");
+    const findLoading = ref(false);
+    const findItems = ref([]);
+    const findCached = ref(false);
+    const findError = ref("");
+    const backlogGroup = ref("all");
+    const backlog = ref({ items: [], groups: {}, counts: {} });
+    const subForm = ref(null);
+    const subSaving = ref(false);
+    const magnetBusy = ref(false);
+    const magnetItems = ref([]);
+    const lightbox = ref({ show: false, list: [], i: 0 });
+    const gallery = ref({ open: false, code: "", files: [], items: [], loading: false });
+
+    let toastTimer = null;
+    const toast = (msg, ok = true) => {
+      toastMsg.value = msg;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toastMsg.value = ""; }, 3200);
+    };
+
+    const pages = computed(() => [
+      {id: "library", name: "媒体库", icon: "🎬", badge: String(stats.value.tasks || "")},
+      {id: "rows", name: "资产清单", icon: "📋", badge: String(tasks.value.length || "")},
+      {id: "queue", name: "队列订阅", icon: "⚡", badge: String(activeJobs.value.length || "")},
+      {id: "settings", name: "系统设置", icon: "⚙️", badge: ""},
+    ]);
+
+    const seriesList = computed(() => Array.from(new Set(tasks.value.map(t => t.series).filter(Boolean))).sort());
+    const subsOn = computed(() => subs.value.filter(s => s.enabled).length);
+    const activeJobs = computed(() => jobs.value.filter(j => !["done", "failed", "removed", "cleaned"].includes(String(j.stage || "").toLowerCase())));
+    const doneJobs = computed(() => jobs.value.length - activeJobs.value.length);
+
+    const actorsOf = (t) => {
+      const a = (t.meta && t.meta.actors) || [];
+      return Array.isArray(a) ? a.join(", ") : String(a || "");
+    };
+
+    const library = computed(() => {
+      const kw = q.value.trim().toLowerCase();
+      let list = tasks.value.filter(t => {
+        if (kindFilter.value !== "all" && t.cat !== kindFilter.value) return false;
+        if (seriesFilter.value && t.series !== seriesFilter.value) return false;
+        if (!kw) return true;
+        const hay = [t.code, t.id, t.series, t.path, (t.meta && t.meta.title) || "", actorsOf(t)].join(" ").toLowerCase();
+        return hay.includes(kw);
+      });
+      if (sortBy.value === "size") list = list.slice().sort((a, b) => (b.size || 0) - (a.size || 0));
+      else if (sortBy.value === "code") list = list.slice().sort((a, b) => String(a.code || a.id).localeCompare(String(b.code || b.id)));
+      else list = list.slice();
+      return list;
+    });
+
+    const settingsGroups = computed(() => {
+      const out = {};
+      for (const key of Object.keys(settingsItems.value)) {
+        const it = settingsItems.value[key] || {};
+        const g = it.group || "其他";
+        (out[g] = out[g] || {})[key] = it;
+      }
+      const order = ["内容", "刮削", "存储", "调度"];
+      const sorted = {};
+      Object.keys(out).sort((a, b) => {
+        const ia = order.indexOf(a), ib = order.indexOf(b);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      }).forEach(k => { sorted[k] = out[k]; });
+      return sorted;
+    });
+
+    const go = (id) => { page.value = id; location.hash = id; };
+
+    // ── 隐私磨砂（缺口4）：顶栏开关，localStorage 记忆，默认开 ──
+    const togglePrivacy = () => {
+      privacyCovers.value = !privacyCovers.value;
+      localStorage.setItem("privacyCovers", privacyCovers.value ? "1" : "0");
+      toast(privacyCovers.value ? "封面已打码" : "封面已恢复明文");
+    };
+
+    // ── 在线搜索（缺口6）：q 变化 debounce 400ms 调 /api/find（javbus.master.us.kg） ──
+    let findTimer = null;
+    const doFind = async (kw) => {
+      if (!kw || kw.length < 2) { findItems.value = []; findError.value = ""; return; }
+      findLoading.value = true;
+      findError.value = "";
+      try {
+        const d = await api("/api/find?q=" + encodeURIComponent(kw));
+        if (d.ok) { findItems.value = d.items || []; findCached.value = !!d.cached; }
+        else { findError.value = d.error || "搜索失败"; findItems.value = []; }
+      } catch (e) { findError.value = (e.message || e); findItems.value = []; }
+      finally { findLoading.value = false; }
+    };
+    watch(q, (v) => {
+      clearTimeout(findTimer);
+      findTimer = setTimeout(() => doFind(String(v || "").trim()), 400);
+    });
+    const have = (code) => tasks.value.some(t => String(t.code || "") === String(code || ""));
+    const openFound = async (it) => {
+      const local = tasks.value.find(t => String(t.code || "") === String(it.code || ""));
+      if (local) { openDetail(local); return; }
+      // 不在库内：打开在线详情卡（封面+标题+搜磁力）
+      detail.value = {
+        id: it.code, code: it.code, series: "", path: "",
+        size_text: "", cat: "video", files: [],
+        meta: { title: it.title, cover: it.cover, date: it.date, categories: it.tags || [] },
+        watch: {}, _online: true,
+      };
+      magnetItems.value = [];
+      await searchMagnets(detail.value);
+    };
+
+    // ── 待办积压（缺口3）：分组 + 重试/忽略 ──
+    const BACKLOG_GROUP_LABELS = [
+      ["all", "全部"], ["retry", "待重试"], ["no_magnet", "查无磁力"], ["no_quality", "质量不符"],
+      ["filtered", "被过滤"], ["active", "进行中"], ["done", "已完成"], ["skipped", "已跳过"],
+    ];
+    const backlogGroupList = computed(() => {
+      const g = backlog.value.groups || {};
+      return BACKLOG_GROUP_LABELS.map(([k, label]) => ({ k, label, n: g[k] || 0 }));
+    });
+    const backlogRows = computed(() => {
+      const items = backlog.value.items || [];
+      return backlogGroup.value === "all" ? items : items.filter(b => b.group === backlogGroup.value);
+    });
+    const fmtNextAt = (ts) => {
+      const sec = Math.round(Number(ts) - Date.now() / 1000);
+      if (sec <= 0) return "即将重查";
+      if (sec < 3600) return Math.ceil(sec / 60) + " 分钟后再查";
+      return Math.ceil(sec / 3600) + " 小时后再查";
+    };
+    const backlogRetry = async (b) => {
+      try {
+        await post("/api/backlog/retry", { code: b.code, sub: b.sub });
+        toast("已置顶重试：" + b.code);
+        load();
+      } catch (e) { toast("重试失败：" + (e.message || e), false); }
+    };
+    const backlogIgnore = async (b) => {
+      try {
+        await post("/api/backlog/ignore", { code: b.code, sub: b.sub });
+        toast("已忽略：" + b.code);
+        load();
+      } catch (e) { toast("忽略失败：" + (e.message || e), false); }
+    };
+
+    // ── 订阅表单（缺口1/2）：新增 / 编辑 / 删除 ──
+    const blankSubForm = () => ({
+      id: "", actor: "", kind: "actor", source: "javbus",
+      max_per_run: 3, max_size_gb: 10,
+      filters: { min_size_gb: 0, min_seeders: 0, require_subtitle: false, require_hd: false, full_series: false, include_keywords: "", exclude_keywords: "" },
+    });
+    const openSubForm = (s) => {
+      if (!s) { subForm.value = blankSubForm(); return; }
+      const f = s.filters || {};
+      subForm.value = {
+        id: s.id || s.key || "", actor: s.name || s.id || "", kind: s.kind || "actor", source: s.source || "javbus",
+        max_per_run: s.max_per_run ?? 3, max_size_gb: s.max_size_gb ?? 10,
+        filters: {
+          min_size_gb: f.min_size_gb ?? 0, min_seeders: f.min_seeders ?? 0,
+          require_subtitle: !!f.require_subtitle, require_hd: !!f.require_hd, full_series: !!f.full_series,
+          include_keywords: Array.isArray(f.include_keywords) ? f.include_keywords.join(",") : (f.include_keywords || ""),
+          exclude_keywords: Array.isArray(f.exclude_keywords) ? f.exclude_keywords.join(",") : (f.exclude_keywords || ""),
+        },
+      };
+    };
+    const saveSub = async () => {
+      const f = subForm.value;
+      if (!f) return;
+      if (!f.id && !f.actor) { toast("请填演员 / 系列 ID 或主页链接", false); return; }
+      subSaving.value = true;
+      try {
+        if (f.id) {
+          await post("/api/subs/update", {
+            id: f.id, max_per_run: f.max_per_run, max_size_gb: f.max_size_gb, filters: f.filters,
+          });
+          toast("订阅已更新");
+        } else {
+          await post("/api/subs/add", {
+            actor: f.actor, kind: f.kind, source: f.source,
+            max_per_run: f.max_per_run, max_size_gb: f.max_size_gb, filters: f.filters,
+          });
+          toast("订阅已添加");
+        }
+        subForm.value = null;
+        load();
+      } catch (e) { toast("保存失败：" + (e.message || e), false); }
+      finally { subSaving.value = false; }
+    };
+    const removeSub = async (s) => {
+      if (!confirm("删除订阅 " + (s.name || s.id) + " ？待办积压会保留。")) return;
+      try {
+        await post("/api/subs/remove", { id: s.id || s.key });
+        toast("订阅已删除");
+        load();
+      } catch (e) { toast("删除失败：" + (e.message || e), false); }
+    };
+
+    // ── 磁力（缺口7）：番号搜磁力 + whatslink 预览 + 入队 ──
+    const fmtBytes = (n) => {
+      const num = Number(n) || 0;
+      if (!num) return "未知";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let i = 0, v = num;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return v.toFixed(v >= 100 || i === 0 ? 0 : 1) + " " + units[i];
+    };
+    const searchMagnets = async (t) => {
+      const code = (t && (t.code || t.id)) || "";
+      if (!code) { toast("这条没有番号，搜不了磁力", false); return; }
+      magnetBusy.value = true;
+      try {
+        const d = await api("/api/magnets?code=" + encodeURIComponent(code));
+        magnetItems.value = (d.items || []).map(m => ({ ...m, preview: null, _peek: false }));
+        if (!magnetItems.value.length) toast("没搜到磁力（或站点暂时不可用）", false);
+      } catch (e) { toast("搜磁力失败：" + (e.message || e), false); }
+      finally { magnetBusy.value = false; }
+    };
+    const previewMagnet = async (mg) => {
+      mg._peek = true;
+      try {
+        const d = await api("/api/magnet/preview?magnet=" + encodeURIComponent(mg.magnet));
+        if (d.found && d.info) { mg.preview = { info: d.info }; }
+        else { toast("whatslink 没探到这个磁力的信息", false); }
+      } catch (e) { toast("预览失败：" + (e.message || e), false); }
+      finally { mg._peek = false; }
+    };
+    const addMagnet = async (m) => {
+      try {
+        await post("/api/download", { text: m });
+        toast("已加入下载队列");
+        load();
+      } catch (e) { toast("入队失败：" + (e.message || e), false); }
+    };
+    const openShot = (url) => openShotUrl("/proxy?u=" + encodeURIComponent(url));
+    const openShotUrl = (src) => { lightbox.value = { show: true, list: [src], i: 0 }; };
+
+    // ── lightbox / previews（缺口5） ──
+    const previewsOf = (t) => (t && t.meta && Array.isArray(t.meta.previews)) ? t.meta.previews : [];
+    const lightboxUrl = (u) => (/^https?:/.test(u) && !u.includes("covers.master.us.kg") && !u.includes("javbus.") && !u.includes("dmm.co")) ? "/proxy?u=" + encodeURIComponent(u) : u;
+    const openLightbox = (list, i) => { lightbox.value = { show: true, list: list.slice(), i }; };
+    const lightboxStep = (d) => {
+      const lb = lightbox.value;
+      if (!lb.list.length) return;
+      lb.i = (lb.i + d + lb.list.length) % lb.list.length;
+    };
+
+    // ── 图片画廊（缺口8）：图片包逐文件取直链，绝不走视频取流 ──
+    const galleryResolve = async (g, i) => {
+      g.err = false;
+      try {
+        const d = await api("/api/cloud/directlink?code=" + encodeURIComponent(gallery.value.code) + "&path=" + encodeURIComponent(g.path));
+        if (d.ok && (d.play || d.link)) { g.src = d.play || d.link; }
+        else { g.err = true; }
+      } catch (e) { g.err = true; }
+    };
+    const openGallery = (t) => {
+      const code = t.code || t.id || "";
+      const base = String(t.path || "").replace(/\/+$/, "");
+      const files = (t.files || []).filter(f => /\.(jpe?g|png|gif|webp|bmp|avif)$/i.test(f));
+      if (!code) { toast("这条归档没有番号", false); return; }
+      if (!files.length) { toast("这个包里没有图片文件", false); return; }
+      gallery.value = {
+        open: true, code, loading: true, files,
+        items: files.map(f => ({ name: f, path: base ? base + "/" + f : f, src: "", err: false })),
+      };
+      // 逐个解析直链（串行避免打爆云盘接口），解析一张显示一张
+      (async () => {
+        for (const [i, g] of gallery.value.items.entries()) {
+          if (!gallery.value.open) return;
+          await galleryResolve(g, i);
+        }
+        gallery.value.loading = false;
+      })();
+    };
+    const closeGallery = () => { gallery.value.open = false; };
+
+    const load = async () => {
+      err.value = "";
+      try {
+        const h = await api("/api/health");
+        online.value = !!h.ok;
+        const t = await api("/api/tasks");
+        tasks.value = t.tasks || [];
+        stats.value = t.stats || {};
+        const j = await api("/api/jobs").catch(() => ({jobs: []}));
+        jobs.value = j.jobs || [];
+        const s = await api("/api/subs").catch(() => ({}));
+        subs.value = s.subs || [];
+        backlog.value = (s.backlog && typeof s.backlog === "object") ? s.backlog : { items: [], groups: {}, counts: {} };
+        backlogCounts.value = (s.backlog && s.backlog.counts) || {};
+        const st = await api("/api/settings").catch(() => ({items: {}}));
+        settingsItems.value = st.items || {};
+        const d = {};
+        for (const k of Object.keys(settingsItems.value)) d[k] = settingsItems.value[k].value;
+        draft.value = d;
+      } catch (e) {
+        err.value = "加载失败：" + (e.message || e);
+        online.value = false;
+      }
+    };
+    const reload = () => { load(); toast("已刷新"); };
+
+    const openDetail = (t) => {
+      detail.value = t;
+      magnetItems.value = [];
+    };
+    const onCoverError = (e) => { e.target.style.visibility = "hidden"; };
+
+    // ── 播放（缺口8）：图片包一律进画廊，只有视频包走视频取流 ──
+    const play = async (t) => {
+      if (t.cat === "image") { openGallery(t); return; }
+      const code = t.code || t.id || "";
+      if (!code) { toast("这条归档没有番号", false); return; }
+      toast("正在取直链…");
+      try {
+        const data = await api("/api/cloud/directlink?code=" + encodeURIComponent(code));
+        if (!data.ok) { toast("取直链失败：" + (data.error || "未知原因"), false); return; }
+        const src = data.play || data.link || "";
+        if (!src) { toast("没有可播放的直链", false); return; }
+        if (data.playable === null) {
+          toast("直链暂时读不通（云盘缓存可能未生效），稍后重试", false);
+          return;
+        }
+        const medias = (data.medias || [])
+          .map(m => typeof m === "string" ? {name: "", url: m} : {name: m.name || "", url: m.url || m.link || m.play || ""})
+          .filter(m => m.url);
+        // 续播：看过且没看完的，从上次位置接着放
+        const resumeAt = t.watch && !t.watch.done ? Math.max(0, Number(t.watch.pos) || 0) : 0;
+        player.value = {
+          code, title: (t.meta && t.meta.title) || "", cover: coverSrc(t.meta && t.meta.cover),
+          src, medias,
+          unplayable: data.playable === false,
+          notice: data.playable === false ? "索引在文件末尾，Chrome 会自动去尾读取；若一直转圈请用「修复可播性」。" : "",
+          meta: t.meta || {}, series: t.series || "", files: t.files || [],
+          resumeAt, resume: resumeAt ? fmtTime(resumeAt) : "",
+          pos: 0, dur: 0, loading: true,
+        };
+        detail.value = null;
+      } catch (e) { toast("取直链失败：" + (e.message || e), false); }
+    };
+
+    // 修复可播性：把 MP4 索引提到文件头。要下载+重排+传回，十几分钟起步。
+    // HTTP 同步会超时，所以后端起后台任务，前端只提示已提交。
+    const repairFaststart = async () => {
+      const p = player.value;
+      if (!p) return;
+      if (!confirm(`${p.code}\n\n修复可播性？\n\n`
+        + `· 要先下载整片，再重排索引，最后传回原位\n`
+        + `· 5GB 的片子大约十几分钟\n`
+        + `· 不重编码，只挪索引，画质不变\n\n`
+        + `确定要修吗？`)) return;
+      try {
+        const d = await post("/api/cloud/faststart", {code: p.code});
+        if (!d.ok) { toast("修复失败：" + (d.error || "未知原因"), false); return; }
+        toast("已提交修复，进度在「队列订阅」页");
+      } catch (e) { toast("修复失败：" + (e.message || e), false); }
+    };
+
+    const saveProgress = () => {
+      const p = player.value, v = video.value;
+      if (!p || !v) return;
+      const dur = Number(v.duration) || 0;
+      const pos = Number(v.currentTime) || 0;
+      if (!dur) return;
+      post("/api/watch", {code: p.code, pos: Math.round(pos), dur: Math.round(dur), done: pos / dur >= 0.9})
+        .catch(() => {});
+    };
+    const onTime = () => {
+      const p = player.value, v = video.value;
+      if (!p || !v) return;
+      p.pos = Number(v.currentTime) || 0;
+      p.dur = Number(v.duration) || p.dur;
+    };
+    const onMeta = () => {
+      const p = player.value, v = video.value;
+      if (!p || !v) return;
+      p.dur = Number(v.duration) || 0;
+      p.pos = Number(v.currentTime) || 0;
+      // 续播：metadata 到位后才知道时长，太早设 currentTime 会被浏览器丢掉
+      if (p.resumeAt && p.pos < 1) {
+        try { v.currentTime = p.resumeAt; } catch (e) { /* 时长还没就绪，下一次再试 */ }
+      }
+    };
+    const onEnded = () => { saveProgress(); load(); };
+    const toggleFullscreen = () => {
+      const el = video.value;
+      if (!el) return;
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (el.requestFullscreen) el.requestFullscreen();
+    };
+    // 键盘：空格 播放/暂停，←→ 快退快进，↑↓ 音量，F 全屏，Esc 关闭
+    const onPlayerKey = (e) => {
+      if (!player.value) return;
+      const v = video.value;
+      const k = e.key;
+      if (k === "Escape") { e.preventDefault(); closePlayer(); return; }
+      if (!v) return;
+      if (k === " " || k === "k") { e.preventDefault(); v.paused ? v.play() : v.pause(); }
+      else if (k === "ArrowRight") { e.preventDefault(); v.currentTime = Math.min(v.duration || 0, v.currentTime + 10); }
+      else if (k === "ArrowLeft") { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10); }
+      else if (k === "ArrowUp") { e.preventDefault(); v.volume = Math.min(1, v.volume + 0.1); }
+      else if (k === "ArrowDown") { e.preventDefault(); v.volume = Math.max(0, v.volume - 0.1); }
+      else if (k === "f" || k === "F") { e.preventDefault(); toggleFullscreen(); }
+    };
+    const switchMedia = (m) => {
+      if (!player.value || !m) return;
+      const v = video.value;
+      const at = v ? Number(v.currentTime) || 0 : 0;
+      player.value.src = m.url;
+      // <video> 的 src 变了不会自己重新拉流，得手动 load()，并把进度带过去
+      nextTick(() => {
+        const el = video.value;
+        if (!el) return;
+        el.load();
+        if (at) el.currentTime = at;
+      });
+    };
+    const closePlayer = () => {
+      saveProgress();
+      const v = video.value;
+      // 先断流再摘层：不 pause 的话音频会在层消失后继续响
+      if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
+      player.value = null;
+      load();
+    };
+
+    // ── 归档操作 ────────────────────────────────────────
+    const patchWatch = async (t, patch) => {
+      try {
+        const code = t.code || t.id;
+        await post("/api/watch", Object.assign({code: code}, patch));
+        await load();
+        // load() 换了整个数组，弹层里还指着旧对象 —— 得换成刷新后的那条，
+        // 否则「收藏 / 已看」的角标不跟着变
+        if (detail.value) {
+          const fresh = tasks.value.find(x => (x.code || x.id) === code);
+          if (fresh) detail.value = fresh;
+        }
+        toast("已保存");
+      } catch (e) { toast("保存失败：" + (e.message || e), false); }
+    };
+    const toggleFav = (t) => patchWatch(t, {fav: !(t.watch && t.watch.fav)});
+    const toggleDone = (t) => patchWatch(t, {done: !(t.watch && t.watch.done)});
+
+    const rename = async (t) => {
+      const to = prompt("新的名称 / 番号：", t.code || t.id);
+      if (!to || to === (t.code || t.id)) return;
+      try {
+        await post("/api/archive/rename", {code: t.code || t.id, to});
+        await load();
+        toast("已重命名");
+      } catch (e) { toast("重命名失败：" + (e.message || e), false); }
+    };
+    const remove = async (t) => {
+      if (!confirm("删除归档 " + (t.code || t.id) + "？此操作不可撤销。")) return;
+      try {
+        await post("/api/archive/delete", {code: t.code || t.id});
+        detail.value = null;
+        await load();
+        toast("已删除");
+      } catch (e) { toast("删除失败：" + (e.message || e), false); }
+    };
+
+    // ── 队列 / 订阅 ─────────────────────────────────────
+    const addDownload = async () => {
+      const text = magnet.value.trim();
+      if (!text) return;
+      try {
+        await post("/api/download", {text});
+        magnet.value = "";
+        await load();
+        toast("已加入队列");
+      } catch (e) { toast("加入失败：" + (e.message || e), false); }
+    };
+    const stopJob = async (j) => {
+      try { await post("/api/job/stop", {id: j.id}); await load(); toast("已停止"); }
+      catch (e) { toast("停止失败：" + (e.message || e), false); }
+    };
+    const toggleSub = async (s) => {
+      try { await post("/api/subs/toggle", {id: s.id, enabled: !s.enabled}); await load(); }
+      catch (e) { toast("操作失败：" + (e.message || e), false); }
+    };
+    const runSub = async (s) => {
+      try { await post("/api/subs/run", {id: s.id}); await load(); toast("已触发"); }
+      catch (e) { toast("触发失败：" + (e.message || e), false); }
+    };
+
+    // ── 设置 ────────────────────────────────────────────
+    const saveSettings = async () => {
+      saveMsg.value = "保存中…";
+      try {
+        const r = await post("/api/settings", {updates: draft.value});
+        if (r.ok === false) throw new Error(JSON.stringify(r.failed || r.error || "保存失败"));
+        saveOk.value = true; saveMsg.value = "已保存 " + ((r.saved || []).length) + " 项";
+        await load();
+        setTimeout(() => { saveMsg.value = ""; }, 3000);
+      } catch (e) {
+        saveOk.value = false; saveMsg.value = "保存失败：" + (e.message || e);
+      }
+    };
+
+    const PATHS = { "/": "library", "/index.html": "library", "/archive": "library",
+                    "/search": "library", "/rows": "rows", "/queue": "queue",
+                    "/subs": "queue", "/settings": "settings" };
+
+    onMounted(() => {
+      const hash = (location.hash || "").replace("#", "");
+      const path = location.pathname.replace(/\/+$/, "") || "/";
+      if (["library", "rows", "queue", "settings"].includes(hash)) page.value = hash;
+      else if (PATHS[path]) page.value = PATHS[path];
+      window.addEventListener("hashchange", () => {
+        const v = (location.hash || "").replace("#", "");
+        if (["library", "rows", "queue", "settings"].includes(v)) page.value = v;
+      });
+      document.addEventListener("keydown", onPlayerKey);
+      load();
+      setInterval(load, 30000);
+    });
+    onUnmounted(() => document.removeEventListener("keydown", onPlayerKey));
+
+    return {
+      page, q, kindFilter, seriesFilter, sortBy, tasks, stats, jobs, subs, backlogCounts,
+      settingsItems, draft, online, err, detail, player, video, toastMsg, saveMsg, saveOk, magnet,
+      pages, seriesList, subsOn, activeJobs, doneJobs, library, settingsGroups,
+      go, reload, load, openDetail, onCoverError, actorsOf, play, closePlayer,
+      onTime, onMeta, onEnded, toggleFullscreen,
+      switchMedia, repairFaststart,
+      toggleFav, toggleDone, rename, remove, addDownload, stopJob, toggleSub, runSub, saveSettings,
+      coverSrc, fmtTime,
+      // 新增功能暴露
+      privacyCovers, togglePrivacy,
+      findLoading, findItems, findCached, findError, have, openFound,
+      backlogGroup, backlogGroupList, backlogRows, fmtNextAt, backlogRetry, backlogIgnore,
+      subForm, subSaving, openSubForm, saveSub, removeSub,
+      magnetBusy, magnetItems, searchMagnets, previewMagnet, addMagnet, fmtBytes,
+      previewsOf, lightbox, lightboxUrl, openLightbox, lightboxStep, openShot, openShotUrl,
+      gallery, galleryResolve, openGallery, closeGallery,
+    };
+  },
+}).mount("#app");
+</script>
+</body>
+</html>
