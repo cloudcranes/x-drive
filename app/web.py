@@ -913,10 +913,23 @@ def cloud_direct_link(path: str = "", code: str = "") -> dict:
         return {"ok": False, "error": "取直链失败（迅雷官方 API 与 CD2 都不行）"}
 
     # 逐个探：哪条真能读出字节就用哪条
+    #
+    # 探测分两种，取决于**文件类型**（不是直链）：
+    #   · 视频 → probe_playable：读 1MB 找 moov，回答「索引在不在头部」
+    #   · 图片/字幕等 → probe_reachable：读 1KB 只为确认这条路通
+    # 对 jpg 跑 moov 检测是纯浪费 —— 图片里根本没有 moov，1MB 白读，慢节点
+    # 上还要重试三轮。实测一张 370KB 的 jpg 白等了 48 秒，而画廊是逐张
+    # 串行解析的，一个 3 张图的包就是两分半。
+    is_video = _looks_like_video((candidates[0].get("name") or path.rsplit("/", 1)[-1]))
     last = None
     for cand in candidates:
         cand["play"] = play_url(cand["link"])
-        playable = probe_playable(cand["link"])
+        if is_video:
+            playable = probe_playable(cand["link"])
+        else:
+            reached = probe_reachable(cand["link"])
+            # 非视频没有「索引在不在头部」这回事：读得出来就是能看。
+            playable = True if reached else None
         if playable is None:
             # 这条路根本读不通（网络/缓存/限流）→ 换下一条
             log.info("直链 %s 探不通，换下一条", cand["via"])
@@ -1279,6 +1292,60 @@ def _faststart_worker(job_id: str, backend, path: str, link: str, code: str) -> 
 # 「文件刚被修好」这种变化（那个变化会伴随直链 URL 变化 —— URL 变了就不命中缓存）。
 _PLAYABLE_CACHE: dict[str, tuple[float, bool | None]] = {}
 PLAYABLE_CACHE_TTL = float(os.getenv("PLAYABLE_CACHE_TTL", "600") or 600)
+# 一次探测的**总**预算。单次 urlopen 的 timeout 只约束单个 socket 操作，
+# 慢节点上 `read()` 一点点挤字节时能远远超过它 —— 实测 aliyun08 节点单次
+# 探测就要 16 秒以上，三次重试叠起来把 HTTP 请求挂到 48 秒。
+PLAYABLE_PROBE_BUDGET = float(os.getenv("PLAYABLE_PROBE_BUDGET", "12") or 12)
+# 探非视频文件（图片/字幕）用：只要确认「读得出来」，不判内容。
+REACHABLE_PROBE_BUDGET = float(os.getenv("REACHABLE_PROBE_BUDGET", "6") or 6)
+
+
+def _looks_like_video(name: str) -> bool:
+    """这个名字像不像视频文件。
+
+    判不出来（没有扩展名）时**当视频**：宁可多探一次，也别把视频当图片放过去
+    —— 那会漏掉「索引在末尾」的提示条。
+    """
+    suffix = Path(str(name or "")).suffix.lower()
+    if not suffix:
+        return True
+    return suffix in cloudorganize.VIDEO_EXT
+
+
+def probe_reachable(link: str, probe_bytes: int = 1024) -> bool | None:
+    """这条直链**读不读得出来**（不判内容）。给图片/字幕这类非视频用。
+
+    为什么不复用 probe_playable：它要读 1MB 去找 moov，而图片里根本没有
+    moov —— 找不到是必然的，那 1MB 白读，慢节点上还要重试三轮。实测
+    （2026-11-04）一张 370KB 的 jpg 走 probe_playable 白等了 **48 秒**，
+    而画廊是逐张串行解析的，一个 3 张图的包就是两分半。
+
+    非视频只需要回答「这条路通不通」—— 通了就用（True），读不出字节就
+    换另一条（None）。
+    """
+    raw = (link or "").strip()
+    if not raw:
+        return True
+    hit = _PLAYABLE_CACHE.get(raw)
+    if hit and time.time() - hit[0] < PLAYABLE_CACHE_TTL:
+        return hit[1]
+    started = time.monotonic()
+    last = ""
+    for attempt in range(2):
+        if attempt and time.monotonic() - started > REACHABLE_PROBE_BUDGET:
+            break
+        try:
+            req = urllib.request.Request(
+                raw, headers={"Range": f"bytes=0-{max(0, probe_bytes - 1)}"})
+            with urllib.request.urlopen(req, timeout=REACHABLE_PROBE_BUDGET) as resp:
+                resp.read(probe_bytes)
+            _PLAYABLE_CACHE[raw] = (time.time(), True)
+            return True
+        except Exception as exc:            # noqa: BLE001
+            last = f"{type(exc).__name__}: {str(exc)[:80]}"
+    log.info("探测直链可达性失败：%s", last)
+    _PLAYABLE_CACHE[raw] = (time.time(), None)
+    return None
 
 
 def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool | None:
@@ -1306,8 +1373,11 @@ def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool | None:
     判据：读文件头 1MB，看 moov 在不在里面（faststart 过 的文件就在）。
     读不出来返回 None（这条路走不通），不编。
 
+    **只对视频有意义**：图片/字幕请用 probe_reachable（见那里的说明）。
+
     内网直链（CD2）容器里能直连；外网直链（迅雷 CDN）容器有时连不上
-    （实测间歇性 Connection refused），所以探测要重试。
+    （实测间歇性 Connection refused），所以探测要重试 —— 但要守住总预算，
+    不能为了探一个文件的索引把整个请求挂到一分钟。
     """
     raw = (link or "").strip()
     if not raw:
@@ -1317,8 +1387,12 @@ def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool | None:
         return hit[1]
     # 迅雷 CDN 会**间歇性**拒绝连接（实测同一 URL 连打 10 次：成功 2 次、
     # 8 次 RemoteDisconnected）。所以要重试 —— 一次失败就下结论会误判。
+    started = time.monotonic()
     last = ""
     for attempt in range(3):
+        if attempt and time.monotonic() - started > PLAYABLE_PROBE_BUDGET:
+            last = f"{last}（已超 {PLAYABLE_PROBE_BUDGET:.0f} 秒预算，不再重试）"
+            break
         try:
             req = urllib.request.Request(raw, headers={"Range": f"bytes=0-{probe_bytes - 1}"})
             with urllib.request.urlopen(req, timeout=VIDEO_PROBE_TIMEOUT) as resp:
@@ -1330,7 +1404,7 @@ def probe_playable(link: str, probe_bytes: int = 1 << 20) -> bool | None:
             last = f"{type(exc).__name__}: {str(exc)[:80]}"
             if attempt < 2:
                 time.sleep(1.0)
-    log.info("探测可播性失败（试了 3 次）：%s", last)
+    log.info("探测可播性失败（试了 %d 次）：%s", attempt + 1, last)
     _PLAYABLE_CACHE[raw] = (time.time(), None)
     return None
 

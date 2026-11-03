@@ -349,3 +349,120 @@ class _Resp:
 
     def __exit__(self, *a):
         return False
+
+
+# ─────────────────────────────────────────── 非视频不跑 moov 检测
+
+def test_looks_like_video_by_suffix():
+    """按后缀判类型；判不出来时**当视频**（宁可多探，别漏掉提示条）。"""
+    assert web._looks_like_video("a.mp4")
+    assert web._looks_like_video("A.MKV")
+    assert web._looks_like_video("x/y/b.m4v")
+    assert not web._looks_like_video("MIMK-033-1.jpg")
+    assert not web._looks_like_video("a.PNG")
+    assert not web._looks_like_video("subs.srt")
+    # 没有后缀 → 保守当视频
+    assert web._looks_like_video("noext")
+    assert web._looks_like_video("")
+
+
+def test_probe_reachable_reads_a_small_slice(monkeypatch):
+    """非视频只读 1KB 确认通路，不读 1MB 找 moov。"""
+    web._PLAYABLE_CACHE.clear()
+    asked = {}
+
+    class Resp:
+        def read(self, n=-1):
+            asked["n"] = n
+            return b"x" * 10
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(web.urllib.request, "urlopen", lambda *a, **k: Resp())
+    assert web.probe_reachable("http://cdn.local/a.jpg") is True
+    assert asked["n"] == 1024, asked
+
+
+def test_probe_reachable_none_when_unreachable(monkeypatch):
+    web._PLAYABLE_CACHE.clear()
+
+    def boom(*a, **k):
+        raise OSError("Connection refused")
+
+    monkeypatch.setattr(web.urllib.request, "urlopen", boom)
+    assert web.probe_reachable("http://cdn.local/a.jpg") is None
+
+
+def test_direct_link_skips_moov_probe_for_images(tmp_path, monkeypatch):
+    """图片不该跑 moov 检测 —— 图片里没有 moov，1MB 白读 + 重试三轮。
+
+    实测（2026-11-04）：一张 370KB 的 jpg 走 probe_playable 白等 48 秒，
+    而画廊是逐张串行解析的，一个 3 张图的包拖到两分半。
+    """
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(web.xunleipan, "configured", lambda: True)
+    monkeypatch.setattr(web.xunleipan, "direct_link", lambda p: {
+        "name": "MIMK-033-1.jpg", "link": "https://cdn.local/a.jpg", "medias": []})
+
+    called = {"moov": 0, "reach": 0}
+
+    def moov_probe(link, probe_bytes=1 << 20):
+        called["moov"] += 1
+        return False
+
+    def reach_probe(link, probe_bytes=1024):
+        called["reach"] += 1
+        return True
+
+    monkeypatch.setattr(web, "probe_playable", moov_probe)
+    monkeypatch.setattr(web, "probe_reachable", reach_probe)
+
+    out = web.cloud_direct_link(path="迅雷云盘/X-Drive/MIMK-033/MIMK-033-1.jpg")
+    assert out["ok"], out
+    assert out["playable"] is True, out
+    assert called == {"moov": 0, "reach": 1}, called
+
+
+def test_direct_link_still_probes_moov_for_videos(tmp_path, monkeypatch):
+    """视频照旧走 moov 检测 —— 非视频那条捷径不能顺手把视频也放过。"""
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(web.xunleipan, "configured", lambda: True)
+    monkeypatch.setattr(web.xunleipan, "direct_link", lambda p: {
+        "name": "a.mp4", "link": "https://cdn.local/a.mp4", "medias": []})
+
+    called = {"moov": 0, "reach": 0}
+    monkeypatch.setattr(web, "probe_playable",
+                        lambda link, probe_bytes=1 << 20: called.__setitem__("moov", called["moov"] + 1) or False)
+    monkeypatch.setattr(web, "probe_reachable",
+                        lambda link, probe_bytes=1024: called.__setitem__("reach", called["reach"] + 1) or True)
+
+    out = web.cloud_direct_link(path="迅雷云盘/X-Drive/MIMK-186/a.mp4")
+    assert out["ok"], out
+    assert out["playable"] is False, out          # 索引不在头部 → 如实告知
+    assert called == {"moov": 1, "reach": 0}, called
+
+
+def test_direct_link_image_falls_back_when_unreachable(tmp_path, monkeypatch):
+    """两张图都探不通时给出 playable=None（前端据此提示重试），不谎称能看。"""
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(web.xunleipan, "configured", lambda: True)
+    monkeypatch.setattr(web.xunleipan, "direct_link", lambda p: {
+        "name": "a.jpg", "link": "https://cdn.local/a.jpg", "medias": []})
+    monkeypatch.setattr(web, "probe_reachable", lambda link, probe_bytes=1024: None)
+    monkeypatch.setattr(web, "probe_playable",
+                        lambda link, probe_bytes=1 << 20: pytest.fail("图片不该跑 moov 检测"))
+
+    class Backend:
+        kind = "clouddrive2"
+
+        def download_url(self, path):
+            return "http://cd2.local:19798/static/a.jpg"
+
+    monkeypatch.setattr(web, "storage_backend", lambda: Backend())
+    out = web.cloud_direct_link(path="迅雷云盘/X-Drive/MIMK-033/a.jpg")
+    assert out["ok"], out
+    assert out["playable"] is None, out

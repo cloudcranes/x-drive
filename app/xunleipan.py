@@ -740,6 +740,8 @@ def delete_file(file_id: str, *, client=None) -> str:
 
 def _finish_delete(res) -> str:
     if res.status_code == 200:
+        # 树变了（删掉或恢复了），路径 → file_id 的缓存立刻作废。
+        clear_caches()
         return "已删除"
     j = {}
     try:
@@ -748,6 +750,7 @@ def _finish_delete(res) -> str:
         pass
     err = str(j.get("error") or j.get("error_description") or res.text or "")[:120]
     if res.status_code == 404:
+        clear_caches()                      # 条目也不在了，缓存同样不能留
         return "文件不存在"
     raise PanError(f"删除失败：{res.status_code} {err}")
 
@@ -923,6 +926,57 @@ def file_info(file_id: str, *, client=None) -> dict:
             "expire": str(((data.get("medias") or [{}])[0].get("link") or {}).get("expire") or "")}
 
 
+# ─────────────────────────────────────────── 路径解析缓存
+#
+# 缓存的**不是直链**（直链带签名、有有效期，每次必须现取），而是「路径 →
+# file_id」这个映射。原因：解析的代价大得离谱 —— 实测云盘根目录 1839 条
+# 条目（其中 1766 条是删了又重建留下的墓碑），翻完 19 页约 7 秒；而完整
+# 路径第一次必然失败（首段是 CD2 的挂载名，官方 API 根下没有它），还要
+# 再去掉首段重试一轮，合计约 11 秒。看同一个片子的封面、播放、再看一次
+# 都是同一个路径 —— 每次重付 11 秒纯属浪费。
+#
+# TTL 分开设：命中（非空）留得久些，落空（空串）短一些，给「刚上传完」
+# 留余地。任何写操作（delete_file）都会清缓存。
+_RESOLVE_CACHE: dict[str, tuple[float, str]] = {}
+RESOLVE_CACHE_TTL = float(os.getenv("XLPAN_RESOLVE_TTL", "1800") or 1800)
+RESOLVE_MISS_TTL = float(os.getenv("XLPAN_RESOLVE_MISS_TTL", "120") or 120)
+# 目录**分页**快照：根目录 1839 条翻 19 页要 7 秒，而一个图片包里 3 个文件
+# 都在**同一个目录** —— 不缓存的话，画廊逐张取直链就是 3 次 × 7 秒的重复翻页。
+#
+# 缓存的是单页（按 parent_id + page_token 记），不是整份目录：`_walk` 找到
+# 目标就 break，不必为了缓存把后面十几页也拉下来。页内条目几乎不变，翻过的
+# 页下次直接命中。
+_PAGE_CACHE: dict[str, tuple[float, tuple[list[dict], str]]] = {}
+LISTING_CACHE_TTL = float(os.getenv("XLPAN_LISTING_TTL", "300") or 300)
+# 已确认「官方 API 根下没有」的挂载名（如 CD2 的 `迅雷云盘`）。学到之后
+# 就直接从第二段开始下钻，省掉整整一轮必败的翻页（实测 6.9 秒）。
+_MOUNT_NAMES: dict[str, float] = {}
+MOUNT_NAME_TTL = float(os.getenv("XLPAN_MOUNT_TTL", "3600") or 3600)
+_CACHE_LIMIT = 512
+
+
+def _trim(cache: dict) -> None:
+    """缓存条目超限时砍掉最旧的一半 —— 长期运行的进程不能无限涨。"""
+    if len(cache) <= _CACHE_LIMIT:
+        return
+    for key in sorted(cache, key=lambda k: cache[k][0] if isinstance(cache[k], tuple) else cache[k]):
+        cache.pop(key, None)
+        if len(cache) <= _CACHE_LIMIT // 2:
+            break
+
+
+def clear_caches() -> None:
+    """清掉解析缓存（测试用；写操作后也会调）。"""
+    _RESOLVE_CACHE.clear()
+    _PAGE_CACHE.clear()
+    _MOUNT_NAMES.clear()
+
+
+def _mount_known(name: str) -> bool:
+    at = _MOUNT_NAMES.get(name)
+    return bool(at and time.time() - at < MOUNT_NAME_TTL)
+
+
 def resolve(path: str, *, client=None) -> str:
     """把 `迅雷云盘/X-Drive/SSIS-555/xx.mp4` 这样的路径解析成 file_id。
 
@@ -930,15 +984,35 @@ def resolve(path: str, *, client=None) -> str:
 
     首段是 CD2 的挂载名（官方 API 根下**没有**它——实测根目录直接是
     `我的资源`/`X-Drive`/…），完整路径找不到时自动去掉首段再试一次。
+    哪个首段是挂载名会被记住（`_MOUNT_NAMES`），下次直接从第二段开始，
+    不再白翻一轮 19 页。
     """
-    parts = [p for p in (path or "").strip("/").split("/") if p]
-    for candidate in (parts, parts[1:]):
-        if not candidate:
-            continue
-        found = _walk(candidate, client=client)
-        if found:
-            return found
-    return ""
+    key = "/".join(p for p in (path or "").strip("/").split("/") if p)
+    if not key:
+        return ""
+    hit = _RESOLVE_CACHE.get(key)
+    if hit:
+        age = time.time() - hit[0]
+        if age < (RESOLVE_CACHE_TTL if hit[1] else RESOLVE_MISS_TTL):
+            return hit[1]
+    parts = [p for p in key.split("/") if p]
+    tail = parts[1:]
+    if tail and _mount_known(parts[0]):
+        # 已经知道首段是 CD2 的挂载名（官方根下没有它）：直接从第二段下钻。
+        # 别再走完整路径那一轮 —— 那一步必然失败，而且要把整个根目录翻一遍。
+        found = _walk(tail, client=client)
+    else:
+        found = _walk(parts, client=client)
+        if not found and tail:
+            found = _walk(tail, client=client)
+            if found:
+                # 学到「首段是挂载名」：完整路径解析不到、去掉首段才行 ——
+                # 正是 CD2 挂载名的特征。记下来，这个账号后续的解析都快 6 秒多。
+                _MOUNT_NAMES[parts[0]] = time.time()
+                _trim(_MOUNT_NAMES)
+    _RESOLVE_CACHE[key] = (time.time(), found)
+    _trim(_RESOLVE_CACHE)
+    return found
 
 
 def iter_files(parent_id: str = "", *, client=None, page_size: int = 100,
@@ -955,17 +1029,27 @@ def iter_files(parent_id: str = "", *, client=None, page_size: int = 100,
     也不能无限翻。
     """
     token = ""
-    for _ in range(max(1, int(max_pages))):
+    for page in range(max(1, int(max_pages))):
         params: dict = {"limit": page_size}
         if parent_id:
             params["parent_id"] = parent_id
         if token:
             params["page_token"] = token
-        data = _get("/drive/v1/files", params, client=client)
-        batch = data.get("files") or []
+        # 按「目录 + 第几页」缓存：翻完根目录要 19 次请求 / 7 秒，而同一目录下
+        # 的几个文件（图片包逐张取直链）会反复翻同一批页 —— 第 3 张图不该
+        # 再为前 2 张翻过的页付一遍钱。
+        cache_key = f"{parent_id}\x00{page}"
+        cached = _PAGE_CACHE.get(cache_key)
+        if cached and time.time() - cached[0] < LISTING_CACHE_TTL:
+            batch, token = cached[1]
+        else:
+            data = _get("/drive/v1/files", params, client=client)
+            batch = data.get("files") or []
+            token = str(data.get("next_page_token") or "")
+            _PAGE_CACHE[cache_key] = (time.time(), (batch, token))
+            _trim(_PAGE_CACHE)
         for item in batch:
             yield item
-        token = str(data.get("next_page_token") or "")
         if not token or not batch:
             return
 
