@@ -986,7 +986,10 @@ createApp({
     };
     const openGallery = (t) => {
       const code = t.code || t.id || "";
-      const base = String(t.path || "").replace(/\/+$/, "");
+      // path 可能是 "clouddrive2:迅雷云盘/…" 形式 —— directlink 只认挂载相对
+      // 路径（rel 校验 startswith），带前缀必挂「文件路径与归档定位不符」，
+      // 所以这里剥掉存储后端前缀。
+      const base = String(t.path || "").replace(/^[A-Za-z0-9_-]+:/, "").replace(/\/+$/, "");
       const files = (t.files || []).filter(f => /\.(jpe?g|png|gif|webp|bmp|avif)$/i.test(f));
       if (!code) { toast("这条归档没有番号", false); return; }
       if (!files.length) { toast("这个包里没有图片文件", false); return; }
