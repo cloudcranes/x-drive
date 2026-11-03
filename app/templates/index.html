@@ -48,6 +48,8 @@
       </nav>
     </div>
     <div class="flex items-center gap-3 shrink-0">
+      <!-- 手机搜索入口：桌面搜索框 hidden sm:block，手机用按钮弹全屏搜索层 -->
+      <button @click="mSearch = true" class="sm:hidden w-9 h-9 rounded-lg bg-slate-800/80 border border-slate-700/60 text-slate-300 flex items-center justify-center" aria-label="搜索">🔍</button>
       <div class="relative hidden sm:block w-56 md:w-72">
         <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">🔍</span>
         <input v-model="q" type="text" placeholder="搜索番号 / 标题 / 演员"
@@ -662,6 +664,82 @@
     </div>
   </div>
 
+  <!-- ── 手机全屏搜索层（sm 以下顶栏无搜索框，点🔍进入） ── -->
+  <div v-if="mSearch" id="msearch-layer" class="fixed inset-0 z-[80] bg-slate-950/98 flex flex-col" style="backdrop-filter: blur(6px)">
+    <div class="px-4 pt-4 pb-3 flex items-center gap-2 border-b border-slate-800/80">
+      <div class="relative flex-1">
+        <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">🔍</span>
+        <input ref="mSearchInput" v-model="q" type="search" enterkeyhint="search" autocomplete="off"
+          placeholder="搜索番号 / 标题 / 演员"
+          class="w-full pl-9 pr-8 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500">
+        <span v-if="q" @click="q=''; mSearchInput && mSearchInput.focus()" class="absolute inset-y-0 right-0 pr-3 flex items-center cursor-pointer text-slate-500">✕</span>
+      </div>
+      <button @click="mSearch = false" class="px-3 py-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300 shrink-0">取消</button>
+    </div>
+    <div class="flex-1 overflow-y-auto px-4 py-4 space-y-5">
+      <!-- 近期搜索（本机 localStorage 记录，点词条直接回填搜索） -->
+      <div v-if="!q && mRecent.length" class="space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-slate-400 font-bold">🕐 最近搜索</span>
+          <button @click="mRecent = []" class="text-[10px] text-slate-500 hover:text-slate-300">清空</button>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button v-for="r in mRecent" :key="r" @click="q = r"
+            class="px-3 py-1.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300 active:bg-slate-700">{{ r }}</button>
+        </div>
+      </div>
+      <div v-if="!q" class="text-center text-slate-600 text-xs py-10">输入番号 / 标题 / 演员关键词<br>本地与在线（javbus）同时搜索</div>
+      <!-- 在线搜索结果 -->
+      <div v-if="q && (findLoading || findItems.length || findError)" class="card-dark rounded-xl p-4 border border-sky-900/40">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-xs font-bold text-sky-400">🌐 在线搜索</span>
+          <span class="text-[10px] text-slate-500 font-mono">javbus · {{ findItems.length }} 条</span>
+          <span v-if="findLoading" class="text-[10px] text-slate-500 animate-pulse">搜索中…</span>
+          <span v-if="findCached" class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400">缓存</span>
+          <span v-if="findError" class="text-[10px] text-rose-400">{{ findError }}</span>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div v-for="it in findItems" :key="it.code" class="rounded-lg overflow-hidden bg-slate-900/60 border border-slate-800 active:border-sky-700/60 transition-colors cursor-pointer" @click="openFoundMobile(it)">
+            <div class="relative aspect-[3/2] overflow-hidden bg-slate-900">
+              <img v-if="it.cover" :src="coverSrc(it.cover)" loading="lazy" referrerpolicy="no-referrer"
+                :class="['w-full h-full object-cover', privacyCovers && 'privacy-blur']" @error="onCoverError($event)">
+              <div v-else class="w-full h-full flex items-center justify-center text-slate-600/40 font-mono text-sm">NO COVER</div>
+              <span v-if="privacyCovers && it.cover" class="privacy-tag">隐私模糊</span>
+              <span v-if="have(it.code)" class="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-950/80 text-emerald-400 border border-emerald-800/60">已入库</span>
+            </div>
+            <div class="p-2">
+              <div class="font-mono text-[11px] font-bold text-sky-400">{{ it.code }}</div>
+              <div class="text-[10px] text-slate-400 line-clamp-2 mt-0.5 leading-snug">{{ it.title }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 本地结果：直接复用库卡片网格 -->
+      <div v-if="q" class="space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-slate-400 font-bold">📚 已入库 ({{ library.length }})</span>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <article v-for="t in libView" :key="t.code || t.id" @click="openFoundMobile(t)"
+            class="card-dark rounded-xl overflow-hidden flex flex-col cursor-pointer">
+            <div class="relative aspect-[3/2] overflow-hidden bg-slate-900">
+              <img v-if="t.meta && t.meta.cover" :src="coverSrc(t.meta.cover)" loading="lazy" decoding="async" referrerpolicy="no-referrer"
+                :class="['w-full h-full object-cover', privacyCovers && 'privacy-blur']" @error="onCoverError($event)">
+              <div v-else class="w-full h-full bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center text-slate-600/40 font-mono font-black text-lg">NO COVER</div>
+              <span v-if="privacyCovers && t.meta && t.meta.cover" class="privacy-tag">隐私模糊</span>
+              <span v-if="t.cat === 'image'" class="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-900/80 text-slate-300 border border-slate-700/60">图片</span>
+            </div>
+            <div class="p-2">
+              <div class="font-mono text-[11px] font-bold text-sky-400">{{ t.code || t.id }}</div>
+              <div class="text-[10px] text-slate-400 line-clamp-2 mt-0.5 leading-snug">{{ (t.meta && t.meta.title) || t.path || '' }}</div>
+            </div>
+          </article>
+        </div>
+        <div v-if="!library.length && !findLoading" class="text-center text-slate-500 text-xs py-10">本地无匹配，看看上面的在线结果</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── toast ────────────────────────────────────────── -->
   <div v-if="toastMsg" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-[70] px-4 py-2.5 rounded-lg text-xs font-mono border"
     :class="toastOk ? 'bg-emerald-950/90 text-emerald-300 border-emerald-800/60' : 'bg-rose-950/90 text-rose-300 border-rose-800/60'">{{ toastMsg }}</div>
@@ -791,6 +869,23 @@ createApp({
       else list = list.slice();
       return list;
     });
+
+    // ── 手机全屏搜索层：顶栏 sm 以下隐藏搜索框，点🔍弹出本层，与桌面共用 q / findItems ──
+    const mSearch = ref(false);
+    const mSearchInput = ref(null);
+    const mRecent = ref(JSON.parse(localStorage.getItem("mRecent") || "[]"));
+    const pushRecent = (kw) => {
+      const list = [kw, ...mRecent.value.filter(x => x !== kw)].slice(0, 8);
+      mRecent.value = list;
+      localStorage.setItem("mRecent", JSON.stringify(list));
+    };
+    watch(q, (v) => { const kw = String(v || "").trim(); if (kw.length >= 2) pushRecent(kw); });
+    watch(mSearch, (open) => {
+      if (open) nextTick(() => { if (mSearchInput.value) mSearchInput.value.focus(); });
+      else if (document.activeElement) document.activeElement.blur();
+    });
+    // 手机层点结果：关掉搜索层再走常规详情/在线详情
+    const openFoundMobile = (it) => { mSearch.value = false; openFound(it); };
 
     // ── 增量渲染：首页一次只挂一小批卡片，滚动到底自动补，避免 293 张封面同请求拖慢体验 ──
     const LIB_BATCH = 60;
@@ -1294,6 +1389,7 @@ createApp({
       settingsItems, draft, online, err, detail, player, video, toastMsg, saveMsg, saveOk, magnet,
       pages, seriesList, subsOn, activeJobs, doneJobs, library, settingsGroups,
       libView, libMore, libLoadMore, libSentinel,
+      mSearch, mSearchInput, mRecent, openFoundMobile,
       go, reload, load, openDetail, onCoverError, actorsOf, play, closePlayer,
       onTime, onMeta, onEnded, toggleFullscreen,
       switchMedia, repairFaststart,
