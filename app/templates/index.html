@@ -101,7 +101,7 @@
         <select v-model="sortBy" class="bg-slate-900 border border-slate-800 text-xs text-slate-300 rounded px-2.5 py-1.5 focus:outline-none">
           <option value="new">最新入库</option><option value="size">体积最大</option><option value="code">番号</option>
         </select>
-        <span class="text-xs text-slate-500 font-mono ml-auto">{{ library.length }} / {{ tasks.length }}</span>
+        <span class="text-xs text-slate-500 font-mono ml-auto">显示 {{ libView.length }} / {{ library.length }}</span>
       </div>
 
       <!-- 在线搜索（javbus.master.us.kg 经 /api/find）：输入即搜，与本地过滤并存 -->
@@ -133,8 +133,9 @@
       </div>
 
       <div v-if="!library.length" class="text-center text-slate-500 text-xs py-16">没有匹配的作品</div>
-      <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-        <article v-for="t in library" :key="t.code || t.id" @click="openDetail(t)"
+      <template v-else>
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+          <article v-for="t in libView" :key="t.code || t.id" @click="openDetail(t)"
           class="card-dark rounded-xl overflow-hidden flex flex-col poster-hover transition-all duration-300 cursor-pointer group">
           <div class="relative aspect-[3/2] overflow-hidden bg-slate-900">
             <img v-if="t.meta && t.meta.cover" :src="coverSrc(t.meta.cover)" loading="lazy" decoding="async" referrerpolicy="no-referrer"
@@ -167,7 +168,15 @@
             </div>
           </div>
         </article>
-      </div>
+        </div>
+        <!-- 增量加载：滚动到底自动补一批，避免一次渲染全部卡片拖慢首页 -->
+        <div v-if="libMore" ref="libSentinel" class="text-center py-5 text-xs text-slate-500">
+          <span class="inline-block animate-pulse">加载更多中…</span>
+        </div>
+        <div v-else-if="libView.length < library.length" class="text-center py-5">
+          <button @click="libLoadMore" class="px-4 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-xs text-slate-300 transition-colors">加载更多（{{ library.length - libView.length }}）</button>
+        </div>
+      </template>
     </section>
 
     <!-- ── 页 2：资产清单 ───────────────────────────── -->
@@ -192,8 +201,8 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800/60">
-              <tr v-for="(t, idx) in library" :key="t.code || t.id" class="row-hover transition-colors group">
-                <td class="py-2.5 px-3 text-center font-mono text-slate-600">{{ String(idx + 1).padStart(3, '0') }}</td>
+              <tr v-for="t in libView" :key="t.code || t.id" class="row-hover transition-colors group">
+                <td class="py-2.5 px-3 text-center font-mono text-slate-600">{{ String(t.__i + 1).padStart(3, '0') }}</td>
                 <td class="py-2.5 px-3">
                   <span class="px-2 py-0.5 rounded font-mono font-bold text-xs bg-slate-800/80 text-sky-400 border border-slate-700/60">{{ t.code || t.id }}</span>
                 </td>
@@ -783,6 +792,34 @@ createApp({
       return list;
     });
 
+    // ── 增量渲染：首页一次只挂一小批卡片，滚动到底自动补，避免 293 张封面同请求拖慢体验 ──
+    const LIB_BATCH = 60;
+    const libLimit = ref(LIB_BATCH);
+    const libSentinel = ref(null);
+    let libObserver = null;
+    const libView = computed(() => library.value.slice(0, libLimit.value).map((t, i) => ({ ...t, __i: i })));
+    const libMore = computed(() => libView.value.length < library.value.length);
+    const libLoadMore = () => { libLimit.value += LIB_BATCH; };
+    // 过滤/排序/翻页条件变化后回到顶部，并从初始批量重新开始
+    watch([q, kindFilter, seriesFilter, sortBy], () => { libLimit.value = LIB_BATCH; });
+    const setupLibObserver = () => {
+      if (libObserver) { libObserver.disconnect(); libObserver = null; }
+      nextTick(() => {
+        if (!libMore.value || !libSentinel.value || typeof IntersectionObserver === "undefined") return;
+        libObserver = new IntersectionObserver((es) => {
+          if (es.some(e => e.isIntersecting)) {
+            libLimit.value += LIB_BATCH;
+            // 批量增大后哨兵节点会被重建，重新挂监听
+            libObserver.disconnect();
+            setupLibObserver();
+          }
+        }, { rootMargin: "600px 0px" });
+        libObserver.observe(libSentinel.value);
+      });
+    };
+    watch([libMore, page, tasks], setupLibObserver);
+    onUnmounted(() => { if (libObserver) libObserver.disconnect(); });
+
     const settingsGroups = computed(() => {
       const out = {};
       for (const key of Object.keys(settingsItems.value)) {
@@ -1256,6 +1293,7 @@ createApp({
       page, q, kindFilter, seriesFilter, sortBy, tasks, stats, jobs, subs, backlogCounts,
       settingsItems, draft, online, err, detail, player, video, toastMsg, saveMsg, saveOk, magnet,
       pages, seriesList, subsOn, activeJobs, doneJobs, library, settingsGroups,
+      libView, libMore, libLoadMore, libSentinel,
       go, reload, load, openDetail, onCoverError, actorsOf, play, closePlayer,
       onTime, onMeta, onEnded, toggleFullscreen,
       switchMedia, repairFaststart,
