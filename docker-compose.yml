@@ -7,21 +7,18 @@ services:
     stop_grace_period: 60s
     env_file: .env
     environment:
-      # 迅雷容器跑在宿主机网络里，从容器访问要打宿主机地址
-      XUNLEI_URL: "${XUNLEI_URL:-http://host.docker.internal:2345}"
-      # 整理工作区：与迅雷下载目录分开，失败不动原件
+      # 整理工作区：失败不动原件
       STATE_DIR: "/work"
+    # 宿主机地址映射：容器里访问宿主上的 CloudDrive2（19798）要走网关。
+    # 不能省——省掉时 host.docker.internal 会落到上游 DNS，本机 DNS 是
+    # fake-IP 型（198.18.0.0/16），TCP 连得上但 gRPC 秒断（Socket closed）。
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      # 只有 rclone 后端需要它；OpenList / CloudDrive2 用户不设也能起（详见 README「存储后端」）
-      - ${RCLONE_CONFIG_HOST:-./.rclone/rclone.conf}:/config/rclone/rclone.conf:ro
       - ./data:/data
       - ./work:/work
-      # 必须和迅雷容器里 /downloads 指向同一份目录，否则看不见下好的文件
-      - ${XUNLEI_DOWNLOADS_HOST:?在 .env 里设置 XUNLEI_DOWNLOADS_HOST 指向迅雷的下载目录}:/downloads
     healthcheck:
-      # 自检要访问 Telegram + 迅雷 + Google Drive，Drive 慢的时候整体能到 30s 上下，
+      # 自检要访问 Telegram + CloudDrive2，CD2 慢的时候整体能到 30s 上下，
       # 所以超时给到 120s，避免正常运行时被反复判成 unhealthy。
       test: ["CMD", "python", "-m", "app.main", "--check"]
       interval: 180s
@@ -37,17 +34,15 @@ services:
     env_file: .env
     environment:
       WEB_PORT: "8080"
-      XUNLEI_URL: "${XUNLEI_URL:-http://host.docker.internal:2345}"
-      # 整理工作区：与迅雷下载目录分开，失败不动原件
+      # 整理工作区：失败不动原件
       STATE_DIR: "/work"
+    # 与 bot 同理。默认部署会被 docker-compose.override.yml 改成 host 网络，
+    # 那时这条键被 docker 忽略、无害；但没带 override 直接起的时候它是必需的。
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data
       - ./work:/work
-      - ${XUNLEI_DOWNLOADS_HOST:?在 .env 里设置 XUNLEI_DOWNLOADS_HOST 指向迅雷的下载目录}:/downloads
-      # 只有 rclone 后端需要它；OpenList / CloudDrive2 用户不设也能起（详见 README「存储后端」）
-      - ${RCLONE_CONFIG_HOST:-./.rclone/rclone.conf}:/config/rclone/rclone.conf:ro
     ports:
       - "${WEB_PORT:-8080}:8080"
     healthcheck:

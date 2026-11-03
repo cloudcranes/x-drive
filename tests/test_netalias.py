@@ -16,8 +16,17 @@ def fresh(monkeypatch):
     netalias.clear_cache()
     monkeypatch.setattr(netalias, "in_container", lambda: True)
     monkeypatch.setattr(netalias, "container_gateway", lambda: "172.23.0.1")
+    # 默认让 host.docker.internal 正常解析（映射存在）。
+    # 不钉住的话测的是「跑测试这台机器的 DNS」：本机是 fake-IP 型，
+    # 会解析到 198.18.x.x，把下面这些正常路径的用例全带偏。
+    monkeypatch.setattr(netalias, "_resolve_ip", lambda name: "172.17.0.1")
     yield
     netalias.clear_cache()
+
+
+def fake_resolve(monkeypatch, ip: str):
+    """指定 host.docker.internal 解析成什么。"""
+    monkeypatch.setattr(netalias, "_resolve_ip", lambda name: ip)
 
 
 def fake_probe(monkeypatch, reachable: set[tuple[str, int]]):
@@ -133,3 +142,84 @@ def test_describe_shape():
     info = netalias.describe()
     assert set(info) == {"container", "gateway", "alias"}
     assert info["alias"] == "host.docker.internal"
+
+
+# ─────────────────────────────────────────── fake-IP DNS
+
+def test_fake_ip_is_not_trusted_even_if_probe_says_open(monkeypatch):
+    """fake-IP 的假地址对任何端口都「连得上」（代理在接），但 gRPC 会断。
+
+    2026-11-04 线上就是这个：compose 少写 extra_hosts，host.docker.internal
+    落到 198.18.0.116，TCP 探测全通，CD2 却一直 Socket closed。
+    """
+    monkeypatch.setattr(netalias, "container_gateway", lambda: "172.23.0.1")
+    fake_resolve(monkeypatch, "198.18.0.116")
+    # 探测桩故意说「哪都通」——fake-IP 分支不能被它骗过
+    fake_probe(monkeypatch, {("198.18.0.116", 19798), ("172.23.0.1", 19798),
+                             ("host.docker.internal", 19798)})
+    url, note = netalias.resolve("http://198.18.0.116:19798")
+    assert url == "http://172.23.0.1:19798", "必须改到真网关去"
+    assert "fake-IP" in note
+
+
+def test_fake_ip_without_a_reachable_gateway_is_left_alone(monkeypatch):
+    """host 网络模式下 container_gateway() 是家里的路由器，不能瞎指过去。
+
+    换到哪都必须「那头真连得上」；连不上就保留原地址，让报错说真话。
+    """
+    fake_resolve(monkeypatch, "198.18.0.116")
+    fake_probe(monkeypatch, set())
+    url, note = netalias.resolve("http://198.18.0.116:19798")
+    assert url == "http://198.18.0.116:19798" and note == ""
+
+
+def test_gateway_target_falls_back_when_alias_is_fake(monkeypatch):
+    fake_resolve(monkeypatch, "198.18.0.116")
+    target, note = netalias.gateway_target()
+    assert target == "172.23.0.1" and "198.18.0.116" in note
+
+
+def test_gateway_target_keeps_alias_when_mapping_is_sane(monkeypatch):
+    fake_resolve(monkeypatch, "172.17.0.1")
+    target, note = netalias.gateway_target()
+    assert target == "host.docker.internal" and note == ""
+
+
+def test_gateway_target_keeps_alias_when_unresolvable(monkeypatch):
+    """解析不出来（比如宿主机上根本没有这个名字）就别瞎猜，交给原逻辑。"""
+    fake_resolve(monkeypatch, "")
+    target, note = netalias.gateway_target()
+    assert target == "host.docker.internal" and note == ""
+
+
+def test_host_lan_address_uses_gateway_when_alias_is_fake(monkeypatch):
+    """映射缺失时，宿主机 LAN 地址也要改写到网关，而不是写到假名字上。"""
+    fake_resolve(monkeypatch, "198.18.0.116")
+    fake_probe(monkeypatch, {("172.23.0.1", 19798)})
+    url, note = netalias.resolve("http://192.168.1.170:19798")
+    assert url == "http://172.23.0.1:19798"
+    assert "172.23.0.1" in note
+
+
+def test_fake_ip_lookalike_is_recognised(monkeypatch):
+    assert netalias.is_fake_ip("198.18.0.116") is True
+    assert netalias.is_fake_ip("198.18.255.1") is True
+    assert netalias.is_fake_ip("198.19.0.1") is False
+    assert netalias.is_fake_ip("192.168.1.170") is False
+    assert netalias.is_fake_ip("host.docker.internal") is False
+
+
+def test_host_network_mode_never_rewrites_to_the_router(monkeypatch):
+    """web 容器是 host 网络：container_gateway() 读到的是家里的路由器。
+
+    这时别名解析成 fake-IP 也不能把地址指到 192.168.1.2 上去 —— 那台设备
+    跟 CloudDrive2 没任何关系。判据是「目标那头真连得上」。
+    """
+    monkeypatch.setattr(netalias, "container_gateway", lambda: "192.168.1.2")
+    fake_resolve(monkeypatch, "198.18.0.116")
+    # 路由器上没有这个端口（真机实测 ConnectionRefused），LAN 原地址倒是通的
+    fake_probe(monkeypatch, {("192.168.1.170", 19798)})
+    url, note = netalias.resolve("http://192.168.1.170:19798")
+    assert url == "http://192.168.1.170:19798" and note == ""
+    url, note = netalias.resolve("http://198.18.0.116:19798")
+    assert url == "http://198.18.0.116:19798" and note == ""
