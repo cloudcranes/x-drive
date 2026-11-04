@@ -72,4 +72,4 @@ fi
 docker compose up -d --build
 sleep 10
 docker compose ps
-docker compose exec -T bot python -m app.main --check
+docker compose exec -T web python -m app.allinone --check

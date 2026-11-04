@@ -1,43 +1,27 @@
 services:
-  bot:
-    image: ${BOT_IMAGE:-ghcr.io/cloudcranes/x-drive:latest}
-    build: .
-    restart: unless-stopped
-    init: true
-    stop_grace_period: 60s
-    env_file: .env
-    environment:
-      # 整理工作区：失败不动原件
-      STATE_DIR: "/work"
-    # 宿主机地址映射：容器里访问宿主上的 CloudDrive2（19798）要走网关。
-    # 不能省——省掉时 host.docker.internal 会落到上游 DNS，本机 DNS 是
-    # fake-IP 型（198.18.0.0/16），TCP 连得上但 gRPC 秒断（Socket closed）。
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./data:/data
-      - ./work:/work
-    healthcheck:
-      # 自检要访问 Telegram + CloudDrive2，CD2 慢的时候整体能到 30s 上下，
-      # 所以超时给到 120s，避免正常运行时被反复判成 unhealthy。
-      test: ["CMD", "python", "-m", "app.main", "--check"]
-      interval: 180s
-      timeout: 120s
-      retries: 3
-      start_period: 90s
-
+  # 单容器：bot 长轮询与网页看板跑在同一个进程里（app/allinone.py）。
+  # 以前拆成 bot + web 两个 service，共享状态本来就按「跨进程」设计
+  # （文件锁 + SQLite + state 表 + 落库的取消标记），合并后没改任何业务代码，
+  # 只是省掉一份解释器与依赖的常驻内存。
+  #
+  # 代价：故障域合并 —— 任一半异常退出，容器整份退出交给 restart 重启。
   web:
     image: ${BOT_IMAGE:-ghcr.io/cloudcranes/x-drive:latest}
     build: .
     restart: unless-stopped
-    command: ["python", "-m", "app.web"]
+    command: ["python", "-m", "app.allinone"]
+    init: true
+    stop_grace_period: 60s
     env_file: .env
     environment:
       WEB_PORT: "8080"
       # 整理工作区：失败不动原件
       STATE_DIR: "/work"
-    # 与 bot 同理。默认部署会被 docker-compose.override.yml 改成 host 网络，
-    # 那时这条键被 docker 忽略、无害；但没带 override 直接起的时候它是必需的。
+    # 宿主机地址映射：容器里访问宿主上的 CloudDrive2（19798）要走网关。
+    # 不能省——省掉时 host.docker.internal 会落到上游 DNS，本机 DNS 是
+    # fake-IP 型（198.18.0.0/16），TCP 连得上但 gRPC 秒断（Socket closed）。
+    # 默认部署会被 docker-compose.override.yml 改成 host 网络，那时这条键被
+    # docker 忽略、无害；但没带 override 直接起的时候它是必需的。
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -46,8 +30,11 @@ services:
     ports:
       - "${WEB_PORT:-8080}:8080"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=5)"]
-      interval: 60s
-      timeout: 10s
+      # 两半都要在：bot 侧自检（Telegram + 云添加 + CloudDrive2）加上网页
+      # /api/health。自检本身 CD2 慢的时候能到 30s 上下，所以超时给到 120s，
+      # 避免正常运行时被反复判成 unhealthy。
+      test: ["CMD", "python", "-m", "app.allinone", "--health"]
+      interval: 180s
+      timeout: 120s
       retries: 3
-      start_period: 15s
+      start_period: 90s

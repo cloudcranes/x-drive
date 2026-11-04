@@ -68,7 +68,7 @@ else
 fi
 
 say "== 4. 容器内自检（telegram / 迅雷 / 挂载 / 权限 / rclone）"
-if TAG="$TAG_RUNTIME" compose run --rm --no-deps web python -m app.main --check; then
+if TAG="$TAG_RUNTIME" compose run --rm --no-deps web python -m app.allinone --check; then
   ok "自检通过"
 else
   bad "自检未通过：重点看「迅雷」「下载目录」「工作区」三行"

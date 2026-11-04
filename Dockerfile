@@ -5,6 +5,11 @@ COPY requirements.txt requirements-cd2.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-cd2.txt pytest
 COPY app ./app
 COPY tests ./tests
+# 静态对账的用例要读这些文件（入口、健康检查、文档里的命令必须对得上），
+# 少拷一个就会在容器里变成 FileNotFoundError，而不是真的验过。
+COPY Dockerfile docker-compose.yml ./
+COPY scripts ./scripts
+COPY README.md ./
 CMD ["python", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"]
 
 # ---- 运行镜像
@@ -47,4 +52,6 @@ RUN set -eux; \
 COPY app ./app
 
 ENV PYTHONUNBUFFERED=1
-CMD ["python", "-m", "app.main"]
+# 单容器：bot 长轮询（主线程）+ 网页看板（后台线程）。两个入口仍可单独跑：
+# `python -m app.main` 只起 bot，`python -m app.web` 只起网页（测试与排障用）。
+CMD ["python", "-m", "app.allinone"]

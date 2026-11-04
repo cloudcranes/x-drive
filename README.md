@@ -100,10 +100,15 @@ git clone https://github.com/cloudcranes/x-drive /opt/x-drive
 cd /opt/x-drive
 cp .env.example .env && $EDITOR .env      # 填 token、ALLOWED_USER_IDS、RCLONE_CONFIG_HOST
 docker compose pull && docker compose up -d
-docker compose exec bot python -m app.main --check
+docker compose exec web python -m app.allinone --check
 ```
 
 镜像由 GitHub Actions 构建推送到 `ghcr.io/cloudcranes/x-drive`，内含 `rclone`。
+
+只有**一个容器**：`python -m app.allinone` 在主线程跑 bot 长轮询、在后台线程跑网页看板。
+两半共享同一份 `/data`（任务表、状态、日志），所以合并后行为与原来拆两个容器时一致；
+区别只在故障域 —— 任一半异常退出，容器整份退出并由 `restart: unless-stopped` 拉起。
+只想起一半时仍可单独跑 `python -m app.main`（仅 bot）或 `python -m app.web`（仅网页）。
 
 ### 容器内验收（部署前必跑）
 
@@ -119,7 +124,7 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
 **容器写进 `/downloads` 的文件在宿主机同一路径可见**（证明两边是同一份挂载）、
 以及从容器内真正调通迅雷面板。任一项失败即非零退出。
 
-`python -m app.main --check` 现在会额外报告「下载目录」与「工作区」的可写性 ——
+`python -m app.allinone --check` 现在会额外报告「下载目录」与「工作区」的可写性 ——
 这两项是容器部署最常见的两个坑（没挂载、权限不对）。
 
 磁力/直链下载交给**外部的迅雷容器**（`cnk3x/xunlei`，`network_mode: host`，面板 2345）。
@@ -389,7 +394,7 @@ docker compose build --build-arg WITH_RCLONE=0 web
 `_build()` 里各加一行，设置项加进 `app/settings.py` 的「存储」分组，网页的下拉框与
 「测试连接」会自动带出来。回归测试照 `tests/test_storage_cd2.py`（进程内假服务端）。
 
-自检：`python -m app.main --check` 会按当前后端报连通性、可写与配额。
+自检：`python -m app.allinone --check` 会按当前后端报连通性、可写与配额。
 
 ## 看板
 
@@ -580,7 +585,7 @@ ID 由 `meta.resolve_id` 用名字搜站内页解析，
 | 只下来一个字幕/小文件 | 投递参数的 `sub_file_index` 被写成单个序号了，应为 `0-<n-1>` |
 | 回执「没找到可以下载的链接」 | 消息里必须有 `magnet:` 或 `http(s)://` |
 | 番号识别错 | 在消息里显式写一次正确番号，程序优先用消息里的 |
-| 上传失败 | `docker compose exec bot rclone lsd gdrive:` 手测；检查 `rclone.conf` 与 OAuth |
+| 上传失败 | `docker compose exec web rclone lsd gdrive:` 手测；检查 `rclone.conf` 与 OAuth |
 | 回执「未授权」 | 把 user id 加进 `ALLOWED_USER_IDS` 并 `docker compose up -d` |
 
 ## 按番号搜磁力
@@ -648,6 +653,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 | `app/subscribe.py` | 订阅解析（演员页/系列页/磁力列表） |
 | `app/cleanup.py` | 归档回收的纯决策逻辑 |
 | `app/main.py` | TG bot 编排、去重、配额、待办补跑 |
+| `app/allinone.py` | 单容器入口：网页跑后台线程，bot 长轮询占主线程 |
 | `app/web.py` + `webui.html` | 零依赖看板 + 后台任务 |
 
 共 266 个测试，`python -m pytest tests -q` 约 50 秒跑完。`tests/bench.py` 是本地计算基准。
