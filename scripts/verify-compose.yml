@@ -18,12 +18,7 @@ services:
     env_file: ${ENV_FILE:-.env}
     environment:
       WEB_PORT: "8080"
-      XUNLEI_URL: "${XUNLEI_URL:-http://host.docker.internal:2345}"
       STATE_DIR: "/work"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ${DATA_DIR:?验收脚本会注入临时 data 目录}:/data
       - ${WORK_DIR:?验收脚本会注入临时 work 目录}:/work
-      - ${XUNLEI_DOWNLOADS_HOST:?在 .env 里设置 XUNLEI_DOWNLOADS_HOST}:/downloads
-      - ${RCLONE_CONFIG_HOST:?在 .env 里设置 RCLONE_CONFIG_HOST}:/config/rclone/rclone.conf:ro

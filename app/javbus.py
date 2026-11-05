@@ -237,11 +237,15 @@ async def list_movies(filter_type: str, filter_value: str, page: int = 1,
     return parse_movies(await _get(client, path))
 
 
-async def search(keyword: str, client: httpx.AsyncClient | None = None) -> list[dict]:
+async def search(keyword: str, page: int = 1,
+                 client: httpx.AsyncClient | None = None) -> list[dict]:
     if not keyword:
         return []
     from urllib.parse import quote
-    return parse_movies(await _get(client, "/api/movies/search?keyword=" + quote(keyword)))
+    path = "/api/movies/search?keyword=" + quote(keyword)
+    if int(page) > 1:
+        path += f"&page={int(page)}"
+    return parse_movies(await _get(client, path))
 
 
 async def available(client: httpx.AsyncClient | None = None) -> bool:

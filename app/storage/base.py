@@ -1,25 +1,7 @@
-"""存储后端协议：把「建目录 / 上传 / 分享 / 改名 / 删除 / 列目录」抽成一层。
+"""CloudDrive2 operations used by archive maintenance.
 
-为什么要有这层：以前只有 rclone 一条路，代码里到处是
-`f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"` 和 subprocess 拼参数。要接 OpenList
-（原生 REST）或 CloudDrive2（gRPC）时，如果各写一遍上传/记账流程，三条链路
-（网页、bot、补刮）迟早行为不一致。所以先定协议，实现只负责翻译。
-
-路径约定（重要，别再各写一套）：
-  · 协议里的 path 一律是「后端内相对路径」，形如 `X-Drive/SSIS-555`；
-    不带 `remote:` 前缀，也不带开头的 `/`；
-  · rclone 适配器内部拼成 `gdrive:X-Drive/SSIS-555`，
-    OpenList / CloudDrive2 内部拼成 `/X-Drive/SSIS-555`；
-  · 目录名以服务端返回的为准：CloudDrive2 会把 `*?:/\\<>|"` 转成全角并削掉
-    尾部空白与点号，所以 `real_folder()` 要能问出「实际落地叫什么」。
-
-上传语义：`upload_dir` 返回时，文件必须**已经真的在云端**。
-CloudDrive2 的写入只是塞进上传队列，适配器必须轮询到任务完成才算数 —— 否则
-清单里会记上一个还不存在的文件，之后的校核与补刮全会错。
-
-错误只分两类，够 retry 分层用：
-  StorageError —— 可重试（网络抖动、5xx、超时、连接断）
-  AuthError    —— 不重试（账号密码错、只读、权限不足），命中 retry 的 config 类
+Paths are relative to the CloudDrive2 aggregate root, without a backend prefix.
+Uploads must wait for confirmed cloud completion before returning.
 """
 from __future__ import annotations
 

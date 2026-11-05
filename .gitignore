@@ -16,6 +16,9 @@ faststart/
 *.faststart.tmp
 .data/
 .dsh-progress/
+# 本地对比/出图产物，不进仓库
+.tmpcmp/
+dsh-image-gen/
 __pycache__/
 *.py[cod]
 .pytest_cache/

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import cloudadd, main, sources, xunlei
+from app import cloudadd, main, sources
 
 
 def _magnet(btih: str) -> str:
@@ -64,9 +64,9 @@ class _Landing:
 
 def _mk_cfg(tmp_path):
     return main.Config(
-        token="x", allowed={1}, remote="gdrive", drive_root="X", max_mb=10,
+        token="x", allowed={1}, max_mb=10,
         concurrency=1, state_path=str(tmp_path / "s.json"), tmp_root=str(tmp_path / "dl"),
-        rclone_config="/dev/null", pending_dir=str(tmp_path / "p"),
+        pending_dir=str(tmp_path / "p"),
         metrics_path=str(tmp_path / "m.json"), state_dir=str(tmp_path / "work"),
         jobs_db=str(tmp_path / "jobs.db"),
     )
@@ -76,6 +76,7 @@ def _install(monkeypatch, tmp_path, wait_side_effect):
     """把云添加的每一步换成假的：提交、等待、整理、记账。"""
     cfg = _mk_cfg(tmp_path)
     monkeypatch.setattr(main, "_STORE", None)
+    monkeypatch.setattr(main.storage, "get", lambda: SimpleNamespace(kind="clouddrive2"))
     monkeypatch.setattr(cloudadd, "ready", lambda get: (True, "ok"))
     monkeypatch.setattr(cloudadd, "destinations", lambda get: ("inbox", "dest"))
     monkeypatch.setattr(cloudadd, "task_inbox", lambda inbox, key: f"{inbox}/{key}")

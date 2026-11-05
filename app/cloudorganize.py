@@ -37,6 +37,9 @@ _AD_MARKS = ("489155.com", "最新地址", "最新位址", "获取", "直播", "
 
 # 路径安全：目录名不允许出现这些，避免拼出别的路径
 _BAD_NAME = re.compile(r"[/\\]|\.\.")
+# 单个文件名只拦分隔符和 NUL；名字内部的连续点（`被....vip1129.mp4`）是合法字符，
+# 按 `..` 拦会把正常广告文件当成路径穿越，源目录永远清不掉。
+_BAD_FILE_NAME = re.compile(r"[/\\\x00]")
 
 
 class OrganizeError(RuntimeError):
@@ -456,7 +459,8 @@ def cleanup_source(backend, src_root: str, plan_obj: Plan, dst_root: str = "") -
         # 契约，保留空目录外壳，杜绝回读后迟到文件被整目录 purge 连带删除。
         # 媒体已经 move，原路径通常不存在；删除失败向上抛，让残留被持久化。
         for entry in files:
-            if _BAD_NAME.search(str(entry.name)):
+            name = str(entry.name)
+            if not name or name in (".", "..") or _BAD_FILE_NAME.search(name):
                 raise OrganizeError(f"清理文件名不安全：{entry.name!r}")
             backend.purge(f"{src}/{entry.name}")
         remaining_dirs = list(backend.list_dirs(src))

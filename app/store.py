@@ -701,6 +701,32 @@ class Store:
         with self._lock, self._conn() as own:
             self.state_put(updates, conn=own)
 
+    def state_mutate(self, key: str, fn) -> dict:
+        """在一个事务里读-改-写一份 JSON 状态，避免并发请求互相覆盖。"""
+        with self._lock, self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
+                try:
+                    current = json.loads(row["value"] or "{}") if row else {}
+                except json.JSONDecodeError:
+                    current = {}
+                if not isinstance(current, dict):
+                    current = {}
+                updated = fn(dict(current))
+                if not isinstance(updated, dict):
+                    updated = current
+                conn.execute(
+                    "INSERT INTO state (key, value, updated_at) VALUES (?,?,?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value,"
+                    " updated_at=excluded.updated_at",
+                    (key, json.dumps(updated, ensure_ascii=False), time.time()))
+                conn.commit()
+                return updated
+            except Exception:
+                conn.rollback()
+                raise
+
     @contextmanager
     def transaction(self):
         """一个事务里同时改订阅与待办：中途失败两边都不落，不会出现半截状态。"""

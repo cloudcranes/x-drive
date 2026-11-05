@@ -8,8 +8,7 @@ grpc 版本断言，而本项目只用得到十来个调用。这里用 channel 
 token 有 expiration，这里提前 5 分钟换新的；遇 UNAUTHENTICATED 清空重登一次
 （只一次，避免密码错时死循环）。
 
-`import grpc` 放在函数里延迟导入：镜像可能是 WITH_CD2=0 构建的，
-其它后端不该因为缺 grpcio 就整个起不来。
+`import grpc` 放在函数里延迟导入，让依赖缺失时自检返回可操作的错误。
 """
 from __future__ import annotations
 
@@ -38,7 +37,7 @@ def _grpc():
         import grpc                                  # noqa: PLC0415（延迟导入是刻意的）
     except ImportError as exc:
         raise AuthError(
-            "clouddrive2：运行环境没有 grpcio（镜像若用 WITH_CD2=0 构建，请改后端或重建）"
+            "clouddrive2：运行环境没有 grpcio，请安装 requirements-cd2.txt 或重建镜像"
         ) from exc
     return grpc
 

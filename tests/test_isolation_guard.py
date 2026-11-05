@@ -1,10 +1,10 @@
-"""测试隔离的两道防线：遗留线程不能变成僵尸，测试不能连真实迅雷面板。
+"""测试隔离的两道防线：遗留线程不能变成僵尸，测试不能连真实外部服务。
 
 两次真实事故：
   1. `web._threads.clear()` 只清字典不停线程 —— 那些线程从字典里消失，
      conftest 再也找不到它们、停不掉它们，继续在下一个用例的桩下推进。
   2. 于是它推进到下载那一步时，如果下一个用例没打桩 `pipeline.download`，
-     它就真的去连**真实迅雷面板**：容器内实测撞上「平台上已有同一个种子在
+     它就真的去连**真实云盘接口**：容器内实测撞上「平台上已有同一个种子在
      下载」（任务 VP4con1layjQOyCStyRiFu82A1），把毫不相干的恢复用例搞红。
      更糟的是它会真的占用平台的下载位。
 
@@ -63,18 +63,6 @@ def test_clearing_threads_dict_does_not_hide_running_thread(tmp_path, monkeypatc
         marked = set(web.CANCEL.keys())
     assert "j1" in marked, f"取消标记没打到 job_id：{marked}"
     release.set()
-
-
-def test_real_xunlei_is_blocked_in_tests():
-    """测试环境的迅雷客户端指向连不通的地址，漏网的真实调用会立刻失败。"""
-    from app import xunlei
-
-    assert web._XL is not None
-    assert web._XL.base.startswith("http://127.0.0.1:"), \
-        f"测试环境不该指向真实面板：{web._XL.base}"
-    # 9 号端口是 discard 端口，连它必然失败
-    assert web._XL.base != "http://127.0.0.1:2345", \
-        "测试环境竟然指向了真实迅雷面板"
 
 
 def test_drain_marks_threads_found_by_name_not_only_by_dict(tmp_path, monkeypatch):

@@ -1,34 +1,24 @@
-"""契约测试：同一套断言跑两个后端，证明它们确实可互换。
+"""契约测试：CloudDrive2 实现上层统一存储行为。
 
 上层（网页 / bot）只依赖 app/storage/base.py 里那十个方法的行为承诺：
 建目录幂等、上传返回即落地、改名后路径对得上、删除后目录消失。
-两个实现各写一遍测试容易各测各的，这里用同一份断言压两边。
+通过离线 gRPC 服务核验真实 CloudDrive2 适配器。
 """
 from __future__ import annotations
 
-import httpx
 import pytest
 
 from app.storage.base import StorageError
 from app.storage.clouddrive2 import CloudDrive2
-from app.storage.openlist import OpenList
 from tests.cd2_fake import FakeCd2
-from tests.test_storage_openlist import FakeOpenList
 
 
-@pytest.fixture(params=["openlist", "cd2"])
+@pytest.fixture
 def env(request, tmp_path):
-    if request.param == "openlist":
-        fake = FakeOpenList()
-        client = httpx.Client(base_url="http://ol",
-                              transport=httpx.MockTransport(fake.handler))
-        backend = OpenList("http://ol", user=fake.user, password=fake.password, client=client)
-    else:
-        fake = FakeCd2().start()
-        request.addfinalizer(fake.stop)
-        backend = CloudDrive2(fake.url, fake.user, fake.password, chunk_mb=1,
-                              task_timeout=20)
-    backend.kind  # noqa: B018 —— 只确认实现声明了 kind
+    fake = FakeCd2().start()
+    request.addfinalizer(fake.stop)
+    backend = CloudDrive2(fake.url, fake.user, fake.password, chunk_mb=1,
+                          task_timeout=20)
     return backend, fake, tmp_path
 
 
@@ -82,7 +72,5 @@ def test_upload_file_single(env):
 
 def test_listing_missing_dir_is_an_error(env):
     backend, _fake, _ = env
-    if backend.kind == "openlist":
-        pytest.skip("AList 对不存在的目录返回空列表（既有行为，上层按空处理）")
     with pytest.raises(StorageError):
         backend.list_files("X-Drive/does-not-exist")

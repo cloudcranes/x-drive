@@ -25,10 +25,10 @@ def _bind(tmp_path):
 
 # ─────────────────────────────────────────── 选择与路径
 
-def test_default_is_rclone(monkeypatch, tmp_path):
+def test_default_is_clouddrive2(monkeypatch, tmp_path):
     monkeypatch.delenv("DRIVE_ROOT", raising=False)
     _bind(tmp_path)
-    assert storage.kind() == "rclone"
+    assert storage.kind() == "clouddrive2"
     assert storage.root() == "X-Drive"
     assert storage.rel("SSIS-555") == "X-Drive/SSIS-555"
 
@@ -48,16 +48,18 @@ def test_storage_root_setting_wins(monkeypatch, tmp_path):
 
 def test_backend_from_settings(tmp_path):
     inst = _bind(tmp_path)
-    inst.set("STORAGE_BACKEND", "openlist")
-    inst.set("OPENLIST_URL", "http://ol:5244")
-    assert storage.kind() == "openlist"
-    assert storage.get().kind == "openlist"
+    inst.set("STORAGE_BACKEND", "clouddrive2")
+    inst.set("CD2_URL", "http://ol:5244")
+    assert storage.kind() == "clouddrive2"
+    assert storage.get().kind == "clouddrive2"
 
 
-def test_unknown_backend_falls_back_to_rclone(tmp_path):
+@pytest.mark.parametrize("legacy", ["rclone", "openlist", "ftp"])
+def test_unsupported_backend_fails_closed(tmp_path, legacy):
     inst = _bind(tmp_path)
-    inst.set("STORAGE_BACKEND", "ftp")
-    assert storage.kind() == "rclone"
+    assert inst.set("STORAGE_BACKEND", legacy) is False
+    with pytest.raises(storage.AuthError, match="Unsupported storage backend"):
+        storage.get(legacy)
 
 
 def test_rel_ignores_empty_parts(tmp_path):
@@ -69,24 +71,24 @@ def test_rel_ignores_empty_parts(tmp_path):
 
 def test_instance_is_cached(tmp_path):
     inst = _bind(tmp_path)
-    inst.set("OPENLIST_URL", "http://ol:5244")
-    inst.set("STORAGE_BACKEND", "openlist")
+    inst.set("CD2_URL", "http://ol:5244")
+    inst.set("STORAGE_BACKEND", "clouddrive2")
     assert storage.get() is storage.get()
 
 
 def test_cache_invalidated_on_config_change(tmp_path):
     inst = _bind(tmp_path)
-    inst.set("STORAGE_BACKEND", "openlist")
-    inst.set("OPENLIST_URL", "http://a:5244")
+    inst.set("STORAGE_BACKEND", "clouddrive2")
+    inst.set("CD2_URL", "http://a:5244")
     first = storage.get()
-    inst.set("OPENLIST_URL", "http://b:5244")
+    inst.set("CD2_URL", "http://b:5244")
     assert storage.get() is not first
 
 
 def test_reset_clears_cache(tmp_path):
     inst = _bind(tmp_path)
-    inst.set("STORAGE_BACKEND", "openlist")
-    inst.set("OPENLIST_URL", "http://a:5244")
+    inst.set("STORAGE_BACKEND", "clouddrive2")
+    inst.set("CD2_URL", "http://a:5244")
     first = storage.get()
     storage.reset()
     assert storage.get() is not first
@@ -94,15 +96,10 @@ def test_reset_clears_cache(tmp_path):
 
 # ─────────────────────────────────────────── 辅助函数
 
-def test_openlist_link_id():
-    assert storage.openlist_link_id("http://ol:5244/s/abc") == "abc"
-    assert storage.openlist_link_id("http://ol:5244/s/abc/") == "abc"
-    assert storage.openlist_link_id("https://drive.google.com/x") == ""
-    assert storage.openlist_link_id("") == ""
-
-
-def test_real_folder_passthrough_for_rclone(tmp_path):
+def test_real_folder_passthrough_without_probe(tmp_path, monkeypatch):
+    from types import SimpleNamespace
     _bind(tmp_path)
+    monkeypatch.setattr(storage, "get", lambda which=None: SimpleNamespace(kind="clouddrive2"))
     assert storage.real_folder("SSIS-555") == "SSIS-555"
 
 
@@ -120,16 +117,16 @@ def test_snapshot_shape(tmp_path):
 
 def test_snapshot_marks_missing_config(tmp_path):
     inst = _bind(tmp_path)
-    inst.set("STORAGE_BACKEND", "openlist")
+    inst.set("STORAGE_BACKEND", "clouddrive2")
     assert storage.snapshot()["configured"] is False
 
 
 def test_check_reports_config_error_without_raising(tmp_path):
     inst = _bind(tmp_path)
-    inst.set("STORAGE_BACKEND", "openlist")          # 故意不填 URL
+    inst.set("STORAGE_BACKEND", "clouddrive2")          # 故意不填 URL
     result = storage.check()
     assert result["ok"] is False
-    assert "OPENLIST_URL" in result["error"]
+    assert "CD2_URL" in result["error"]
     assert isinstance(result["latency_ms"], int)
 
 
@@ -137,7 +134,7 @@ def test_check_handles_unknown_exception(tmp_path, monkeypatch):
     _bind(tmp_path)
 
     class Boom:
-        kind = "rclone"
+        kind = "clouddrive2"
 
         def check(self, probe_path=""):
             raise RuntimeError("炸了")

@@ -93,10 +93,9 @@ vm.runInContext("const _metaApiReal=metaApi;"
 part("// ── 卡片\n","// 删除归档：");
 part("const mounted = new Map();","function applyFilter()");
 part("const STAGE_TEXT =","// ── 图片灯箱");
-part("const XL_PANEL_OPEN =","// 队列增量渲染：");
 part("const QUEUE_NODES =","// ─────────────── 封面卡片");
 part("const settingsDirty =","function openSettings()");
-part("function settingsTabOf(","// 存储分区按");
+part("function settingsTabOf(","function storageNetNote(");
 part("function settingsRow(",'$("settings-open").addEventListener');
 part("const RES_SORTS =","async function searchResources(");
 part("function renderCandidates(","// ── 顶栏类型切换");
@@ -119,28 +118,24 @@ def run_js(body: str) -> None:
     assert proc.returncode == 0, proc.stderr + proc.stdout
 
 
-def test_reused_job_and_panel_nodes_receive_latest_payload_and_timeline():
+def test_reused_job_nodes_receive_latest_payload_and_timeline():
     run_js(r'''
       const first={id:"j",stage:"downloading",code:"ABC",percent:10,speed:1048576,
         error:"old",events:[{kind:"stage",detail:"old"}]};
       let frame=first;
-      fetch=async url=>response(url.endsWith("/api/jobs")?{jobs:[frame]}:{tasks:[
-        {id:"xl",name:"fixture",phase:"PHASE_TYPE_RUNNING",percent:frame.percent,speed:frame.speed}]});
+      fetch=async()=>response({jobs:[frame]});
       await loadJobs();
-      const card=QUEUE_NODES.get("job:j").node, panel=QUEUE_NODES.get("xl:xl").node;
+      const card=QUEUE_NODES.get("job:j").node;
       await card.querySelector(".jtl").dispatch("click");
       await loadJobs(); // first poll after opening can change the structural signature
       const stable=QUEUE_NODES.get("job:j").node;
       frame={...first,percent:80,speed:8388608,error:"new",events:[{kind:"stage",detail:"new"}]};
       await loadJobs();
       assert.equal(QUEUE_NODES.get("job:j").node,stable);
-      assert.equal(QUEUE_NODES.get("xl:xl").node,panel);
       assert.equal(stable.querySelector(".jbar").firstChild.style.width,"80%");
       assert.match(stable.querySelector(".jmeta").textContent,/8.0MB\/s/);
       assert.match(stable.querySelector(".jmeta").textContent,/new/);
       assert.match(stable.querySelector(".tly").textContent,/new/);
-      assert.equal(panel.querySelector(".jbar").firstChild.style.width,"80%");
-      assert.match(panel.querySelector(".jmeta").textContent,/8.0MB\/s/);
       frame={...frame,cleanup_pending:[{target:"inbox/A",error:"leftover"}]};
       await loadJobs();
       assert.match(stable.textContent,/源目录清理待处理/);
@@ -177,50 +172,34 @@ def test_stop_failures_are_visible_and_retryable(failure):
 def test_slow_poll_is_single_flight_and_ticks_do_not_starve_accepted_data():
     run_js(r'''
       const pending=[];
-      fetch=url=>{const d=deferred();pending.push({url,...d});return d.promise};
+      fetch=()=>{const d=deferred();pending.push(d);return d.promise};
       const first=loadJobs(), tick=loadJobs(), anotherTick=loadJobs();
       assert.equal(pending.length,1); // No overlapping /api/jobs requests.
       pending[0].resolve(response({jobs:[{id:"slow",stage:"downloading"}]}));
       while(pending.length<2)await Promise.resolve();
-      assert.deepEqual(lastJobs.map(j=>j.id),["slow"]); // Ticks do not discard a slow result.
-      pending[1].resolve(response({tasks:[]}));
-      while(pending.length<3)await Promise.resolve();
-      pending[2].resolve(response({jobs:[{id:"new",stage:"done"}]}));
-      while(pending.length<4)await Promise.resolve();
-      pending[3].resolve(response({tasks:[]}));
+      assert.deepEqual(lastJobs.map(j=>j.id),["slow"]); // Ticks do not discard slow result.
+      pending[1].resolve(response({jobs:[{id:"new",stage:"done"}]}));
       await Promise.all([first,tick,anotherTick]);
-      assert.equal(pending.length,4); // Multiple ticks coalesce to exactly one follow-up cycle.
+      assert.equal(pending.length,2); // Multiple ticks coalesce exactly one follow-up cycle.
       assert.deepEqual(lastJobs.map(j=>j.id),["new"]);
       assert.equal(QUEUE_NODES.has("job:slow"),false);
     ''')
 
 
-def test_mutation_refresh_invalidates_stale_jobs_and_panel_snapshots():
+def test_mutation_refresh_invalidates_stale_jobs_snapshot():
     run_js(r'''
       const pending=[];
-      fetch=url=>{const d=deferred();pending.push({url,...d});return d.promise};
+      fetch=()=>{const d=deferred();pending.push(d);return d.promise};
       const old=loadJobs();loadJobs(true); // A stop/delete/clear operation completed.
       pending[0].resolve(response({jobs:[{id:"deleted",stage:"downloading"}]}));
       while(pending.length<2)await Promise.resolve();
       assert.equal(QUEUE_NODES.has("job:deleted"),false);
       pending[1].resolve(response({jobs:[{id:"new",stage:"done"}]}));
-      while(pending.length<3)await Promise.resolve();
-      pending[2].resolve(response({tasks:[]}));await old;
+      await old;
       assert.deepEqual(lastJobs.map(j=>j.id),["new"]);
-      pending.length=0;
-      const frame=loadJobs();pending[0].resolve(response({jobs:[]}));
-      while(pending.length<2)await Promise.resolve();
-      loadJobs(true); // The panel subrequest must share the invalidation boundary.
-      pending[1].resolve(response({tasks:[{id:"stale",phase:"PHASE_TYPE_RUNNING"}]}));
-      while(pending.length<3)await Promise.resolve();
-      assert.equal(QUEUE_NODES.has("xl:stale"),false);
-      pending[2].resolve(response({jobs:[]}));
-      while(pending.length<4)await Promise.resolve();
-      pending[3].resolve(response({tasks:[{id:"latest",phase:"PHASE_TYPE_RUNNING"}]}));await frame;
-      assert.equal(QUEUE_NODES.has("xl:latest"),true);
       fetch=async()=>response({},500);await loadJobs();
       assert.match(get("queue-hint").textContent,/刷新失败.*上次结果/);
-      assert.equal(QUEUE_NODES.has("xl:latest"),true);
+      assert.equal(QUEUE_NODES.has("job:new"),true);
     ''')
 
 

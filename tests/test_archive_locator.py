@@ -19,11 +19,12 @@ def test_locator_prefers_record_rel_over_global_root(monkeypatch):
     assert web.archive_locator(record) == "迅雷云盘/X-Drive/DEMO-1"
 
 
-def test_locator_falls_back_for_legacy_records(monkeypatch):
-    """旧记录没有 rel：退回 storage.rel(code)，行为与升级前一致。"""
+def test_locator_falls_back_only_for_identified_cd2_records(monkeypatch):
     monkeypatch.setattr(storage, "root", lambda: "X-Drive")
-    assert web.archive_locator({"code": "DEMO-1"}) == "X-Drive/DEMO-1"
-    assert web.archive_locator({}) == "X-Drive"
+    assert web.archive_locator({"code": "DEMO-1", "backend": "clouddrive2"}) == "X-Drive/DEMO-1"
+    for record in ({"code": "DEMO-1"}, {}, {"code": "DEMO-1", "backend": "rclone"}):
+        with pytest.raises(storage.StorageError):
+            web.archive_locator(record)
 
 
 def test_locator_rejects_unsafe_code(monkeypatch):

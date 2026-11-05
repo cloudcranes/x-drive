@@ -160,3 +160,41 @@ def test_first_run_sets_baseline_without_backfilling(fake_javbus):
     out = asyncio.run(subscribe.discover_javbus("w5a", "", kind="actor", pages=2))
     assert out["caught_up"] is True
     assert out["cursor"] == "2026-01-05"
+
+
+def test_series_prefix_uses_search_and_filters_codes(monkeypatch):
+    """TCHB 是番号前缀：走搜索接口，只收 TCHB- 开头，不碰同系列的 TCHR-。"""
+    calls = []
+
+    async def list_movies(*args, **kwargs):
+        raise AssertionError("前缀订阅不该走系列筛选接口")
+
+    async def search(keyword, page=1, client=None):
+        calls.append((keyword, page))
+        if page == 1:
+            return [movie("TCHB-067", "2026-05-28"),
+                    movie("TCHR-034", "2026-05-01"),
+                    movie("TCHB-058", "2026-04-20")]
+        return []
+
+    monkeypatch.setattr(javbus, "list_movies", list_movies)
+    monkeypatch.setattr(javbus, "search", search)
+    out = asyncio.run(subscribe.discover_javbus("TCHB", "2026-01-01",
+                                                kind="series", pages=2))
+    assert [i["code"] for i in out["items"]] == ["TCHB-058", "TCHB-067"]
+    assert out["seen"] == 2
+    assert calls[0] == ("TCHB", 1)
+    assert out["error"] == ""
+
+
+def test_prefix_page_without_matches_keeps_scanning(monkeypatch):
+    """搜索是模糊匹配，前一页可能只有标题命中；没命中前缀就继续翻。"""
+    async def search(keyword, page=1, client=None):
+        return {1: [movie("OTHER-1", "2026-06-01")],
+                2: [movie("TCHB-067", "2026-05-28")]}.get(page, [])
+
+    monkeypatch.setattr(javbus, "search", search)
+    out = asyncio.run(subscribe.discover_javbus("TCHB", "2026-01-01",
+                                                kind="series", pages=2))
+    assert [i["code"] for i in out["items"]] == ["TCHB-067"]
+    assert out["seen"] == 1

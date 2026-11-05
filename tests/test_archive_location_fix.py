@@ -52,23 +52,26 @@ def test_legacy_record_without_triple_uses_its_own_path(env, monkeypatch):
     assert web.archive_locator(legacy) == "迅雷云盘/X-Drive/AB-1"
 
 
-def test_legacy_path_with_mismatched_leaf_falls_back(env, monkeypatch):
+def test_legacy_path_with_mismatched_leaf_is_rejected(env, monkeypatch):
     """path 末段与番号对不上时不采信它 —— 宁可退回全局根也不指错目录。"""
     monkeypatch.setattr(storage, "root", lambda: "global-root")
     legacy = {"code": "AB-1", "path": "clouddrive2:迅雷云盘/X-Drive/OTHER", "files": []}
-    assert web.archive_locator(legacy) == "global-root/AB-1"
+    with pytest.raises(storage.StorageError):
+        web.archive_locator(legacy)
 
 
 def test_legacy_path_without_backend_prefix_is_ignored(env, monkeypatch):
     monkeypatch.setattr(storage, "root", lambda: "global-root")
     legacy = {"code": "AB-1", "path": "迅雷云盘/X-Drive/AB-1", "files": []}
-    assert web.archive_locator(legacy) == "global-root/AB-1"
+    with pytest.raises(storage.StorageError):
+        web.archive_locator(legacy)
 
 
 def test_legacy_path_with_traversal_is_rejected(env, monkeypatch):
     monkeypatch.setattr(storage, "root", lambda: "global-root")
     legacy = {"code": "AB-1", "path": "clouddrive2:../etc/AB-1", "files": []}
-    assert web.archive_locator(legacy) == "global-root/AB-1"
+    with pytest.raises(storage.StorageError):
+        web.archive_locator(legacy)
 
 
 def test_cloud_finish_preserves_actual_location(env, monkeypatch):
@@ -100,6 +103,7 @@ def test_cloud_finish_uses_actual_destination_not_global_root(env, monkeypatch):
 
 def test_cleanup_unknowns_remain_done_and_pending_is_persistent(env, monkeypatch):
     monkeypatch.setattr(web, "cloud_ready", lambda: (True, ""))
+    web.set_setting("AUTO_CLEAN_SOURCE", False)
     backend = SimpleNamespace(kind="clouddrive2")
     plan = SimpleNamespace(source="incoming", target="AB-1")
     out = {"records": [record()], "_backend": backend,
@@ -121,27 +125,81 @@ def test_cleanup_unknowns_remain_done_and_pending_is_persistent(env, monkeypatch
     assert web.collect()["tasks"][0]["cleanup_pending"] == pending
 
 
-def test_rclone_ls_and_delete_use_record_rel(env, monkeypatch):
+def test_auto_clean_purges_task_inbox_after_archive(env, monkeypatch):
+    monkeypatch.setattr(web, "cloud_ready", lambda: (True, ""))
+    web.set_setting("AUTO_CLEAN_SOURCE", True)
     calls = []
-    backend = SimpleNamespace(kind="rclone")
+    backend = SimpleNamespace(
+        kind="clouddrive2",
+        purge=lambda path: calls.append(path) or "已删除")
+    plan = SimpleNamespace(source="incoming", target="AB-1")
+    out = {"records": [record()], "_backend": backend,
+           "inbox": "inbox/task", "inbox_root": "inbox",
+           "cleanup": [{"plan": plan, "src_root": "inbox/task",
+                        "dst_root": "cloud-dest"}]}
+    monkeypatch.setattr(web, "_cloud_run", lambda *args: out)
+    monkeypatch.setattr(web.cloudadd, "clean_sources",
+                        lambda *a, **k: [{"error": "unknown late.mp4"}])
+    env.update_cas("j", "A", extra={"cleanup_pending": [{"error": "old"}]})
+
+    web.run_web_job("j", "magnet:a", "AB-1")
+
+    row = env.get("j")
+    assert row["stage"] == "done"
+    assert row["extra"].get("cleanup_pending") == []
+    assert calls == ["inbox/task"]
+
+
+def test_auto_clean_failure_keeps_pending(env, monkeypatch):
+    monkeypatch.setattr(web, "cloud_ready", lambda: (True, ""))
+    web.set_setting("AUTO_CLEAN_SOURCE", True)
+
+    def boom(path):
+        raise RuntimeError("cloud drive said no")
+
+    backend = SimpleNamespace(kind="clouddrive2", purge=boom)
+    plan = SimpleNamespace(source="incoming", target="AB-1")
+    out = {"records": [record()], "_backend": backend,
+           "inbox": "inbox/task", "inbox_root": "inbox",
+           "cleanup": [{"plan": plan, "src_root": "inbox/task",
+                        "dst_root": "cloud-dest"}]}
+    monkeypatch.setattr(web, "_cloud_run", lambda *args: out)
+    monkeypatch.setattr(web.cloudadd, "clean_sources",
+                        lambda *a, **k: [{"error": "unknown late.mp4"}])
+
+    web.run_web_job("j", "magnet:a", "AB-1")
+
+    pending = env.get("j")["extra"]["cleanup_pending"]
+    assert pending[-1]["source"] == "inbox/task"
+    assert "自动清理失败" in pending[-1]["error"]
+
+
+def test_cd2_ls_and_delete_use_record_rel(env, monkeypatch):
+    calls = []
+    backend = SimpleNamespace(
+        kind="clouddrive2",
+        list_files=lambda rel: calls.append(("list", rel)) or [],
+        purge=lambda rel: calls.append(("purge", rel)) or "deleted")
     monkeypatch.setattr(web, "storage_backend", lambda: backend)
-    monkeypatch.setattr(storage, "kind", lambda: "rclone")
-    monkeypatch.setattr(web, "rclone", lambda *args, **kw: (calls.append(args) or (0, "[]", "")))
-    saved = {"code": "AB-1", "backend": "rclone", "root": "old-root",
-             "remote": web.RCLONE_REMOTE, "rel": "old-root/AB-1", "files": []}
+    saved = {"code": "AB-1", "backend": "clouddrive2", "root": "old-root",
+             "rel": "old-root/AB-1", "files": []}
     core.save_state(web.STATE, {"AB-1": saved})
     assert web.verify_archive("AB-1")["ok"]
     assert web.purge_archives(["AB-1"])
-    assert calls[0][1] == f"{web.RCLONE_REMOTE}:old-root/AB-1"
-    assert calls[1][1] == f"{web.RCLONE_REMOTE}:old-root/AB-1"
+    assert calls == [("list", "old-root/AB-1"), ("purge", "old-root/AB-1")]
 
 
-def test_changed_backend_blocks_read_delete_rename_and_attachment_sync(env, monkeypatch):
+@pytest.mark.parametrize("legacy", ["rclone", "openlist", "gdrive"])
+def test_legacy_backend_blocks_read_delete_rename_and_attachment_sync(env, monkeypatch, legacy):
     calls = []
-    backend = SimpleNamespace(kind="rclone")
+    def touched(*args):
+        calls.append(args)
+        pytest.fail("legacy archive touched CD2")
+    backend = SimpleNamespace(kind="clouddrive2", list_files=touched, purge=touched,
+                              rename_dir=touched, upload_file=touched)
     monkeypatch.setattr(web, "storage_backend", lambda: backend)
-    monkeypatch.setattr(web, "rclone", lambda *args, **kw: calls.append(args))
-    saved = {"code": "AB-1", **record()}
+    saved = {"code": "AB-1", **record(), "backend": legacy,
+             "path": f"{legacy}:cloud-dest/AB-1"}
     core.save_state(web.STATE, {"AB-1": saved})
     assert not web.verify_archive("AB-1")["ok"]
     assert not web.purge_archives(["AB-1"])

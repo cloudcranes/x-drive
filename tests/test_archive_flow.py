@@ -178,11 +178,6 @@ def test_web_cloud_flow_record_rescrape_verify(tmp_path, monkeypatch):
     # ② 补刮：清单里的视频项不许丢
     posted = {}
 
-    def sync_rclone(cmd, src, dst, **kw):
-        posted[dst.rsplit("/", 1)[-1]] = Path(src).read_text(encoding="utf-8")
-        return 0, "", ""
-
-    monkeypatch.setattr(web, "rclone", sync_rclone)
     # 补刮把附件推到云盘：假的 upload_file 记下内容
     def fake_upload_file(local, remote):
         posted[Path(local).name] = Path(local).read_text(encoding="utf-8")
@@ -230,9 +225,9 @@ def test_web_cloud_flow_record_rescrape_verify(tmp_path, monkeypatch):
 
 def bot_cfg(tmp_path, **over):
     return main.Config(
-        token="x", allowed={1}, remote="gdrive", drive_root="X-Drive", max_mb=10,
+        token="x", allowed={1}, max_mb=10,
         concurrency=1, state_path=str(tmp_path / "state.json"),
-        tmp_root=str(tmp_path / "dl"), rclone_config="/dev/null",
+        tmp_root=str(tmp_path / "dl"),
         pending_dir=str(tmp_path / "pending"),
         metrics_path=str(tmp_path / "metrics.json"),
         state_dir=str(tmp_path / "work"), jobs_db=str(tmp_path / "jobs.db"),

@@ -6,12 +6,12 @@
 <title>x-drive · 登录</title>
 <link rel="icon" href="data:,">
 <style>
-  /* 设计语言：纯黑底 + 细颗粒 + 青色光晕；8px 圆角、1px 白 10% 描边、等宽字体数字 */
+  /* 设计语言：纯黑底 + 细颗粒 + 粉紫光晕；8px 圆角、1px 白 10% 描边、等宽字体数字 */
   :root{
     --bg:#000; --panel:rgba(13,13,13,.85); --panel-2:rgba(26,26,26,.85);
     --ink:#f8fafc; --ink-2:#a3b0c2; --ink-3:#6b7c94;
     --line:rgba(255,255,255,.10);
-    --cyan:#3ebaf4; --gold-line:rgba(251,219,163,.22); --pink:#ec4899;
+    --cyan:#ff2f6d; --gold-line:rgba(251,219,163,.22); --pink:#b06cff;
     --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
     --sans:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;
   }
@@ -24,9 +24,9 @@
 
   .glow{position:fixed; z-index:0; pointer-events:none; border-radius:50%}
   .glow.a{width:720px;height:720px;left:54%;top:-260px;
-    background:radial-gradient(circle,rgba(62,186,244,.20) 0%,rgba(62,186,244,0) 70%)}
+    background:radial-gradient(circle,rgba(255,47,109,.20) 0%,rgba(255,47,109,0) 70%)}
   .glow.b{width:560px;height:560px;left:-180px;bottom:-260px;
-    background:radial-gradient(circle,rgba(236,72,153,.12) 0%,rgba(236,72,153,0) 70%)}
+    background:radial-gradient(circle,rgba(176,108,255,.12) 0%,rgba(176,108,255,0) 70%)}
   .grain{position:fixed; inset:0; z-index:0; opacity:.045; pointer-events:none;
     background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3'/></filter><rect width='120' height='120' filter='url(%23n)'/></svg>")}
 
@@ -41,7 +41,7 @@
   }
   .card::before{
     content:""; position:absolute; width:340px; height:340px; right:-120px; top:-150px; border-radius:50%;
-    background:radial-gradient(circle,rgba(62,186,244,.22) 0%,rgba(62,186,244,0) 70%); pointer-events:none;
+    background:radial-gradient(circle,rgba(255,47,109,.22) 0%,rgba(255,47,109,0) 70%); pointer-events:none;
   }
   @keyframes in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 
@@ -71,8 +71,8 @@
   }
   .field input::placeholder{color:#4a5566}
   .field input:focus{
-    border-color:rgba(62,186,244,.55); background:rgba(0,0,0,.8);
-    box-shadow:0 0 0 3px rgba(62,186,244,.14), 0 0 22px -6px rgba(62,186,244,.6);
+    border-color:rgba(255,47,109,.55); background:rgba(0,0,0,.8);
+    box-shadow:0 0 0 3px rgba(255,47,109,.14), 0 0 22px -6px rgba(255,47,109,.6);
   }
   .field input:-webkit-autofill{-webkit-text-fill-color:var(--ink); -webkit-box-shadow:0 0 0 40px #0d0d0d inset}
   .toggle{
@@ -86,17 +86,18 @@
   .submit{
     width:100%; margin-top:6px; padding:12px 16px; border-radius:8px; cursor:pointer;
     font-family:var(--sans); font-size:14px; font-weight:700; letter-spacing:.01em; color:#f8fafc;
-    border:1px solid rgba(62,186,244,.34);
-    background:linear-gradient(135deg,rgba(62,186,244,.20) 0%,rgba(62,186,244,.06) 100%);
-    transition:border-color .16s, box-shadow .16s, transform .1s;
+    border:1px solid rgba(255,47,109,.55);
+    background:linear-gradient(135deg,#ff2f6d 0%,#d4134c 100%);
+    box-shadow:0 14px 30px -14px rgba(255,47,109,.9), inset 0 1px 0 rgba(255,255,255,.18);
+    transition:filter .16s, box-shadow .16s, transform .1s;
     display:flex; align-items:center; justify-content:center; gap:9px;
   }
-  .submit:hover{border-color:rgba(62,186,244,.6);
-    box-shadow:0 0 26px -8px rgba(62,186,244,.7), inset 0 1px 0 rgba(255,255,255,.08)}
+  .submit:hover{filter:brightness(1.08);
+    box-shadow:0 18px 36px -14px rgba(255,47,109,1), inset 0 1px 0 rgba(255,255,255,.2)}
   .submit:active{transform:translateY(1px)}
   .submit[disabled]{cursor:progress; opacity:.8}
   .spin{width:13px;height:13px;border-radius:50%;border:2px solid rgba(248,250,252,.25);
-    border-top-color:var(--cyan); animation:spin .7s linear infinite; display:none}
+    border-top-color:#fff; animation:spin .7s linear infinite; display:none}
   .submit[disabled] .spin{display:block}
   @keyframes spin{to{transform:rotate(360deg)}}
 

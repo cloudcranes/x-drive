@@ -312,7 +312,7 @@ def test_archive_delete_keeps_record_when_purge_fails(server, monkeypatch):
 def test_api_storage_shape(server):
     data = json.loads(get(server + "/api/storage").read())
     assert data["ok"] is True
-    assert data["kind"] in ("rclone", "openlist", "clouddrive2")
+    assert data["kind"] == "clouddrive2"
     assert data["root"]
     assert "PASSWORD" not in json.dumps(data), "接口不能回显任何密钥字段"
 
@@ -320,11 +320,11 @@ def test_api_storage_shape(server):
 def test_api_storage_test_failure_still_200(server, monkeypatch):
     """连不通也要 200 + ok:false：面板要能把原因直接显示出来。"""
     monkeypatch.setattr(web, "storage_test",
-                        lambda: {"ok": False, "kind": "openlist", "root": "X-Drive",
-                                 "latency_ms": 3, "error": "openlist：没配 OPENLIST_URL"})
+                        lambda: {"ok": False, "kind": "clouddrive2", "root": "X-Drive",
+                                 "latency_ms": 3, "error": "clouddrive2：没配 CD2_URL"})
     status, body = _post_json(server + "/api/storage/test", {})
     assert status == 200 and body["ok"] is False
-    assert "OPENLIST_URL" in body["error"]
+    assert "CD2_URL" in body["error"]
 
 
 def test_api_storage_test_success(server, monkeypatch):
@@ -474,3 +474,23 @@ def test_cloud_capability_needs_auth(server, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as exc:
         get(server + "/api/cloud/capability")
     assert exc.value.code == 401
+
+
+def test_api_logs_tails_file(server, tmp_path, monkeypatch):
+    from app import logbuf
+    path = tmp_path / "run.log"
+    path.write_text(
+        "2026-10-31 04:00:00,000 INFO x-drive.web 服务启动\n"
+        "2026-10-31 04:00:01,000 ERROR x-drive.job 云添加失败\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(logbuf, "LOG_PATH", str(path))
+    data = json.loads(get(server + "/api/logs?limit=5").read())
+    assert data["ok"] is True
+    assert [i["level"] for i in data["items"]] == ["INFO", "ERROR"]
+    assert data["items"][-1]["text"] == "云添加失败"
+
+
+def test_spa_route_logs(server):
+    body = get(server + "/logs").read().decode()
+    assert "<title>x-drive" in body

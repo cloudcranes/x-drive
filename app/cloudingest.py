@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +34,8 @@ DEFAULT_TIMEOUT = 7200.0
 DEFAULT_STABLE = 3
 # 空目录也要给足稳定次数：种子刚解析完时目录先建出来、文件随后才写
 MIN_STABLE = 2
+# 提交后迅雷侧任务消失（无源/被删）的宽限：任务列表可能延迟出现，不能立刻判死。
+MISSING_TASK_GRACE = 300.0
 
 # 「文件直接躺在收件目录根下」这种落地的键（单文件种子实测如此）。
 # 用一个不会跟真实目录名撞的固定键 —— 目录名不会以 "=" 开头。
@@ -192,7 +195,7 @@ async def wait_landing(backend, inbox: str, before: dict, *,
                        poll: float = DEFAULT_POLL, timeout: float = DEFAULT_TIMEOUT,
                        stable: int = DEFAULT_STABLE,
                        progress=None, cancel_check=None,
-                       source: str = "") -> list[Landing]:
+                       source: str = "", submitted_at: float = 0.0) -> list[Landing]:
     """等 inbox 里出现新条目并稳定下来，返回所有已稳定的新条目。
 
     批量提交多个种子时会一次来好几个目录，全部收下；只要「连续 stable 轮没有
@@ -227,6 +230,14 @@ async def wait_landing(backend, inbox: str, before: dict, *,
             off_state = inspect_offline_task(source)
             if off_state.is_error:
                 raise LandingTimeout(f"迅雷侧拒绝了这次下载：{off_state.error or '迅雷侧报任务失败'}")
+            # 提交后迅雷侧任务消失：离线任务列表里没有、收件目录也没有新内容。
+            # 不处理的话会盲等满 CLOUD_LAND_TIMEOUT（默认 2 小时）；这里给宽限，
+            # 避免把「列表延迟出现」误判成失败。
+            if (off_state.checked and not off_state.found and submitted_at
+                    and time.time() - submitted_at >= MISSING_TASK_GRACE and not known):
+                raise LandingTimeout(
+                    "迅雷侧查不到这个离线任务（可能无源或已被删除）："
+                    f"{inbox} 里也没有新内容，请换一个磁力重试")
 
         items = measure(backend, inbox)
         fresh = newcomers(before, items)
@@ -288,6 +299,7 @@ async def wait_landing(backend, inbox: str, before: dict, *,
 @dataclass
 class OfflineState:
     """迅雷离线任务状态快照。"""
+    checked: bool = False
     found: bool = False
     phase: str = ""
     progress: int = 0
@@ -316,11 +328,12 @@ def inspect_offline_task(url: str, *, client=None) -> OfflineState:
         log.info("查迅雷离线任务状态失败（忽略）：%s", exc)
         return OfflineState()
     if not task:
-        return OfflineState()
+        return OfflineState(checked=True)
     phase = str(task.get("phase") or "")
     prog = int(task.get("progress") or 0)
     reason = (task.get("message") or task.get("error_detail") or "").strip()
     return OfflineState(
+        checked=True,
         found=True,
         phase=phase,
         progress=prog,

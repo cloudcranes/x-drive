@@ -10,6 +10,9 @@
 """
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
 from app import cloudingest
@@ -130,3 +133,29 @@ def test_wait_landing_without_source_never_queries(monkeypatch):
     with pytest.raises(cloudingest.LandingTimeout):
         asyncio.run(cloudingest.wait_landing(
             object(), "/inbox", {}, poll=0.01, timeout=0.05, stable=1))
+
+
+def test_wait_landing_fails_when_offline_task_vanished(monkeypatch):
+    """提交很久了、迅雷任务列表里仍没有 → 别盲等两小时。"""
+    monkeypatch.setattr(cloudingest, "inspect_offline_task",
+                        lambda *a, **k: cloudingest.OfflineState(checked=True))
+    monkeypatch.setattr(cloudingest, "measure", lambda *a, **k: {})
+
+    with pytest.raises(cloudingest.LandingTimeout) as ei:
+        asyncio.run(cloudingest.wait_landing(
+            object(), "/inbox", {}, poll=0.01, timeout=30, stable=1,
+            source="magnet:?xt=urn:btih:AA", submitted_at=time.time() - 301))
+    assert "查不到" in str(ei.value)
+
+
+def test_wait_landing_gives_fresh_missing_task_a_grace(monkeypatch):
+    """刚提交时任务列表可能还没刷新，不能立刻判死。"""
+    monkeypatch.setattr(cloudingest, "inspect_offline_task",
+                        lambda *a, **k: cloudingest.OfflineState(checked=True))
+    monkeypatch.setattr(cloudingest, "measure", lambda *a, **k: {})
+
+    with pytest.raises(cloudingest.LandingTimeout) as ei:
+        asyncio.run(cloudingest.wait_landing(
+            object(), "/inbox", {}, poll=0.01, timeout=0.08, stable=1,
+            source="magnet:?xt=urn:btih:AA", submitted_at=time.time()))
+    assert "等待落地超时" in str(ei.value)

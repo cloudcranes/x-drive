@@ -25,9 +25,8 @@ def fresh_task_store(monkeypatch, tmp_path):
 
 def make_cfg(tmp_path, **over):
     return main.Config(
-        token="x", allowed={1}, remote="gdrive", drive_root="X-Drive", max_mb=10, concurrency=1,
+        token="x", allowed={1}, max_mb=10, concurrency=1,
         state_path=str(tmp_path / "state.json"), tmp_root=str(tmp_path / "dl"),
-        rclone_config="/dev/null",
         pending_dir=str(tmp_path / "pending"), metrics_path=str(tmp_path / "metrics.json"),
         state_dir=str(tmp_path / "work"),
         jobs_db=str(tmp_path / "jobs.db"),
@@ -52,6 +51,8 @@ class _Landing:
 def stub(monkeypatch, tmp_path):
     """把云添加的每一步换成假的：提交、等待、整理、记账、清理。"""
     calls = {"submitted": [], "cleaned": []}
+    backend = SimpleNamespace(kind="clouddrive2")
+    monkeypatch.setattr(main.storage, "get", lambda: backend)
 
     monkeypatch.setattr(cloudadd, "ready", lambda get: (True, "ok"))
     monkeypatch.setattr(cloudadd, "destinations", lambda get: ("inbox", "dest"))
@@ -292,15 +293,13 @@ def test_del_deletes_by_code(tmp_path, monkeypatch):
     """/del 的 state 键是番号（不是推文 ID）。"""
     from app import main as bot
 
-    state = {"SSIS-123": {"code": "SSIS-123", "path": "gdrive:X-Drive/SSIS-123",
+    state = {"SSIS-123": {"code": "SSIS-123", "backend": "clouddrive2", "rel": "X-Drive/SSIS-123",
+                          "path": "clouddrive2:X-Drive/SSIS-123",
                           "link": "https://drive/x", "files": ["SSIS-123.mp4"]}}
     purged = []
 
-    async def fake_rclone(cfg, *args, timeout=180.0):
-        purged.append(args)
-        return 0, "", ""
-
-    monkeypatch.setattr(bot, "rclone", fake_rclone)
+    backend = SimpleNamespace(kind="clouddrive2", purge=lambda rel: purged.append(rel))
+    monkeypatch.setattr(bot.storage, "get", lambda: backend)
 
     update, msg = _update()
     asyncio.run(bot.on_delete(update, _ctx(tmp_path, state, ["ssis_123"])))
@@ -309,8 +308,7 @@ def test_del_deletes_by_code(tmp_path, monkeypatch):
 
     update, msg = _update()
     asyncio.run(bot.on_delete(update, _ctx(tmp_path, state, ["ssis_123", "--yes"])))
-    assert purged and purged[0][0] == "purge"
-    assert purged[0][1] == "gdrive:X-Drive/SSIS-123"
+    assert purged == ["X-Drive/SSIS-123"]
     assert "SSIS-123" not in state
 
 
@@ -320,13 +318,11 @@ def test_del_rejects_path_outside_drive_root(tmp_path, monkeypatch):
 
     state = {"SSIS-123": {"code": "SSIS-123", "path": "/etc", "files": []}}
 
-    async def fake_rclone(cfg, *args, timeout=180.0):
-        raise AssertionError("不该执行 rclone")
-
-    monkeypatch.setattr(bot, "rclone", fake_rclone)
+    backend = SimpleNamespace(kind="clouddrive2", purge=lambda rel: pytest.fail("unexpected purge"))
+    monkeypatch.setattr(bot.storage, "get", lambda: backend)
     update, msg = _update()
     asyncio.run(bot.on_delete(update, _ctx(tmp_path, state, ["SSIS-123", "--yes"])))
-    assert "路径校验未通过" in msg.sent[-1]
+    assert "删除中止" in msg.sent[-1]
     assert "SSIS-123" in state
 
 

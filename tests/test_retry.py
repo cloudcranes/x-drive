@@ -145,7 +145,7 @@ def test_classify_four_kinds():
     assert retry.classify("迅雷任务失败：任务超时,已重试10次,请更换资源") == retry.DEAD
     assert retry.classify("今日上传量已达 20GB 上限，文件留在 /downloads 可明天重试") == retry.QUOTA
     assert retry.classify("Drive 上传配额已用完，明日再试") == retry.QUOTA
-    assert retry.classify("没有配置 XUNLEI_PARENT_ID") == retry.CONFIG
+    assert retry.classify("device_space_not_active：目录不可用") == retry.CONFIG
     assert retry.classify("迅雷把文件下到了 /mnt/x，不在 TMP_ROOT=/downloads 下") == retry.CONFIG
 
 def test_limits_differ_by_kind():
@@ -153,7 +153,7 @@ def test_limits_differ_by_kind():
     assert pol.limit_for("连接超时") == 3, "网络类给满次数"
     assert pol.limit_for("可能是死种") == 1, "死种只再给一次"
     assert pol.limit_for("今日上传量已达上限") == 0, "配额今天没戏"
-    assert pol.limit_for("没有配置 XUNLEI_PARENT_ID") == 0, "配置错重试无意义"
+    assert pol.limit_for("device_space_not_active") == 0, "配置错重试无意义"
 
 def test_dead_gets_longer_backoff():
     pol = retry.RetryPolicy(retries=3, base_delay=10.0, max_delay=600.0, jitter=0)

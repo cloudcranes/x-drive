@@ -199,13 +199,12 @@ def test_web_set_settings_wiring(tmp_path, monkeypatch):
 # ─────────────────────────────────────────── 存储后端（新增分组）
 
 def test_storage_group_present(tmp_path, monkeypatch):
-    for key in ("STORAGE_BACKEND", "OPENLIST_URL", "OPENLIST_PASSWORD",
-                "CD2_URL", "CD2_PASSWORD", "CD2_LINK_MODE"):
+    for key in ("STORAGE_BACKEND", "CD2_URL", "CD2_PASSWORD", "CD2_LINK_MODE"):
         assert key in settings_mod.SETTINGS_SPEC, f"{key} 没进设置表"
         assert settings_mod.SETTINGS_SPEC[key]["group"] == "存储"
     snap = _s(tmp_path).snapshot()
-    assert snap["STORAGE_BACKEND"]["value"] == "rclone"
-    assert snap["STORAGE_BACKEND"]["choices"] == ["rclone", "openlist", "clouddrive2"]
+    assert snap["STORAGE_BACKEND"]["value"] == "clouddrive2"
+    assert snap["STORAGE_BACKEND"]["choices"] == ["clouddrive2"]
     assert snap["CD2_LINK_MODE"]["choices"] == ["none", "static", "download-url", "template"]
 
 
@@ -213,7 +212,8 @@ def test_storage_secrets_are_never_echoed(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENLIST_PASSWORD", "s3cret")
     monkeypatch.setenv("CD2_PASSWORD", "hunter2")
     snap = _s(tmp_path).snapshot()
-    for key in ("OPENLIST_PASSWORD", "CD2_PASSWORD"):
+    assert not any(key.startswith("OPENLIST_") for key in snap)
+    for key in ("CD2_PASSWORD",):
         assert snap[key]["value"] == "", "密码不能出现在快照里"
         assert snap[key]["configured"] is True
     assert "s3cret" not in str(snap) and "hunter2" not in str(snap)
@@ -232,8 +232,7 @@ def test_storage_specs_declare_owning_backend():
     """每项存储参数标了它属于哪个后端：界面据此裁剪，别让两套参数混在一起。"""
     spec = settings_mod.SETTINGS_SPEC
     assert "only" not in spec["STORAGE_BACKEND"] and "only" not in spec["STORAGE_ROOT"]
-    for key in ("OPENLIST_URL", "OPENLIST_PASSWORD", "OPENLIST_SHARE_PWD"):
-        assert spec[key]["only"] == "openlist"
+    assert not any(key.startswith("OPENLIST_") for key in spec)
     for key in ("CD2_URL", "CD2_PASSWORD", "CD2_LINK_MODE", "SHARE_LINK_TEMPLATE"):
         assert spec[key]["only"] == "clouddrive2"
     # 快照要透传，前端才拿得到

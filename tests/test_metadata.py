@@ -80,6 +80,7 @@ def test_write_sidecar_skips_nfo_when_disabled(tmp_path):
 # ---------------------------------------------------------------- 刮削接入（批次3）
 
 def _scrape_env(tmp_path, monkeypatch):
+    from types import SimpleNamespace
     from app import core, store, web
     monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
     monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
@@ -87,6 +88,8 @@ def _scrape_env(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "SCRAPE_ON", True)
     monkeypatch.setattr(web, "NFO_ON", True)
     monkeypatch.setattr(web, "POSTER_ON", False)
+    backend = SimpleNamespace(kind="clouddrive2", download_url=lambda path: None)
+    monkeypatch.setattr(web, "storage_backend", lambda: backend)
     core.save_state(web.STATE, {})
     return core, web
 
@@ -232,7 +235,7 @@ def test_verify_archive_reports_missing_and_mismatch(tmp_path, monkeypatch):
     """默认只报告：缺文件、大小不对都要说清楚，不自动补传。"""
     core, web = _scrape_env(tmp_path, monkeypatch)
     core.save_state(web.STATE, {"SSIS-7": {
-        "code": "SSIS-7", "files": ["a.mp4", "b.nfo"],
+        "code": "SSIS-7", "backend": "clouddrive2", "rel": "X-Drive/SSIS-7", "files": ["a.mp4", "b.nfo"],
         "manifest": {"files": [{"name": "a.mp4", "size": 10},
                                {"name": "b.nfo", "size": 5}]}}})
     monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
@@ -246,7 +249,7 @@ def test_verify_archive_reports_missing_and_mismatch(tmp_path, monkeypatch):
 def test_verify_archive_size_mismatch(tmp_path, monkeypatch):
     core, web = _scrape_env(tmp_path, monkeypatch)
     core.save_state(web.STATE, {"SSIS-8": {
-        "code": "SSIS-8", "manifest": {"files": [{"name": "a.mp4", "size": 10}]}}})
+        "code": "SSIS-8", "backend": "clouddrive2", "rel": "X-Drive/SSIS-8", "manifest": {"files": [{"name": "a.mp4", "size": 10}]}}})
     monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
         {"name": "a.mp4", "size": 9}])
     out = web.verify_archive("SSIS-8")
@@ -258,7 +261,7 @@ def test_verify_archive_remote_zero_byte_is_mismatch(tmp_path, monkeypatch):
     """远端 0 字节而本地有大小：上传残缺，必须判异常，不能算通过。"""
     core, web = _scrape_env(tmp_path, monkeypatch)
     core.save_state(web.STATE, {"SSIS-11": {
-        "code": "SSIS-11", "manifest": {"files": [{"name": "a.mp4", "size": 100}]}}})
+        "code": "SSIS-11", "backend": "clouddrive2", "rel": "X-Drive/SSIS-11", "manifest": {"files": [{"name": "a.mp4", "size": 100}]}}})
     monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
         {"name": "a.mp4", "size": 0}])
     out = web.verify_archive("SSIS-11")
@@ -271,7 +274,7 @@ def test_verify_archive_unknown_local_size_is_not_pass(tmp_path, monkeypatch):
     """本地大小不明（0 或没记）：不做大小断言，但要说「大小未知」，不能算通过。"""
     core, web = _scrape_env(tmp_path, monkeypatch)
     core.save_state(web.STATE, {"SSIS-12": {
-        "code": "SSIS-12", "manifest": {"files": [{"name": "a.mp4", "size": 0},
+        "code": "SSIS-12", "backend": "clouddrive2", "rel": "X-Drive/SSIS-12", "manifest": {"files": [{"name": "a.mp4", "size": 0},
                                                   {"name": "b.nfo"}]}}})
     monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
         {"name": "a.mp4", "size": 100}, {"name": "b.nfo", "size": 5}])
@@ -285,7 +288,7 @@ def test_verify_archive_unknown_local_size_is_not_pass(tmp_path, monkeypatch):
 def test_verify_archive_records_without_sizes_still_ok(tmp_path, monkeypatch):
     """记录里只有文件名（无清单）、远端非空：大小未知但不许谎报通过。"""
     core, web = _scrape_env(tmp_path, monkeypatch)
-    core.save_state(web.STATE, {"SSIS-13": {"code": "SSIS-13", "files": ["a.mp4"]}})
+    core.save_state(web.STATE, {"SSIS-13": {"code": "SSIS-13", "backend": "clouddrive2", "rel": "X-Drive/SSIS-13", "files": ["a.mp4"]}})
     monkeypatch.setattr(web, "remote_ls", lambda code, timeout=180.0, rel_path="", **_: [
         {"name": "a.mp4", "size": 100}])
     out = web.verify_archive("SSIS-13")
@@ -294,10 +297,10 @@ def test_verify_archive_records_without_sizes_still_ok(tmp_path, monkeypatch):
 
 def test_verify_archive_ls_failure_is_reported_not_raised(tmp_path, monkeypatch):
     core, web = _scrape_env(tmp_path, monkeypatch)
-    core.save_state(web.STATE, {"SSIS-9": {"code": "SSIS-9", "files": ["a.mp4"]}})
+    core.save_state(web.STATE, {"SSIS-9": {"code": "SSIS-9", "backend": "clouddrive2", "rel": "X-Drive/SSIS-9", "files": ["a.mp4"]}})
 
     def boom(code, timeout=180.0):
-        raise RuntimeError("rclone 不存在")
+        raise RuntimeError("CD2 unavailable")
 
     monkeypatch.setattr(web, "remote_ls", boom)
     out = web.verify_archive("SSIS-9")
@@ -390,6 +393,44 @@ def test_normalize_meta_ignores_blank_values():
     out = metadata.normalize_meta({"date": "", "duration": 0})
     assert "release_date" not in out
     assert "runtime" not in out
+
+
+def test_normalize_meta_rewrites_javbus_cover_to_r2(monkeypatch):
+    """JavBus 图源在本机不可达，封面必须改写为 R2 直链。"""
+    from app import metadata
+    monkeypatch.setattr(metadata.coverstore, "R2_BASE", "https://covers.master.us.kg")
+    out = metadata.normalize_meta({"cover": "https://www.javbus.com/pics/cover/68hp_b.jpg"})
+    want = "https://covers.master.us.kg/javbus/www.javbus.com/pics/cover/68hp_b.jpg"
+    assert out["cover"] == want
+    assert out["cover_url"] == want
+
+
+def test_normalize_meta_leaves_unknown_cover_hosts_alone(monkeypatch):
+    from app import metadata
+    monkeypatch.setattr(metadata.coverstore, "R2_BASE", "https://covers.master.us.kg")
+    out = metadata.normalize_meta({"cover": "https://example.com/a.jpg"})
+    assert out["cover"] == "https://example.com/a.jpg"
+
+
+def test_normalize_meta_rewrites_dmm_cover_to_r2(monkeypatch):
+    from app import metadata
+    monkeypatch.setattr(metadata.coverstore, "R2_BASE", "https://covers.master.us.kg")
+    out = metadata.normalize_meta({"cover": "https://pics.dmm.co.jp/a.jpg"})
+    assert out["cover"] == "https://covers.master.us.kg/javbus/pics.dmm.co.jp/a.jpg"
+
+
+def test_normalize_meta_rewrites_previews_to_r2(monkeypatch):
+    from app import metadata
+    monkeypatch.setattr(metadata.coverstore, "R2_BASE", "https://covers.master.us.kg")
+    out = metadata.normalize_meta({"previews": [
+        "https://pics.dmm.co.jp/digital/video/tchr00022/tchr00022jp-1.jpg",
+        "",
+        "https://www.javbus.com/pics/sample/a.jpg",
+    ]})
+    assert out["previews"] == [
+        "https://covers.master.us.kg/javbus/pics.dmm.co.jp/digital/video/tchr00022/tchr00022jp-1.jpg",
+        "https://covers.master.us.kg/javbus/www.javbus.com/pics/sample/a.jpg",
+    ]
 
 
 def test_archive_record_stores_normalized_meta():

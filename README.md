@@ -1,14 +1,14 @@
 # x-drive
 
-给 Telegram bot 发**磁力链接或直链**，它按**番号**建目录下载并上传到 Google Drive。
+给 Telegram bot 发**磁力链接或直链**，它按**番号**建目录下载并通过 CloudDrive2 上传到云盘。
 
 ```
 你: SSIS-123 magnet:?xt=urn:btih:...
 bot: ⏳ 已收到 番号 SSIS-123…
      ✅ SSIS-123 · 2.35GB
-     📁 https://drive.google.com/drive/folders/xxxx
+     📁 /迅雷云盘/X-Drive/SSIS-123
 
-Drive: X-Drive/SSIS-123/SSIS-123.mp4
+CloudDrive2: /迅雷云盘/X-Drive/SSIS-123/SSIS-123.mp4
 ```
 
 ## 性能基线（实测，2026-10）
@@ -29,15 +29,8 @@ Drive: X-Drive/SSIS-123/SSIS-123.mp4
 
 ### 上传端
 
-| 配置 | 300MB 单文件中位耗时 |
-|---|---|
-| transfers=2, chunk=64M（旧） | 52s |
-| **transfers=4, chunk=64M（现用）** | **28s** |
-| transfers=8, chunk=64M | 48s |
-| chunk=128M | 69s |
-
-网络抖动很大（同配置单次 12–55s），必须多次测量取中位数。参数可用
-`UPLOAD_TRANSFERS` / `UPLOAD_CHUNK` 覆盖。
+CloudDrive2 接收文件后仍需向云盘上传。程序等待 `GetUploadFileList` 的
+`Status_Finished`，上传速度与队列状态以 CD2 和云盘实际结果为准。
 
 ### 本地计算
 
@@ -59,14 +52,14 @@ Drive: X-Drive/SSIS-123/SSIS-123.mp4
    下载原件只读 —— 失败时原件与工作区都保留，成功上传后才删除。
 4. 磁盘闸门：下载前算「剩余 − 已放行额度 − `DISK_RESERVE_GB`」（体积查不到时按同系列历史中位数估），
    放不下就排队等（不硬塞把盘写满，写满会让迅雷报错并留一堆残片）
-4. 下载：磁力和直链统一投给外部的**迅雷容器**（`cnk3x/xunlei`）；
-   迅雷没有查询接口，进度按落盘字节估算，连续 `STALL_TIMEOUT` 秒无新字节判死种
+4. 下载：磁力和直链统一投给**迅雷云盘离线**（云添加），落地后由 CloudDrive2 归档；
+   进度来自任务表与云盘回执
 5. 整理：BT 常见的多层目录摊平，视频优先；用 ffprobe 量时长挑主体，
    有正片（≥20 分钟）时丢掉 5 分钟以下的预告/样片，量不到时长就按体积、一个都不丢；
    只有图片的图包照常按图片归档，
    单文件重命名为 `<番号>.<ext>`，多文件加 `-1 -2` 前缀；
-   种子夹带的 `.url/.txt` 广告与小样本一并清掉，不跟着上 Drive
-6. 上传：`rclone copy` 到 `X-Drive/<番号>/`，超过 `DAILY_UPLOAD_GB` 直接拒收
+   种子夹带的 `.url/.txt` 广告与小样本一并清掉，不跟着上云盘
+6. 上传：通过 CloudDrive2 上传到 `X-Drive/<番号>/`，超过 `DAILY_UPLOAD_GB` 直接拒收
 7. 同一番号已存在时返回旧链接，不重复下载（`/retry` 可强制重下）
 8. 失败自动重试（指数退避，按网络/死种/配额/配置分级），致命错误不重试
 9. 任务状态写 SQLite（`JOBS_DB`）：同番号并发提交由唯一索引挡下；重启后自动对账，
@@ -76,34 +69,34 @@ Drive: X-Drive/SSIS-123/SSIS-123.mp4
 
 | 命令 | 作用 |
 |---|---|
-| 发磁力/直链 | 下载 → 按番号归档 → 存 Drive |
+| 发磁力/直链 | 下载 → 按番号归档 → 存云盘 |
 | 发纯番号 | 自动搜磁力并下载（字幕/高清/体积优先） |
 | `/find <番号>` | 只列候选磁力，不下载 |
 | `/retry` | 重试最近一条失败任务；也可 `/retry <磁力>` |
-| `/list` | 列出已归档番号与 Drive 链接 |
-| `/del <番号>` | 显示将删除的目录，加 `--yes` 执行（进 Drive 回收站，可恢复） |
+| `/list` | 列出已归档番号与 云盘链接 |
+| `/del <番号>` | 显示将删除的目录，加 `--yes` 执行（由云盘删除结果决定是否进入回收站） |
 | `/help` | 命令说明 |
 
 ## 前置
 
 - Docker（含 compose v2）
-- 一个 rclone 的 `gdrive` remote（OAuth 已授权，能 `rclone lsd gdrive:`）
+- 已部署的 CloudDrive2、有效账号，以及已挂载且可写的云盘
 - BotFather 给的 bot token
 
 ## 部署
 
-部署脚本会检查三样东西：rclone 配置、`.env` 里的 `XUNLEI_DOWNLOADS_HOST` 指向的目录存在、
-本机 2345 的迅雷面板可达。`data/`（状态、任务表、预览缓存）与 `work/`（整理工作区）都会建好。
+先在网页或 `.env` 配好 CloudDrive2 地址与账号。`data/`（状态、任务表、预览缓存、运行日志）
+与 `work/`（整理工作区）都会建好。
 
 ```bash
 git clone https://github.com/cloudcranes/x-drive /opt/x-drive
 cd /opt/x-drive
-cp .env.example .env && $EDITOR .env      # 填 token、ALLOWED_USER_IDS、RCLONE_CONFIG_HOST
+cp .env.example .env && $EDITOR .env      # 填 token、ALLOWED_USER_IDS、CD2_URL、CD2_USER、CD2_PASSWORD
 docker compose pull && docker compose up -d
 docker compose exec web python -m app.allinone --check
 ```
 
-镜像由 GitHub Actions 构建推送到 `ghcr.io/cloudcranes/x-drive`，内含 `rclone`。
+镜像由 GitHub Actions 构建推送到 `ghcr.io/cloudcranes/x-drive`，内含必需的 CloudDrive2 gRPC 依赖。
 
 只有**一个容器**：`python -m app.allinone` 在主线程跑 bot 长轮询、在后台线程跑网页看板。
 两半共享同一份 `/data`（任务表、状态、日志），所以合并后行为与原来拆两个容器时一致；
@@ -112,46 +105,19 @@ docker compose exec web python -m app.allinone --check
 
 ### 容器内验收（部署前必跑）
 
-宿主机能连面板，不代表容器能连。容器里的 `127.0.0.1` 是容器自己，`.env` 里把
-`XUNLEI_URL` 写成 `http://127.0.0.1:2345` 就会出现「任务投递成功但永远不动」。
-所以 `XUNLEI_URL` 默认留空，由 compose 填 `host.docker.internal:2345`。
-
 ```bash
 bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
 ```
 
-它会依次验证：配置可解析、镜像可构建、容器内自检（telegram / 迅雷 / 下载目录 / 工作区 / rclone）、
-**容器写进 `/downloads` 的文件在宿主机同一路径可见**（证明两边是同一份挂载）、
-以及从容器内真正调通迅雷面板。任一项失败即非零退出。
+它会依次验证：配置可解析、镜像可构建、容器内自检（telegram / 工作区 / CloudDrive2）、
+以及状态库可写可备份。任一项失败即非零退出。
 
 `python -m app.allinone --check` 现在会额外报告「下载目录」与「工作区」的可写性 ——
 这两项是容器部署最常见的两个坑（没挂载、权限不对）。
 
-磁力/直链下载交给**外部的迅雷容器**（`cnk3x/xunlei`，`network_mode: host`，面板 2345）。
-本程序不管理它，只投任务、看落盘。要点：
-
-- `XUNLEI_PAN_AUTH`：一般不用填。面板首页 HTML 里的 `function uiauth(){return "<JWT>"}`
-  就是 token，程序每次取首页自取并缓存一分钟（过期自动续）。只有面板低于 3.21 才需要手填兜底
-- `XUNLEI_PARENT_ID`：一般不用填。程序在真实 space 里按 `RealPath == /downloads/` 自己找
-  「下载到」目录；没有这个默认目录时才需要手填
-- 真实 space（`device_id#<hex>`）不用配，运行时由 `device/info/watch` 的 `target` 取；
-  用占位 `device_id#` 投任务会进云盘阴影空间，接口回 200 但下载器永不认领（实测踩过）
-- `XUNLEI_DOWNLOADS_HOST`：迅雷容器的 `/downloads` 挂载点在本机的路径，本程序把它挂成自己的 `/downloads`
-- 任务名 = 目录名：迅雷按任务名在下载目录下建同名子目录，本程序据此认领产物
-- `sub_file_index` 是**选中区间**不是序号：单文件 `--1,`、多文件 `0-<n-1>`；传 `0` 只会下第一个文件
-  （实测只落了一个 `.srt` 字幕，视频一字节没下）
-- 进度/速度/错误码取自 `drive/v1/tasks`（`progress`、`params.speed`、`params.error`）；
-  面板报完成后仍要等落盘安静 `XUNLEI_SETTLE` 秒，避免 P2P 滞后误判
-- 停止任务走 `method/patch/drive/v1/task`（`spec.phase=pause`），删除走
-  `method/delete/drive/v1/tasks`；普通 `DELETE` 会被判 402
-- **下载管理已集成进看板**（`http://<host>:8080`）：顶部搜索框直接粘贴磁力/直链即可提交
-  （输入番号则原地列网络资源候选，点「下载」才进队列）
-- 搜索框里粘磁力后点「预览信息」，会先用 [whatslink.info](https://whatslink.info) 查文件名、
-  体积、文件数与封面截图，确认无误再提交
-- 候选行另有「预览」：只查**选中的那一条**磁力，按 infohash 缓存（成功 7 天、失败 10 分钟），
-  搜索时不批量打外部接口
-- 提交后页面显示落盘字节、估算速度与 Drive 链接；迅雷自己的面板管队列
-不想用远端镜像就删掉 `.env` 里的 `BOT_IMAGE`，改用本机 `docker compose up -d --build`。
+磁力/直链下载交给**迅雷云盘离线**：程序提交云添加任务，云盘侧完成后
+再由 CloudDrive2 归档到 `X-Drive/<番号>`。本地不再运行下载容器，也没有 `/downloads` 挂载。
+凭据走 `XLPAN_*`（官方直链/云添加），在网页「设置 → 存储 → 迅雷登录」里粘贴。
 
 ## 配置
 
@@ -162,25 +128,22 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
 | `ALLOWED_USER_IDS` | 逗号分隔白名单，留空则拒绝所有人 |
 | `MAX_FILE_MB` | 单个直链大小上限 |
 | `DAILY_UPLOAD_GB` | 单日上传上限，0 = 不限 |
-| `XUNLEI_URL` | 迅雷面板地址；容器内要打宿主机地址 |
-| `XUNLEI_PAN_AUTH` | 面板 token，从 DevTools 抄，约 3 个月过期 |
-| `XUNLEI_PARENT_ID` | 可选，迅雷「下载到」目录 id；留空则自动识别 |
-| `XUNLEI_DOWNLOADS_HOST` | 迅雷 `/downloads` 挂载点在本机的路径 |
-| `XUNLEI_POLL` / `XUNLEI_SETTLE` | 落盘轮询间隔 / 静默多久算写完（秒） |
-| `STATE_DIR` | 整理工作区（与迅雷下载目录分开，失败不动原件） |
+| `STATE_DIR` | 整理工作区（失败不动原件） |
 | `JOBS_DB` | 任务表路径（默认 `data/jobs.db`，SQLite） |
 | `PREVIEW_DB` | 磁力预览缓存（默认 `data/preview.json`） |
-| `PANEL_CLEAN_DAYS` | 面板失败任务记录保留天数，0 = 不自动清（默认 0） |
 | `MAGNET_TIMEOUT` | 单个任务总超时（秒），默认 7200 |
-| `STALL_TIMEOUT` | 连续多久无新字节判死种（秒），默认 900，0 = 不检测 |
 | `CONCURRENCY` | bot 同时处理的任务数 |
+| `MAX_ACTIVE_JOBS` | 全局并发闸门：订阅/手动/恢复合计同时执行的任务数，默认 1，一条落地结束后自动开始下一条 |
+| `AUTO_CLEAN_SOURCE` | 归档后自动清理：递归删除任务收件目录（含广告和未知残留），默认开；关掉则只删已知丢弃文件，其余挂待清理 |
 | `PENDING_DIR` | 未完成任务的落盘目录，重启后自动补跑 |
 | `METRICS_PATH` | 成功/失败分类计数 |
+| `LOG_PATH` | 运行日志文件（默认 `/data/x-drive.log`），网页「运行日志」读它 |
 | `DISK_RESERVE_GB` | 磁盘闸门：永远预留不参与分配的空间，默认 5 |
 | `DISK_CHECK_INTERVAL` | 排队任务复查空间的间隔（秒），默认 30 |
 | `DISK_QUEUE_TIMEOUT` | 排队最久等多久（秒），0 = 一直等 |
-| `STORAGE_BACKEND` | 存储后端：`rclone`（默认）/ `openlist` / `clouddrive2`，详见下节；网页里改即可，不必重启 |
-| `UPLOAD_TRANSFERS` / `UPLOAD_CHUNK` | 上传并发与分片，默认 4 / 64M（实测最优） |
+| `STORAGE_BACKEND` | 固定为 `clouddrive2`；仅支持 CloudDrive2 |
+| `STORAGE_ROOT` | CD2 云盘内的虚拟归档路径，默认 `X-Drive` |
+| `CD2_URL` / `CD2_USER` / `CD2_PASSWORD` | CD2 gRPC 地址与账号；网页设置优先，密码不回显 |
 | `RETRIES` / `RETRY_BASE_DELAY` | 失败重试次数与首次退避（指数增长，封顶 60s）；按失败性质分级：网络给满次数、死种只给一次且退避 ×6、配额留待办等明天、配置错立刻报 |
 | `SUBS_INTERVAL` | 订阅轮询间隔（秒），默认 3600，最小 300 |
 | `CLEANUP_MAX_GB` | 归档回收：总容量上限，0 = 关闭（默认关） |
@@ -231,7 +194,7 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
 
 前置条件（三样都硬性）：
 
-1. 存储后端是 `clouddrive2`（这条链路不支持 rclone / OpenList）；
+1. 已配置并连接唯一存储后端 CloudDrive2；
 2. CD2 里挂了**支持离线下载**的云盘（实测「迅雷云盘」可用）；
 3. 配好「离线落地目录」（如 `迅雷云盘/我的资源`）与「归档根目录」（如 `迅雷云盘/X-Drive`）。
 
@@ -292,22 +255,17 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
 
 代理白名单仍只放已知图床，**不做任意 URL 转发**；不在白名单内的图会显示「无封面」。
 
-## 存储后端（rclone / OpenList / CloudDrive2）
+## CloudDrive2 存储
 
-归档往哪儿放是三选一，**不需要 rclone 也能接网络存储**。三种后端共用同一套
-「上传 → 记清单 → 校核 → 改名 → 回收」流程，行为约定写在 `app/storage/base.py`。
+CloudDrive2 是唯一存储后端，通过 gRPC 连接（默认 `19798`，与 CD2 Web 同端口）。
+镜像始终安装 `grpcio` 与 `protobuf`，无需额外存储工具或配置挂载。
 
-| 后端 | 通道 | 凭据 | 分享链接 | 额外依赖 |
-|---|---|---|---|---|
-| `rclone`（默认） | 子进程 + `rclone.conf` | `.env` 里 `RCLONE_REMOTE` / 挂载的配置文件 | `rclone link`（Drive / OneDrive 等） | 镜像自带 rclone |
-| `openlist` | HTTP（AList v3 兼容 REST） | OpenList 账号密码（建议用管理员或有写权限的账号） | `POST /api/share/create` → `…/s/{id}` | 无（用现有 httpx） |
-| `clouddrive2` | gRPC（默认 `19798`，与 Web 同端口） | CloudDrive2 账号（注册邮箱 + 密码） | 没有「创建分享」接口，见下文 `CD2_LINK_MODE` | `grpcio` + `protobuf`（约 25MB） |
+1. 网页左下角「设置 → 存储」，填写 CD2 地址、注册邮箱和密码；
+2. 配置 CD2 挂载云盘内的归档根目录，例如 `/迅雷云盘/X-Drive`；
+3. 保存后点「测试连接」确认可读写。密码只写不回显，留空表示保留已有密码。
 
-切换步骤（改完**下一次上传**就生效，不用重启容器）：
-
-1. 网页左下角「设置 → 存储」，在「当前后端」那一行点「测试连接」先确认通；
-2. 选后端、填地址与账号（密码类只写不回显，留空表示不改）；
-3. 「保存全部改动」。归档根目录默认 `X-Drive`，在 OpenList / CD2 里是一个虚拟路径。
+网页配置优先于环境变量，保存后下一次操作生效。上传、记账、校核、改名与回收
+统一通过 CloudDrive2 执行；存储行为约定见 `app/storage/base.py`。
 
 ### 容器里填宿主机地址会自动改写
 
@@ -326,30 +284,16 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
 
 - 只在容器里生效（非容器环境 LAN IP 就是对的）；公网地址不探测、不改写；
 - `127.0.0.1` / `localhost` 在容器里指向容器自己，宿主同端口可达时会改写；
-- 覆盖 OpenList、CloudDrive2 与 MetaTube 三个地址项；
+- 覆盖 CloudDrive2 与 MetaTube 两个地址项；
 - 探测结果按 host:port 缓存 5 分钟，改设置后重建客户端会重新探测；
 - 容器内查不到宿主的 LAN 地址（`/proc` 只给得出自己的 IP 与默认网关），
   所以这里**做不到**「判断某个 IP 是不是宿主机」，只能按通不通来决定。
 
 想避免这层改写，直接把地址写成 `http://host.docker.internal:19798` 即可。
 
-### OpenList
-
-- 归档落在 `/<归档根目录>/<番号>/`，即 `/X-Drive/SSIS-555/`；这个目录要对应你在
-  OpenList 里挂的一个存储（本地盘、阿里云盘、115…都行），程序只认虚拟路径。
-- 分享链接需要账号有分享权限（管理员默认有）。没权限时**不会阻断上传**，
-  卡片退回显示路径。归档被删除时，当初建的分享会一并删掉。
-- 默认单次 PUT 上传（与 OpenList 网页端同一条路）。服务端支持分片时可在设置里
-  打开「OpenList 分片上传」：超过阈值的文件走 `multipart/init|chunk|complete`，
-  服务端没启用（403）会自动退回单次 PUT。
-- 登录 token 有效期 48 小时：过期后自动重登一次。开了两步验证的账号，`OPENLIST_OTP`
-  只能填一次性的码，长期跑建议单独开一个不带 2FA 的账号。
-- 一个实现细节（排障时有用）：OpenList 的业务错误常常是 **HTTP 200 + body 里 code≠200**，
-  程序按 body 判断，所以日志里看到 200 不等于成功。
-
 ### CloudDrive2
 
-- 走 gRPC，不再经 WebDAV，也不需要 rclone。凭据是 CD2 自己的账号。
+- 直连 gRPC，不经 WebDAV。凭据是 CD2 自己的账号。
 - **上传是异步任务**：写到 CD2 只是进它的上传队列，程序会轮询
   `GetUploadFileList` 到 `Status_Finished` 才认为传完（面板上能看到字节进度与速度）。
   所以「本地上传完成」与「云端真的有了」是两件事，这里等的是后者。
@@ -362,39 +306,14 @@ bash scripts/verify.sh        # 需在有 docker 权限的账号下运行
   - `static`：目录里只有一个媒体文件时，给 CD2 的 `/static/...` 直链（**仅内网可播**）；
   - `template`：按 `SHARE_LINK_TEMPLATE` 拼，`{path}` 会被替换成 URL 编码后的路径。
 - 删除：先试「永久删除」，云盘不支持就退回回收站，回执里会注明是哪一种。
-- 依赖：`grpcio` / `protobuf`。不想装就把镜像用 `--build-arg WITH_CD2=0` 构建，
-  这时只有 CD2 后端不可用，其它照常（适配器是延迟导入的）。
+- 依赖：`grpcio` / `protobuf`，运行镜像必装，不提供关闭 CD2 的构建开关。
 
-### 构建参数与镜像体积
+### 历史归档
 
-```bash
-# 只用 OpenList：不要 rclone，也不要 grpc
-docker compose build --build-arg WITH_RCLONE=0 --build-arg WITH_CD2=0 web
-# 用 CD2：rclone 可以去掉
-docker compose build --build-arg WITH_RCLONE=0 web
-```
+程序不自动搬迁历史归档。只有归属 CloudDrive2 的记录才可执行云端校验、改名、
+附件同步与删除；其它来源的记录保留，避免把旧路径误当成当前云盘目录。
 
-`RCLONE_CONFIG_HOST` 现在是**可选**挂载：不设就指向 `./.rclone/rclone.conf`（可以不存在），
-只要不选 rclone 后端就没人读它。
-
-### 换后端之后，老归档怎么办
-
-程序**不搬迁**历史归档。切换后：
-
-- 新归档走新后端；
-- 旧记录原样留着，`path` 里写着它当初落在哪个后端（`gdrive:X-Drive/…`、
-  `openlist:/X-Drive/…`、`clouddrive2:/X-Drive/…`）；
-- 对旧记录做「归档校验 / 改名 / 删除」时作用于**当前**后端，找不到就报错 ——
-  不会误删别的目录。要按后端分别操作，就把设置切回那个后端再点。
-
-### 自己写一个后端
-
-`app/storage/example.py` 是照着填的骨架：实现那十个方法（保证「上传返回即落地」、
-「错误分可重试与不可重试两类」），在 `app/storage/__init__.py` 的 `KINDS` 与
-`_build()` 里各加一行，设置项加进 `app/settings.py` 的「存储」分组，网页的下拉框与
-「测试连接」会自动带出来。回归测试照 `tests/test_storage_cd2.py`（进程内假服务端）。
-
-自检：`python -m app.allinone --check` 会按当前后端报连通性、可写与配额。
+自检：`python -m app.allinone --check` 报告 CloudDrive2 连通性、可写与配额。
 
 ## 看板
 
@@ -402,28 +321,24 @@ docker compose build --build-arg WITH_RCLONE=0 web
 
 - 筛选：系列 / 演员 / 片商三个维度 + 月份，搜索框（`/` 聚焦），视频/图片过滤，四种排序
 - 卡片带封面与元数据（标题、日期、时长、片商、类别、演员），来自 javdb / javbus 缓存
-- 下载队列面板：实时进度、速度、停止、清空已完成；空间不够自动排队；
-  另列迅雷面板里未结束的任务（`/api/xunlei`），可直接暂停/继续/删除（`/api/xunlei/control`），
-  不必再开一个 2345 页面
+- 下载队列面板：实时进度、速度、停止、清空已完成；空间不够自动排队
 - 搜索框即下载入口：「预览信息」先查体积/文件数/封面，确认再提交；提交按番号去重。
   回车按输入内容分三种：完整番号（`MIMK-289`）→ 搜这个番号的磁力；
   磁力/直链 → 出提交区；**其他非空关键词（`MIMK`、`SSIS`、标题里的词）→ 按关键词
   搜片**（`/api/find`，上游 `/api/movies/search`），结果是封面网格，点一张就切到
   那个番号的磁力列表
 - 订阅面板：按演员或番号系列订阅，设置每轮条数与单片体积上限
-- 归档改名：卡片上「改名」，Drive 目录 `X-Drive/<旧>` → `<新>` 并同步归档记录（不重传文件）
+- 归档改名：卡片上「改名」，云盘目录 `X-Drive/<旧>` → `<新>` 并同步归档记录（不重传文件）
 - 智能整理（工具栏「规范名」）：先把认得出的未分类归档收编（查元数据后改名），
-  再按规范批量修正（先出清单，撞车的整组跳过）；命名规范为 `YYYY-MM-DD 番号 标题`
-- 清理失败任务：侧栏底部按钮，删 7 天前的失败任务记录（不动文件）；`PANEL_CLEAN_DAYS>0` 时每日自动跑
-- 归档删除：显示将删除的内容，需二次确认，进 Drive 回收站可恢复
+  再按规范批量修正（先出清单，撞车的整组跳过）；命名规范为纯番号（如 `TCHB-029`）
+- 归档删除：显示将删除的内容，需二次确认，回执注明永久删除或进入回收站
 - 设置面板：50 来项参数按功能分成 4 个横向子 tab（存储 / 下载 / 刮削 / 内容），
   标签吸顶、未保存的分区带黄点、改过没存的输入框自己标黄；保存键钉在面板底部，
   跨分区的改动一次保存
-- 侧栏 4 个入口：归档 / 下载队列 / 订阅 / 设置
-  - 「归档维护」在顶部工具条（不再占侧栏一格），一个面板两个子块：
+- 侧栏 6 个入口：归档 / 任务队列 / 订阅 / 设置 / 归档维护 / 运行日志
+  - 「归档维护」在侧栏，一个面板两个子块：
     元数据与完整性（字段/补刮/附件/远端核对）、目录命名（收编与改名）——
     原来散在三个视图里，问的其实是同一件事：这条归档哪里不对、怎么改
-  - 下载队列里的「迅雷面板」默认收起：那是外部下载器的任务，不是本程序的任务
 
 ![看板](docs/preview.jpg)
 
@@ -482,7 +397,7 @@ CODE-001/
 - 手工改过的字段会被**自动锁定**，之后重新刮削不覆盖它
 - `POST /api/scrape/preview {code}`：差异预览，只列会变的字段，**不动文件不改记录**
 - `POST /api/scrape/sync {code, fields, resync, confirm}`：补刮 / 手改 /
-  只把附件推到 Drive（`copyto` 单文件，不重传视频）
+  只把附件推到云盘（通过 CD2 单文件上传，不重传视频）
 - token 只在后端用：不进前端、日志、`metadata.json` 或备份包
 
 配置见 `.env.example` 的「刮削」一节。**注意**：实测本机直连该后端 TCP 都不通，
@@ -500,7 +415,7 @@ CODE-001/
 ## 归档校验、重复检查与备份
 
 - `GET /api/archive/verify?code=`（不给 code 就批量，`?limit=50`）：
-  本地清单 vs 远端 `lsjson`，结论分「校验通过 / 缺文件 / 大小异常 / 无清单 / 检查失败」。
+  本地清单 vs CD2 远端目录列表，结论分「校验通过 / 缺文件 / 大小异常 / 无清单 / 检查失败」。
   **默认只报告**：不会自动补传，也不会删远端
 - `GET /api/archive/dups`：三层重复检查 —— 同番号多条记录、不同番号同 infohash、
   同番号多版本。同样只报告
@@ -508,7 +423,7 @@ CODE-001/
   默认写 `/data/backup-<时间>.db`。凭据都在环境变量里，备份包天然不含 token
 - `POST /api/restore/check {source}`：只读检查备份里有什么、哪些任务当时在跑
 - `POST /api/restore/apply {source, confirm}`：恢复前**先自动备份当前库**，
-  恢复后请先对账（任务列表 vs 迅雷面板）再让调度继续
+  恢复后请先对账（任务列表 vs 云盘归档）再让调度继续
 
 ## 订阅自动化
 
@@ -558,7 +473,7 @@ ID 由 `meta.resolve_id` 用名字搜站内页解析，
 
 - **游标**：只抓订阅之后出的片，不回填几百部历史
 - **去重**：已归档、正在下载的番号一律跳过
-- **上限**：每轮最多几条 + 单片体积上限，防止一次轮询吃光磁盘和 Drive 配额
+- **上限**：每轮最多几条 + 单片体积上限，防止一次轮询吃光磁盘和 云盘配额
 
 ## 归档回收
 
@@ -580,12 +495,10 @@ ID 由 `meta.resolve_id` 用名字搜站内页解析，
 | 现象 | 处理 |
 |---|---|
 | 磁力一直没进度 | 先自动「暂停→继续」重连一次，仍不动才判死种并留待办（重试只会拿回同一条任务） |
-| 报「不在 TMP_ROOT 下」 | 迅雷下载目录与本程序挂载点不一致，改 `XUNLEI_DOWNLOADS_HOST` 或 `TMP_ROOT` |
-| 投递成功但一直是 0% | 检查 `XUNLEI_PARENT_ID` 是否是真实 space 下的目录；占位 space 会进阴影空间 |
 | 只下来一个字幕/小文件 | 投递参数的 `sub_file_index` 被写成单个序号了，应为 `0-<n-1>` |
 | 回执「没找到可以下载的链接」 | 消息里必须有 `magnet:` 或 `http(s)://` |
 | 番号识别错 | 在消息里显式写一次正确番号，程序优先用消息里的 |
-| 上传失败 | `docker compose exec web rclone lsd gdrive:` 手测；检查 `rclone.conf` 与 OAuth |
+| 上传失败 | 网页「设置 → 存储 → 测试连接」；检查 CD2 账号、目录权限与上传队列 |
 | 回执「未授权」 | 把 user id 加进 `ALLOWED_USER_IDS` 并 `docker compose up -d` |
 
 ## 按番号搜磁力
@@ -617,7 +530,7 @@ ID 由 `meta.resolve_id` 用名字搜站内页解析，
 - 资源信息来自 javbus 元数据；FC2 这类查不到的番号只显示标题与体积（元数据缺失时不编造）
 - 磁力速度取决于公网做种；未做内网穿透时无法接受外部连接
 - 不转码：保留原始文件，播放兼容性取决于源
-- 单个 Google 账号上传上限 750GB/日
+- 云盘容量、单日上传与离线任务额度以 CD2 挂载的云盘限制为准
 - 同一番号视为同一部作品，重复下载需 `/retry`
 - 重启后**任务不再丢失**：状态在 `/data/jobs.db`，恢复时会重新过磁盘闸门；
   自己的迅雷任务靠任务 id / infohash 认回并续接，别人的同种子任务一律拒绝接管
@@ -632,7 +545,7 @@ ID 由 `meta.resolve_id` 用名字搜站内页解析，
 ## 开发
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
+python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-cd2.txt pytest
 .venv/bin/python -m pytest tests -q
 ```
 
@@ -641,7 +554,6 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 | `app/codes.py` | 番号识别、规范名（`canonical`）、番号与链接配对、目录名归一 |
 | `app/core.py` | 状态读写（带 `flock` 的原子合并）、URL 抽取、大小格式化 |
 | `app/fetcher.py` | 投递迅雷、盯落盘判完成、视频筛选、BT 多级目录摊平 |
-| `app/xunlei.py` | 迅雷面板内部接口（token 自取、space 解析、投递、查进度、暂停/删除） |
 | `app/pipeline.py` | 下载 → 整理 → 命名 → 清广告，bot 与 web 共用 |
 | `app/diskspace.py` | 磁盘空间闸门与额度计算 |
 | `app/retry.py` | 指数退避重试、致命错误判定 |
@@ -654,6 +566,6 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 | `app/cleanup.py` | 归档回收的纯决策逻辑 |
 | `app/main.py` | TG bot 编排、去重、配额、待办补跑 |
 | `app/allinone.py` | 单容器入口：网页跑后台线程，bot 长轮询占主线程 |
-| `app/web.py` + `webui.html` | 零依赖看板 + 后台任务 |
+| `app/web.py` + `templates/index.html` | 零依赖看板 + 后台任务（新版 Vue3 看板；旧版 `webui.html` 留在 `/legacy`） |
 
 共 266 个测试，`python -m pytest tests -q` 约 50 秒跑完。`tests/bench.py` 是本地计算基准。

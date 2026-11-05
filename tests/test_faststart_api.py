@@ -72,7 +72,7 @@ def test_archive_media_path_picks_the_video(tmp_path, monkeypatch):
         def list_files(self, rel):
             return [Entry("cover.jpg"), Entry("ABC-1.mp4", 100)]
 
-    path = web.archive_media_path({"backend": "clouddrive2", "rel": "dest/ABC-1"}, Backend())
+    path = web.archive_media_path({"code": "ABC-1", "backend": "clouddrive2", "rel": "dest/ABC-1"}, Backend())
     assert path == "dest/ABC-1/ABC-1.mp4"
 
 
@@ -92,7 +92,7 @@ def test_archive_media_path_reports_when_no_media(tmp_path, monkeypatch):
             return [Entry("cover.jpg")]
 
     with pytest.raises(storage.StorageError, match="没有媒体文件"):
-        web.archive_media_path({"backend": "clouddrive2", "rel": "dest/ABC-1"}, Backend())
+        web.archive_media_path({"code": "ABC-1", "backend": "clouddrive2", "rel": "dest/ABC-1"}, Backend())
 
 
 def test_faststart_starts_background_job(tmp_path, monkeypatch):

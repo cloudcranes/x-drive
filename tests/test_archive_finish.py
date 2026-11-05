@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app import metadata
 from app import web
+from tests.storage_fake import upload_backend
 
 
 def _env(tmp_path, monkeypatch):
@@ -154,12 +155,12 @@ def test_sync_attachments_keeps_manifest_video(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "POSTER_ON", False)
     sent = {}
 
-    def fake_rclone(cmd, src, dst, **kw):
+    def upload(src, dst):
         sent[dst.rsplit("/", 1)[-1]] = Path(src).read_text(encoding="utf-8")
-        return 0, "", ""
+        return dst
 
-    monkeypatch.setattr(web, "rclone", fake_rclone)
-    record = {"code": "SSIS-123",
+    upload_backend(monkeypatch, web, upload)
+    record = {"code": "SSIS-123", "backend": "clouddrive2", "rel": "X-Drive/SSIS-123",
               "meta": {"code": "SSIS-123", "title": "新标题", "provider": "JavBus"},
               "manifest": {"files": [{"name": "SSIS123.mp4", "size": 100, "ext": ".mp4"},
                                      {"name": "movie.nfo", "size": 10, "ext": ".nfo"}]},
@@ -183,12 +184,13 @@ def test_sync_attachments_falls_back_to_record_files(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "NFO_ON", True)
     sent = {}
 
-    def fake_rclone(cmd, src, dst, **kw):
+    def upload(src, dst):
         sent[dst.rsplit("/", 1)[-1]] = Path(src).read_text(encoding="utf-8")
-        return 0, "", ""
+        return dst
 
-    monkeypatch.setattr(web, "rclone", fake_rclone)
-    web.sync_attachments("ABC-9", {"meta": {"title": "t"},
+    upload_backend(monkeypatch, web, upload)
+    web.sync_attachments("ABC-9", {"code": "ABC-9", "backend": "clouddrive2",
+                                   "rel": "X-Drive/ABC-9", "meta": {"title": "t"},
                                    "files": ["ABC9.mp4", "movie.nfo"]})
     blob = json.loads(sent["manifest.json"])
     names = [e["name"] for e in blob["files"]]

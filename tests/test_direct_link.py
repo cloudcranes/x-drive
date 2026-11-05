@@ -126,7 +126,7 @@ def test_direct_link_by_code_uses_archive_locator(tmp_path, monkeypatch):
 
     monkeypatch.setattr(web, "storage_backend", lambda: Backend())
     core.save_state(web.STATE, {
-        "MIMK-290": {"code": "MIMK-290", "rel": "迅雷云盘/X-Drive/MIMK-290",
+        "MIMK-290": {"code": "MIMK-290", "backend": "clouddrive2", "rel": "迅雷云盘/X-Drive/MIMK-290",
                      "files": ["MIMK-290.mp4"]}})
     monkeypatch.setattr(storage, "root", lambda: "legacy-root")
     out = web.cloud_direct_link(code="MIMK-290")
@@ -135,8 +135,8 @@ def test_direct_link_by_code_uses_archive_locator(tmp_path, monkeypatch):
     assert seen["path"].endswith("MIMK-290.mp4")
 
 
-@pytest.mark.parametrize("kind", ["openlist", "rclone", "clouddrive2"])
-def test_code_link_does_not_query_unrelated_xunlei_cloud(tmp_path, monkeypatch, kind):
+def test_code_link_does_not_query_unrelated_xunlei_cloud(tmp_path, monkeypatch):
+    kind = "clouddrive2"
     from app import core
     _env(tmp_path, monkeypatch)
     calls = []
@@ -154,8 +154,6 @@ def test_code_link_does_not_query_unrelated_xunlei_cloud(tmp_path, monkeypatch, 
     backend.kind = kind
     monkeypatch.setattr(web, "storage_backend", lambda: backend)
     saved = {"code": "AB-1", "backend": kind, "rel": f"{root}/AB-1"}
-    if kind == "rclone":
-        saved["remote"] = web.RCLONE_REMOTE
     core.save_state(web.STATE, {"AB-1": saved})
     out = web.cloud_direct_link(code="AB-1")
     assert out["ok"] and out["via"] == kind

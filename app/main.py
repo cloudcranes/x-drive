@@ -1,8 +1,8 @@
-"""TG bot：收到磁力/直链 → 识别番号 → 迅雷下载 → 整理 → rclone 存 Google Drive。
+"""TG bot：收到磁力/直链 → 识别番号 → 迅雷云添加 → CloudDrive2 归档整理。
 
 用法：
   python -m app.main            # 启动长轮询
-  python -m app.main --check    # 自检 Telegram / 迅雷容器 / rclone remote
+  python -m app.main --check    # 自检 Telegram / 迅雷云添加 / CloudDrive2
 """
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import sys
 import threading
 import time
@@ -28,9 +27,9 @@ from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import (added, cloudadd, codes, core, meta, metadata, metrics, metatube,
+from . import (added, cloudadd, codes, core, logbuf, meta, metadata, metrics, metatube,
                storage, retry, settings as settings_mod, sources, store,
-               whatslink, workspace, xunlei)
+               whatslink, workspace, xunleipan)
 
 log = logging.getLogger("x-drive")
 
@@ -39,22 +38,14 @@ log = logging.getLogger("x-drive")
 class Config:
     token: str
     allowed: set[int]
-    remote: str
-    drive_root: str
     max_mb: int
     concurrency: int
     state_path: str
     tmp_root: str
-    rclone_config: str
     pending_dir: str = "/data/pending"
     jobs_db: str = "/data/jobs.db"
     metrics_path: str = "/data/metrics.json"
     state_dir: str = "/work"
-    xunlei_url: str = "http://127.0.0.1:2345"
-    xunlei_parent: str = ""
-    xunlei_token: str = ""
-    xunlei_poll: float = 10.0
-    xunlei_settle: float = 30.0
     # 可热更新参数（scrape / scrape_nfo / scrape_poster）不再是 dataclass 字段，
     # 改成下面的 property 每次从 state 表读，网页改了立即生效、不必重启。
 
@@ -90,14 +81,6 @@ class Config:
         return self._get("STALL_TIMEOUT")
 
     @property
-    def upload_transfers(self) -> int:
-        return self._get("UPLOAD_TRANSFERS")
-
-    @property
-    def upload_chunk(self) -> str:
-        return self._get("UPLOAD_CHUNK")
-
-    @property
     def scrape(self) -> bool:
         return self._get("SCRAPE")
 
@@ -117,22 +100,14 @@ class Config:
         return cls(
             token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             allowed=ids,
-            remote=os.getenv("RCLONE_REMOTE", "gdrive").strip(),
-            drive_root=os.getenv("DRIVE_ROOT", "X-Drive").strip().strip("/"),
             max_mb=int(os.getenv("MAX_FILE_MB", "500")),
             concurrency=max(1, int(os.getenv("CONCURRENCY", "2"))),
             state_path=os.getenv("STATE_PATH", "/data/state.json"),
             tmp_root=os.getenv("TMP_ROOT", "/downloads"),
-            rclone_config=os.getenv("RCLONE_CONFIG", "/config/rclone/rclone.conf"),
             state_dir=os.getenv("STATE_DIR", "/work"),
             pending_dir=os.getenv("PENDING_DIR", "/data/pending"),
             jobs_db=os.getenv("JOBS_DB", "/data/jobs.db"),
             metrics_path=os.getenv("METRICS_PATH", "/data/metrics.json"),
-            xunlei_url=os.getenv("XUNLEI_URL", "http://127.0.0.1:2345").strip(),
-            xunlei_parent=os.getenv("XUNLEI_PARENT_ID", "").strip(),
-            xunlei_token=os.getenv("XUNLEI_PAN_AUTH", "").strip(),
-            xunlei_poll=float(os.getenv("XUNLEI_POLL", "10") or 10),
-            xunlei_settle=float(os.getenv("XUNLEI_SETTLE", "30") or 0),
         )
 
 
@@ -170,43 +145,6 @@ def _flag(name: str, default: str = "1") -> bool:
     不再经这里。
     """
     return os.getenv(name, default) not in ("0", "false", "False")
-
-
-async def rclone(cfg: Config, *args: str, timeout: float = 180.0) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
-        "rclone",
-        "--config",
-        cfg.rclone_config,
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        return 124, "", f"rclone {' '.join(args[:2])} 超时"
-    return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
-
-
-async def folder_link(cfg: Config, target: str) -> str | None:
-    rc, out, _ = await rclone(cfg, "link", target, timeout=120.0)
-    if rc == 0 and out.strip().startswith("http"):
-        return out.strip()
-    parent, _, name = target.rpartition("/")
-    if not parent:
-        return None
-    rc, out, _ = await rclone(cfg, "lsjson", "--dirs-only", parent, timeout=120.0)
-    if rc != 0:
-        return None
-    try:
-        for item in json.loads(out):
-            if item.get("Name") == name and item.get("ID"):
-                return f"https://drive.google.com/drive/folders/{item['ID']}"
-    except json.JSONDecodeError:
-        pass
-    return None
 
 
 # ---------------------------------------------------------------- 流程
@@ -303,7 +241,7 @@ def claim_task(cfg: Config, code: str, source: str, chat_id: int | None) -> str:
     extra: dict = {}
     if chat_id is not None:
         extra["chat_id"] = chat_id
-    btih = xunlei.info_hash_of(source)
+    btih = xunleipan.info_hash_of(source)
     if btih:
         extra["infohash"] = btih        # 续接证据：重启后据此认回自己的迅雷任务
     if extra:
@@ -517,7 +455,7 @@ async def next_candidate_magnet(code: str, tried_btih: set[str],
         return ""
     for item in items:
         magnet = item.get("magnet") or ""
-        btih = xunlei.info_hash_of(magnet)
+        btih = xunleipan.info_hash_of(magnet)
         if btih and btih not in tried_btih:
             return magnet
     return ""
@@ -681,15 +619,18 @@ async def run_task(
             # 死种换源：迅雷解析失败（0 个做种）时换候选池里的下一条，
             # 而不是反复撞同一条。按 infohash 判同源 —— 同一种子换不同 tracker
             # 参数不该被当成「新候选」反复撞。
-            tried_btih = {b for b in (xunlei.info_hash_of(source),) if b}
+            tried_btih = {b for b in (xunleipan.info_hash_of(source),) if b}
             cur = source
             while True:
                 try:
+                    extra_now = task_store(cfg).get(job_id).get("extra") or {}
+                    submitted_at = float((extra_now.get("cloud_submit") or {}).get("at") or 0)
                     landed = await cloudadd.wait_landing(
                         backend, my_inbox, before, cur, get=cfg.get,
                         progress=on_progress,
                         check_cancel=lambda: cancel_requested(cfg, job_id),
-                        lease_check=lambda: require_lease(cfg, job_id))
+                        lease_check=lambda: require_lease(cfg, job_id),
+                        submitted_at=submitted_at)
                     break
                 except RuntimeError as exc:
                     if "迅雷侧拒绝" not in str(exc) or not code:
@@ -697,7 +638,7 @@ async def run_task(
                     new_magnet = await next_candidate_magnet(code, tried_btih, client)
                     if not new_magnet:
                         raise              # 没有可换的候选了，按死种收尾
-                    btih = xunlei.info_hash_of(new_magnet)
+                    btih = xunleipan.info_hash_of(new_magnet)
                     if btih:
                         tried_btih.add(btih)
                     cur = new_magnet
@@ -758,6 +699,27 @@ async def run_task(
                 backend, pending,
                 lease_check=lambda: require_lease(cfg, job_id),
                 event=lambda kind, detail: task_event(cfg, job_id, kind, detail))
+            if leftover and not failed and cfg.get("AUTO_CLEAN_SOURCE"):
+                try:
+                    cloudadd.purge_task_inbox(
+                        backend, my_inbox, protected_root=inbox,
+                        lease_check=lambda: require_lease(cfg, job_id),
+                        event=lambda kind, detail: task_event(cfg, job_id, kind, detail))
+                    leftover = []
+                except (JobCancelled, LeaseLost):
+                    raise
+                except Exception as exc:    # noqa: BLE001 自动清理失败仍挂账
+                    log.warning("自动清理任务收件目录 %s 失败：%s", my_inbox, exc)
+                    leftover.append({
+                        "source": my_inbox, "src_root": inbox,
+                        "dst_root": dest, "target": "",
+                        "error": f"自动清理失败：{str(exc)[:160]}"})
+            if not leftover:
+                raw = task_store(cfg).get(job_id).get("extra")
+                extra = raw if isinstance(raw, dict) else {}
+                if extra.get("cleanup_pending"):
+                    task_update(cfg, job_id, extra={
+                        **extra, "cleanup_pending": []})
             if leftover:
                 task_update(cfg, job_id, extra={
                     **(task_store(cfg).get(job_id).get("extra") or {}),
@@ -938,50 +900,17 @@ async def on_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    target = record.get("path") or ""
-    backend = storage.get()
     try:
-        metadata.validate_archive_backend(record, backend.kind, cfg.remote)
-    except ValueError as exc:
+        backend = storage.get()
+        metadata.validate_archive_backend(record, backend.kind)
+        rel = metadata.archive_location(record)
+        receipt = await asyncio.to_thread(backend.purge, rel)
+    except (ValueError, storage.StorageError) as exc:
         await message.reply_text(f"❌ 删除中止：{str(exc)[:300]}")
-        return
-    if backend.kind != "rclone":
-        code = str(record.get("code") or key)
-        if ".." in code or "/" in code:
-            await message.reply_text("⛔ 路径校验未通过，已拒绝删除")
-            return
-        try:
-            # 按记录定位（与网页同口径）：云添加的归档在 CLOUD_DEST，
-            # 不跟全局 STORAGE_ROOT 走
-            rel = str(record.get("rel") or storage.rel(code)).strip("/")
-            if any(bit in (".", "..") for bit in rel.split("/")) or "\\" in rel:
-                raise storage.StorageError("归档路径不合法")
-            receipt = await asyncio.to_thread(backend.purge, rel)
-        except storage.StorageError as exc:
-            await message.reply_text(f"❌ 删除失败：{str(exc)[:300]}")
-            return
-        state.pop(key, None)
-        core.save_state(cfg.state_path, state)
-        await message.reply_text(f"🗑 已删除 {key}（{backend.kind}：{receipt}）")
-        return
-    root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
-    if record.get("backend") == "rclone" and record.get("rel"):
-        rel = str(record["rel"]).strip("/")
-        if any(bit in (".", "..") for bit in rel.split("/")) or "\\" in rel:
-            await message.reply_text("⛔ 归档路径校验未通过")
-            return
-        target = f"{cfg.remote}:{rel}"
-        root = f"{cfg.remote}:"
-    if not (target.startswith(root + "/") or root.endswith(":") and target.startswith(root)) or ".." in target:
-        await message.reply_text("⛔ 路径校验未通过，已拒绝删除")
-        return
-    rc, _, err = await rclone(cfg, "purge", target, timeout=600.0)
-    if rc != 0:
-        await message.reply_text(f"❌ 删除失败：{err.strip()[:300]}")
         return
     state.pop(key, None)
     core.save_state(cfg.state_path, state)
-    await message.reply_text(f"🗑 已删除 {key}（文件在 Drive 回收站，可恢复）")
+    await message.reply_text(f"🗑 已删除 {key}（{backend.kind}：{receipt}）")
 
 
 def quota_text(quota) -> str:
@@ -1049,52 +978,6 @@ async def on_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text("\n".join(lines))
 
 
-async def on_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """`/account`：迅雷账号信息 —— 用户名、会员、每日下载限额、各盘容量。
-
-    为什么单独一个命令：每日下载限额（非会员每天 3 个免费下载任务）是这套
-    部署最常撞的坎 —— 磁盘还剩很多，任务却提交不上去。它只在面板的
-    `/device/info` 里，云盘官方 API 那套接口拿不到。
-    """
-    message, user = update.effective_message, update.effective_user
-    if not message or not user:
-        return
-    cfg: Config = ctx.application.bot_data["cfg"]
-    if user.id not in cfg.allowed:
-        return
-
-    xl = xunlei.Xunlei(cfg.xunlei_url, cfg.xunlei_parent, cfg.tmp_root, cfg.xunlei_token)
-    try:
-        async with xl.client() as client:
-            info = await xl.account(client)
-    except Exception as exc:
-        await message.reply_text(f"❌ 查不到迅雷账号信息：{str(exc)[:300]}")
-        return
-
-    lines = ["👤 迅雷账号"]
-    if info.get("name"):
-        lines.append(f"· 用户 {info['name']}（id {info['id']}）")
-    if info.get("is_vip"):
-        expires = info.get("vip_expires_at") or ""
-        lines.append(f"· 会员 level {info['vip_level']}"
-                     + (f" · 到期 {expires[:10]}" if expires else ""))
-    else:
-        lines.append("· 非会员")
-    # 每日下载限额：用完了就说清楚，别只报「失败」
-    if info.get("quota_hit"):
-        title = info.get("quota_title") or "今日下载任务数已用完"
-        lines.append(f"⛔ {title}")
-        lines.append("  明天 00:10 后自动恢复，或开通会员不限次数")
-    for disk in info.get("disks") or []:
-        limit = int(disk.get("limit") or 0)
-        usage = int(disk.get("usage") or 0)
-        if not limit:
-            continue
-        lines.append(f"· {disk['path']} 已用 {core.human_size(usage)} / "
-                     f"{core.human_size(limit)}")
-    await message.reply_text("\n".join(lines))
-
-
 async def on_subs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """`/subs`：只读列出订阅，与网页面板共用同一张任务库里的 state 表（键 "subs"）。
 
@@ -1126,7 +1009,20 @@ async def on_subs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         enabled = "" if sub.get("enabled", True) else "（停用）"
         last_run = sub.get("last_run") or "从未"
         last_result = sub.get("last_result") or ""
-        rows.append(f"· {name}{enabled} · {kind}\n  上次 {last_run}"
+        f = sub.get("filters") or {}
+        tags = []
+        if f.get("full_series"):
+            tags.append("完整系列")
+        if f.get("require_subtitle"):
+            tags.append("字幕")
+        if f.get("require_hd"):
+            tags.append("高清")
+        if f.get("min_seeders"):
+            tags.append(f"做种≥{f['min_seeders']}")
+        if f.get("exclude_keywords"):
+            tags.append(f"排:{f['exclude_keywords'][:10]}")
+        tag_str = f" [{' '.join(tags)}]" if tags else ""
+        rows.append(f"· {name}{enabled} · {kind}{tag_str}\n  上次 {last_run}"
                     + (f" · {last_result}" if last_result else ""))
     head = f"📡 订阅 {len(subs)} 个"
     await message.reply_text((head + "\n" + "\n".join(rows))[:3500])
@@ -1145,7 +1041,6 @@ async def on_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "• `/list` → 查看已归档的番号\n"
             "• `/status` → 查看运行状态（进行中 / 今日完成 / 云盘容量 / 闸门）\n"
             "• `/subs` → 查看订阅列表\n"
-            "• `/account` → 迅雷账号信息（会员 / 每日下载限额 / 各盘容量）\n"
             "• `/del <番号>` → 查看将删除的目录，加 `--yes` 执行\n"
             "• `/commands` → 命令列表\n"
             "• `/help` → 本说明"
@@ -1319,7 +1214,6 @@ COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("find", "on_find", "只列候选磁力，不下载"),
     ("status", "on_status", "运行状态：进行中/今日完成/云盘容量/闸门"),
     ("subs", "on_subs", "查看订阅列表"),
-    ("account", "on_account", "迅雷账号：会员/下载限额/各盘容量"),
     ("list", "on_list", "已归档番号与 Drive 链接"),
     ("retry", "on_retry", "重试失败任务"),
     ("del", "on_delete", "删除归档目录（加 --yes 执行）"),
@@ -1484,14 +1378,6 @@ async def self_check(cfg: Config) -> bool:
             print(f"telegram token: 校验失败 {exc}")
             ok = False
 
-    xl = xunlei.Xunlei(cfg.xunlei_url, cfg.xunlei_parent, cfg.tmp_root, cfg.xunlei_token)
-    try:
-        async with xl.client() as client:
-            await xl.alive(client)
-        print(f"迅雷面板: OK {cfg.xunlei_url}（只读查看用）")
-    except Exception as exc:
-        print(f"迅雷面板: 不可用 {cfg.xunlei_url} ({exc})")
-
     # 云添加是唯一的下载链路：它能不能用必须在这里说清楚
     cloud_ok, cloud_why = cloudadd.ready(cfg.get)
     print(f"云添加: {'OK' if cloud_ok else cloud_why}")
@@ -1504,29 +1390,9 @@ async def self_check(cfg: Config) -> bool:
         print(f"存储后端: {exc}")
         print("自检 未通过")
         return False
-    if backend.kind == "rclone":
-        for binary in ("rclone",):
-            found = shutil.which(binary)
-            print(f"{binary}: {found or '未安装'}")
-            ok &= bool(found)
-
-        root = f"{cfg.remote}:{cfg.drive_root.strip('/')}" if cfg.drive_root else f"{cfg.remote}:"
-        rc, _, err = await rclone(cfg, "lsd", root, timeout=90.0)
-        if rc != 0:
-            rc, _, err = await rclone(cfg, "lsd", f"{cfg.remote}:", timeout=90.0)
-        print(f"rclone {cfg.remote}: {'OK' if rc == 0 else err.strip()[:300]}")
-        ok &= rc == 0
-        if rc == 0:
-            rc2, _, err2 = await rclone(cfg, "mkdir", f"{root}/_healthcheck", timeout=90.0)
-            print(f"Drive 写权限: {'OK' if rc2 == 0 else err2.strip()[:200]}")
-            if rc2 == 0:
-                await rclone(cfg, "rmdir", f"{root}/_healthcheck", timeout=90.0)
-            ok &= rc2 == 0
-    else:
-        # 另两个后端（OpenList / CloudDrive2）自带 check()：连通性 + 可写 + 配额
-        result = await asyncio.to_thread(storage.check)
-        print(f"存储后端 {result.get('kind')}: {result.get('detail') or result.get('error')}")
-        ok &= bool(result.get("ok"))
+    result = await asyncio.to_thread(storage.check)
+    print(f"存储后端 {result.get('kind')}: {result.get('detail') or result.get('error')}")
+    ok &= bool(result.get("ok"))
 
     print("自检", "通过" if ok else "未通过")
     return ok
@@ -1536,6 +1402,7 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
+    logbuf.install()
     cfg = Config.from_env()
 
     if "--check" in sys.argv:
@@ -1586,7 +1453,7 @@ def main() -> None:
     handlers = {
         "on_find": on_find, "on_retry": on_retry, "on_list": on_list,
         "on_status": on_status, "on_subs": on_subs, "on_delete": on_delete,
-        "on_help": on_help, "on_commands": on_commands, "on_account": on_account,
+        "on_help": on_help, "on_commands": on_commands,
     }
     for name, handler_name, _ in COMMANDS + EXTRA_COMMANDS:
         handler = handlers.get(handler_name)
@@ -1595,8 +1462,8 @@ def main() -> None:
             continue
         app.add_handler(CommandHandler(name, handler))
     log.info(
-        "启动：remote=%s root=%s 并发=%d 待补跑=%d",
-        cfg.remote, cfg.drive_root, cfg.concurrency, len(app.bot_data["pending"]),
+        "启动：CloudDrive2 root=%s 并发=%d 待补跑=%d",
+        storage.root(), cfg.concurrency, len(app.bot_data["pending"]),
     )
     # drop_pending_updates=False：停机期间用户发的链接不再被 Telegram 侧丢弃；
     # 旧的积压由 processed_update 里的时间窗过滤，避免重启后一次性补刷历史消息。

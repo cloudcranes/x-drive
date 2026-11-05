@@ -106,8 +106,12 @@ def test_modal_close_button_has_room_for_text():
     page = html()
     assert "关闭" in page
     assert ".iconbtn.txt{" in css(page), "文字版 iconbtn 要放开宽度"
-    assert page.count('el("button", "iconbtn txt", "关闭")') == 4, \
-        "四个弹层（详情 / 磁力预览 / 归档详情 / 播放器）的关闭按钮都要带 txt 类"
+    # 归档详情换成右上角圆形图标按钮，其余弹层仍是文字版
+    assert page.count('el("button", "iconbtn txt", "关闭")') == 3, \
+        "详情 / 磁力预览 / 播放器的关闭按钮要带 txt 类"
+    assert page.count('el("button", "dclose", "✕")') == 1, \
+        "归档详情用固定尺寸的图标关闭按钮"
+    assert ".dclose{" in css(page)
 
 
 # ---------------------------------------------------------------- 7. 队列滚动
@@ -120,10 +124,9 @@ def test_queue_keeps_scroll_position_on_poll():
 
 
 def test_queue_poll_is_incremental_not_full_rebuild():
-    """3 秒一次的轮询不能整块重绘：那是「迅雷面板一直在闪」的根因。
+    """3 秒一次的轮询不能整块重绘：那是队列「一直在闪」的根因。
 
-    整块清空再重建会先抹掉「迅雷面板」那块、等 /api/xunlei 回来才重现，
-    中间有一帧空白；顺带丢掉 hover、展开的时间线、滚动锚点。
+    整块清空再重建会丢掉 hover、展开的时间线、滚动锚点。
     """
     js = script(html())
     assert "function renderQueueBlock(" in js
@@ -131,12 +134,8 @@ def test_queue_poll_is_incremental_not_full_rebuild():
     # 内容没变就复用节点
     assert "if (old && old.sig === item.sig)" in js
     # 队列块里不能再出现整块清空
-    body = js[js.index("async function loadJobs"):js.index("// ── 任务时间线")]
+    body = js[js.index("async function loadJobs"):js.index("// ── 运行日志")]
     assert 'box.textContent = ""' not in body, "队列轮询不许整块清空"
-    # 迅雷面板也要增量（它才是闪得最明显的一块）
-    panel = js[js.index("async function appendPanelTasks"):js.index("// 队列增量渲染")]
-    assert "renderQueueBlock(box, panelItems" in panel
-    assert "box.append(" not in panel, "面板任务要按签名复用，不能每次全量 append"
 
 
 # ---------------------------------------------------------------- 8. 视图切换
@@ -201,10 +200,11 @@ def test_archive_card_is_poster_only_with_detail_popup():
     assert "card-body" not in body, "卡片不该再有信息标签行"
     assert "card-foot" not in body, "卡片不该再有底栏"
     assert "actor-chip" not in body, "卡片不该再有演员胶囊"
-    # 海报 + 标题 + 角标番号
+    # 海报 + 标题 + 番号·日期 + 题材胶囊
     assert "card-cover" in body, "卡片要有海报"
     assert "card-title" in body, "卡片要有标题"
-    assert "card-code" in body, "海报角上要有番号"
+    assert "card-meta" in body, "标题下要有番号·日期行"
+    assert "chip-tag" in body, "卡片要有题材胶囊"
     # 点海报开详情
     assert "showArchiveDetail(t)" in body, "点海报要开详情弹层"
     # 详情弹层在
@@ -217,9 +217,9 @@ def test_archive_card_is_poster_only_with_detail_popup():
     assert "手动刮削" in detail, "详情里要有手动刮削入口"
     assert "/api/scrape/preview" in detail, "手动刮削要先拉差异预览"
     assert "/api/scrape/sync" in detail, "确认后才写入"
-    # 封面按 javbus 800×538 比例
-    assert ".poster-card .card-cover{aspect-ratio:800/538" in styles, "卡片封面应是 800×538 比例"
-    assert "minmax(196px,1fr)" in styles, "网格列宽要适配竖版海报"
+    # 竖版海报，列宽按海报比例收紧
+    assert "aspect-ratio:800/536" in styles, "封面比例要跟 JavBus 原图一致（800×536）"
+    assert "minmax(200px, 1fr)" in styles, "网格列宽要适配竖版海报"
 
 
 def test_code_of_query_normalizes():
@@ -244,8 +244,18 @@ def test_preview_images_open_in_place_not_new_tab():
     # 详情 / 磁力预览两个弹层都用同一个图片墙
     detail = js[js.index("function showDetail"):js.index("// 单条磁力预览")]
     assert "thumbWall(info.previews" in detail
-    preview = js[js.index("async function showMagnetPreview"):js.index("async function panelControl")]
+    preview = js[js.index("async function showMagnetPreview"):js.index("// ── 运行日志")]
     assert "thumbWall(info.screenshots" in preview
+
+
+def test_archive_previews_use_r2():
+    """归档详情里的预览图要读 R2；搜索预览仍走 /proxy，避免未回源时破图。"""
+    js = script(html())
+    detail = js[js.index("function showArchiveDetail"):js.index("// 删除归档：")]
+    assert 'thumbWall(m.previews, "预览", true)' in detail
+    wall = js[js.index("function thumbWall"):js.index("// 番号详情")]
+    assert "r2 ? coverSrc(s)" in wall
+    assert "pics\\.dmm\\.co\\.jp" in js
 
 
 def test_lightbox_escape_does_not_close_parent_modal():
@@ -312,7 +322,7 @@ def test_pasting_magnet_opens_submit_panel():
 def test_magnet_is_not_a_local_filter():
     """磁力/直链不是筛选词：不能拿整串 URL 去比本地文本，也别做成筛选胶囊。"""
     js = script(html())
-    body = js[js.index("function matches"):js.index("// 一个归档在某个维度上")]
+    body = js[js.index("function matchText"):js.index("// 一个归档在某个维度上")]
     assert "queryKind(view.q)" in body, "matches 要先判断输入类型"
     filters = js[js.index("function renderActiveFilters"):js.index("function card")]
     assert 'qk.kind !== "magnet"' in filters
@@ -350,17 +360,16 @@ def test_maintenance_merges_into_two_tabs():
     assert '"normpanel"' not in body and '"healthpanel"' not in body
 
 
-def test_maintenance_entry_is_in_toolbar_not_sidebar():
-    """侧栏 5→4：维护入口挪到顶部工具条，不再占侧栏一格。"""
+def test_maintenance_entry_is_in_sidebar_nav():
+    """维护是常驻视图：入口跟归档 / 队列 / 订阅 / 设置并排放在侧栏。"""
     page = html()
     assert 'id="maint-open"' in page
-    # 入口在工具条里（工具条在 side 之外）
-    tb = page[page.index('class="toolbar"'):page.index('id="activefilters"')]
-    assert 'id="maint-open"' in tb, "维护入口应在顶部工具条"
-    # 侧栏只剩 4 项
-    for i in ("archive-open", "queuebtn", "subs-open", "settings-open"):
+    side = page[page.index('class="side"'):page.index('class="rail"')]
+    assert 'id="maint-open"' in side, "维护入口应在侧栏"
+    for i in ("archive-open", "queuebtn", "subs-open", "settings-open", "maint-open",
+              "log-open"):
         assert f'id="{i}"' in page, f"缺侧栏入口 {i}"
-    assert page.count('class="it" id=') == 4, "侧栏应只剩 4 个入口"
+    assert page.count('class="it" id=') == 6, "侧栏应有 6 个入口"
 
 
 def test_maintenance_tabs_keep_their_actions():
@@ -373,17 +382,18 @@ def test_maintenance_tabs_keep_their_actions():
     assert "askNormalize" not in js, "旧的一键动作应已移除"
 
 
-def test_settings_has_three_tabs():
-    """设置页子标签 12 → 6 → 3：存储 / 刮削 / 内容。
+def test_settings_has_four_tabs():
+    """设置页子标签：存储 / 刮削 / 内容 / 调度。
 
     「归档回收」与「数据源」合成「内容」（内容从哪来、留多久）；
     「面板」那项归位到「内容」；
     原来的「下载」整组没了 —— 2026-10-25 取消本地下载，配额/重试/磁盘预留
     这些只服务本地下载的项随之删除（云添加不占本地磁盘，也没有「今日上传量」）。
+    「调度」只放跨来源的全局并发上限，与存储/刮削的单项配置分开。
     """
     from app import settings as settings_mod
     groups = {spec.get("group", "其它") for spec in settings_mod.SETTINGS_SPEC.values()}
-    assert groups == {"存储", "刮削", "内容"}, groups
+    assert groups == {"存储", "刮削", "内容", "调度"}, groups
 
 
 def test_no_local_download_settings_remain():
@@ -515,7 +525,7 @@ def test_settings_marks_unsaved_rows_and_wide_paths():
 
 
 def test_storage_test_button_shows_elapsed():
-    """rclone 的探测要问云端配额，可能几十秒：必须把秒数跑出来，否则像按钮没反应。"""
+    """CloudDrive2 的探测要问云端配额，可能几十秒：必须把秒数跑出来，否则像按钮没反应。"""
     js = script(html())
     # 递归 setTimeout：页面里只该有那两个轮询定时器（见 test_webui_backlog）
     assert "let ticking = true;" in js
@@ -536,11 +546,13 @@ def test_storage_params_are_scoped_to_backend():
     assert "applyStorageScope();" in js
 
 
-def test_storage_scope_keeps_hidden_dirty_visible():
-    """被收起的那几项若有未保存改动，必须提示：否则「保存全部」会存掉看不见的东西。"""
+def test_storage_panel_defaults_to_cd2_without_legacy_choices():
+    """单后端页面不再呈现已删除适配器或其专属设置。"""
     js = script(html())
-    assert "hiddenDirty" in js
-    assert "的改动还没保存" in js
+    assert '|| "clouddrive2"' in js
+    assert "OPENLIST_" not in js
+    assert 'chosen === "rclone"' not in js
+    assert '"openlist"' not in js
 
 
 def test_storage_status_row_marks_unsaved_backend_switch():
@@ -556,7 +568,7 @@ def test_storage_panel_explains_host_address_rewrite():
     assert "function storageNetNote(chosen)" in js
     assert "storageInfo.net.container" in js
     assert "storageInfo.net.alias" in js, "要写出别名具体是什么"
-    assert 'if (chosen === "rclone") return "";' in js, "rclone 走挂载配置，不该提改写"
+    assert 'chosen === "rclone"' not in js
 
 
 def test_failed_jobs_can_be_removed_from_ui():
@@ -595,11 +607,23 @@ def test_wall_cards_still_used_by_keyword_search():
     page = html()
     js = script(page)
     assert "function wallCard(" in js
-    assert '"/proxy?u=" + encodeURIComponent(item.cover)' in js
+    assert "function coverSrc(u)" in js
+    assert "img.src = coverSrc(item.cover)" in js
+    assert "https://covers.master.us.kg/javbus/www.javbus.com" in js
     # 图床偶发 502：先重试一次再认成无封面
     assert "img.dataset.retried" in js
     # 已归档的给绿标
     assert 'el("span", "wall-owned", "已归档")' in js
+
+
+def test_home_archive_renders_in_pages():
+    """首页一次只挂 12 张卡，滑到底再追加，避免整库图片一起请求。"""
+    page = html()
+    js = script(page)
+    assert 'id="feed-more"' in page
+    assert "const ARCHIVE_PAGE = 12;" in js
+    assert "const tasks = all.slice(0, feedLimit);" in js
+    assert 'feedScroll.addEventListener("scroll"' in js
 
 
 def test_home_settings_show_image_cache_row():
@@ -689,3 +713,31 @@ def test_candidate_sort_is_re_renderable():
     js = script(html())
     assert "renderCandidates" in js
     assert "renderCandidates(items, got, info)" in js, "改排序后要重画"
+
+
+def test_log_view_is_wired_and_polls_only_while_visible():
+    """运行日志：侧栏入口 + 面板 + /api/logs 轮询，切走必须停。"""
+    page = html()
+    js = script(page)
+    for token in ('id="log-open"', 'id="logpanel"', 'id="log-list"', 'id="log-q"'):
+        assert token in page, f"缺 {token}"
+    assert "/api/logs" in js
+    assert '$("log-open").addEventListener("click"' in js, "侧栏入口要真的能点开"
+    assert 'if (name === "logs") startLogPoll(); else stopLogPoll();' in js
+    assert '"logs"' in js, "路由白名单要加 logs"
+    assert "xunlei" not in page.lower(), "迅雷面板的 UI 残留必须清干净"
+    assert "迅雷面板" not in page
+
+
+def test_search_results_have_dedicated_view():
+    """搜索结果不再挤在归档首页：输入即切到 #/search，返回归档恢复原筛选。"""
+    page = html()
+    js = script(page)
+    assert 'id="search-back"' in page
+    assert 'id="resultbar"' in page
+    assert "function syncSearchRoute(" in js
+    assert 'navigate("search"' in js
+    assert 'const isList = isArchive || name === "search";' in js
+    assert "filter(searchMode ? searchMatches : matches)" in js
+    assert 'if (currentView !== "search") showView("search");' in js
+    assert 'if (currentView === "search") {' in js

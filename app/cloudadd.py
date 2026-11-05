@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import cloudingest, cloudorganize, storage
+from . import codes, cloudingest, cloudorganize, storage
 
 log = logging.getLogger("x-drive.cloudadd")
 
@@ -94,7 +94,8 @@ async def wait_landing(backend, my_inbox: str, before: dict, source: str, *,
                        get: Setting,
                        progress: Progress | None = None,
                        check_cancel: CheckCancel | None = None,
-                       lease_check: LeaseCheck | None = None) -> list:
+                       lease_check: LeaseCheck | None = None,
+                       submitted_at: float = 0.0) -> list:
     """等云盘里真的出现落地内容。返回已稳定的落地条目列表。
 
     source 给了就顺便查迅雷那边的离线任务状态：迅雷解析失败时会回
@@ -118,7 +119,8 @@ async def wait_landing(backend, my_inbox: str, before: dict, source: str, *,
         stable=int(get("CLOUD_LAND_STABLE") or 3),
         progress=on_progress,
         cancel_check=check_cancel,
-        source=source)
+        source=source,
+        submitted_at=submitted_at)
 
 
 def organize_landed(landed, backend, my_inbox: str, dest: str, code: str,
@@ -150,8 +152,11 @@ def organize_landed(landed, backend, my_inbox: str, dest: str, code: str,
         #
         # 现在每个条目单独 try：成功的照常记账，失败的单独记下来。
         try:
-            plan = cloudorganize.plan(source, item.files, folder_code=code or "")
-            moved = cloudorganize.apply(backend, my_inbox, plan, code or plan.target,
+            # 归档目录统一用纯番号（TCHB-029），不掺日期/标题；调用方传进来的
+            # 可能是旧归档键或带后缀的目录名，先 canonical 再用。
+            folder_code = codes.canonical(code) or (code or "").strip()
+            plan = cloudorganize.plan(source, item.files, folder_code=folder_code)
+            moved = cloudorganize.apply(backend, my_inbox, plan, folder_code or plan.target,
                                         dst_root=dest)
             # 重复下载：目标里本来就有（同名同大小），源文件是冗余 → 归入 drop
             if moved.get("repeated"):
@@ -216,6 +221,33 @@ def clean_sources(backend, pending_cleanup, *, lease_check: LeaseCheck | None = 
     leftover.extend(remove_empty_shells(backend, shells,
                                         lease_check=lease_check, event=event))
     return leftover
+
+
+def purge_task_inbox(backend, my_inbox: str, *, protected_root: str = "",
+                     lease_check: LeaseCheck | None = None,
+                     event: Event | None = None) -> str:
+    """归档成功后整目录清理任务收件目录。
+
+    任务收件目录是 `<落地根>/<任务键>`，只属于本次任务；归档记录已经落盘，
+    里面剩下的只可能是广告、刮削垃圾或没进归档清单的残留，递归删掉才不会
+    每次留一条 cleanup_pending。共享落地根绝不能碰，传进来的 protected_root
+    用来兜住这一点。
+    """
+    inbox = (my_inbox or "").strip("/")
+    root = (protected_root or "").strip("/")
+    parts = inbox.split("/") if inbox else []
+    if not inbox or any(p in ("", ".", "..") for p in parts):
+        raise ValueError("收件目录为空或不安全，拒绝自动清理")
+    if root and (inbox == root or not inbox.startswith(root + "/")):
+        raise ValueError(f"收件目录 {inbox} 不在落地根 {root} 下，拒绝自动清理")
+    if not root and len(parts) < 2:
+        raise ValueError(f"收件目录 {inbox} 层级过浅，拒绝自动清理")
+    if lease_check is not None:
+        lease_check()
+    receipt = backend.purge(inbox)
+    if event is not None:
+        event("stage", f"auto cleaned {inbox}（{receipt}）")
+    return receipt
 
 
 def _is_empty_dir(backend, path: str) -> bool:

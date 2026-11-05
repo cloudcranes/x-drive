@@ -79,7 +79,7 @@ def _drain_job_threads(web, grace: float = 5.0) -> None:
     **必须按线程名兜底扫一遍**，不能只信 web._threads：有些 fixture 会直接
     `web._threads.clear()`（清字典但不停线程），那些线程就从字典里消失了，
     这里再也找不到它们 —— 于是它们变成不可见的僵尸，继续在下一例的桩下推进。
-    下一例若恰好没打桩某个符号，它就会真的去连迅雷面板（容器内实测撞上
+    下一例若恰好没打桩某个符号，它就会真的去连外部服务（容器内实测撞上
     「平台上已有同一个种子在下载」，把无关的恢复用例搞红）。所以这里按名字
     兜住所有 job-* 线程。
 
@@ -119,23 +119,10 @@ def _clear_memory_state(web) -> None:
         web._queued_at.clear()
     with web._threads_lock:
         web._threads.clear()
+    with web._admit_lock:
+        web._active_jobs.clear()
+    web._queue_wake.clear()
     web.set_paused(False)
-
-
-def _block_real_xunlei(web) -> None:
-    """把网页端的迅雷客户端指向一个**必定连不通**的地址。
-
-    为什么需要：某些用例会真的走 `admit()` 起后台任务线程，线程在断言结束后
-    仍在跑。等它推进到下载那一步时，如果下一个用例没打桩 `pipeline.download`，
-    它就会真的去连**真实迅雷面板** —— 容器内实测撞上「平台上已有同一个种子
-    在下载」，把毫不相干的恢复用例搞红；更糟的是它会真的占用平台的下载位。
-
-    这里把 `web._XL`（惰性创建、模块级缓存）换成指向本地保留端口的实例：
-    漏网的调用会立刻连接失败并露出调用栈，而不是悄悄连上真面板。
-    真的需要面板的用例自己会重新设置 `web._XL` 或 monkeypatch 掉它。
-    """
-    from app import xunlei
-    web._XL = xunlei.Xunlei("http://127.0.0.1:9", "", web.TMP_ROOT, "")
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +134,6 @@ def isolate_module_state():
     from app import main as bot
     from app import web
 
-    _block_real_xunlei(web)
     _stop_heartbeats(web)
     _drain_job_threads(web)
     _clear_memory_state(web)

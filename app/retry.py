@@ -36,7 +36,6 @@ DEAD_PATTERNS = (
 )
 # 配置类：人没配对，重试无意义
 CONFIG_PATTERNS = (
-    "xunlei_parent_id",
     "device_space_not_active",
     "不在 tmp_root",
     "unauthorized",
@@ -72,13 +71,11 @@ FATAL_PATTERNS = (
     "unauthorized",
     "invalid_grant",
     "磁力链接无效",
-    "xunlei_parent_id",         # 迅雷下载目录 id 没配/失效，重试也不会自己好
     "device_space_not_active",
-    "鉴权失败",                 # OpenList/CD2：账号密码不对
+    "鉴权失败",                 # CloudDrive2：账号密码不对
     "401 unauthorized",
     "只读",
     "分享权限",
-    "openlist：没配",
     "clouddrive2：没配",
     "没有 grpcio",
     "没装 grpcio",

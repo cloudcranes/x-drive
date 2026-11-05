@@ -67,6 +67,16 @@ def sub_id_of(value: str, kind: str = "actor") -> str:
     return value if re.fullmatch(r"[A-Za-z0-9]{2,16}", value) else ""
 
 
+# 番号前缀是纯大写字母（TCHB、MIMK），而 JavBus 站内系列 ID 都是小写字母数字
+# （wdg、2t）。前缀不是站内 ID，系列筛选接口会 404；这类订阅改用搜索接口，
+# 只收 code 以「前缀-」开头的作品，避免把同系列里的其他番号带进来。
+_PREFIX_RE = re.compile(r"[A-Z]{2,10}")
+
+
+def looks_like_series_prefix(value: str) -> bool:
+    return bool(_PREFIX_RE.fullmatch((value or "").strip()))
+
+
 def source_of(value: str) -> str:
     """链接里能看出站点就返回它；裸 ID 返回空串（交给调用方按用户选择）。
 
@@ -177,8 +187,44 @@ def save_subs(path: str, data: dict) -> None:
     core.save_state(path, data)
 
 
+def sub_filters(sub: dict | None) -> dict:
+    """提取标准化订阅筛选条件。"""
+    sub = sub or {}
+    f = dict(sub.get("filters") or {})
+    inc = [k.strip() for k in str(f.get("include_keywords", sub.get("include_keywords", "")) or "").split(",") if k.strip()]
+    exc = [k.strip() for k in str(f.get("exclude_keywords", sub.get("exclude_keywords", "")) or "").split(",") if k.strip()]
+    return {
+        "full_series": bool(f.get("full_series", sub.get("full_series", False))),
+        "require_subtitle": bool(f.get("require_subtitle", sub.get("require_subtitle", False))),
+        "require_hd": bool(f.get("require_hd", sub.get("require_hd", False))),
+        "min_seeders": max(0, int(f.get("min_seeders", sub.get("min_seeders", 0)) or 0)),
+        "min_size_gb": max(0.0, float(f.get("min_size_gb", sub.get("min_size_gb", 0)) or 0)),
+        "max_size_gb": max(0.0, float(sub.get("max_size_gb") or f.get("max_size_gb") or 0)),
+        "include_keywords": ",".join(inc),
+        "exclude_keywords": ",".join(exc),
+    }
+
+
+def match_item_keywords(code: str, title: str, include_keywords: str = "",
+                        exclude_keywords: str = "") -> tuple[bool, str]:
+    """判断番号与标题是否满足关键词过滤。返回 (是否合格, 原因)。"""
+    text = f"{code} {title}".upper()
+    if exclude_keywords:
+        for kw in re.split(r"[,，\s|/]+", exclude_keywords):
+            kw = kw.strip().upper()
+            if kw and kw in text:
+                return False, f"命中排除词「{kw}」"
+    if include_keywords:
+        kws = [k.strip().upper() for k in re.split(r"[,，\s|/]+", include_keywords) if k.strip()]
+        if kws and not any(kw in text for kw in kws):
+            return False, f"未包含指定关键词「{include_keywords}」"
+    return True, ""
+
+
 def new_sub(sub_id: str, name: str, cursor: str, max_per_run: int = 1,
-            max_size_gb: float = 0, kind: str = "actor", source: str = "javbus") -> dict:
+            max_size_gb: float = 0, kind: str = "actor", source: str = "javbus",
+            filters: dict | None = None) -> dict:
+    clean_filters = sub_filters({"filters": filters, "max_size_gb": max_size_gb})
     return {
         "id": sub_id,
         # 来源决定用哪个接口查：javbus 认站内 ID，javdb 认 /actors/xxx
@@ -189,6 +235,7 @@ def new_sub(sub_id: str, name: str, cursor: str, max_per_run: int = 1,
         "enabled": True,
         "max_per_run": max(1, int(max_per_run)),
         "max_size_gb": max(0.0, float(max_size_gb)),
+        "filters": clean_filters,
         "added_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "last_run": "",
         "last_result": "",
@@ -227,7 +274,8 @@ async def fetch(client: httpx.AsyncClient, url: str, timeout: float = TIMEOUT) -
 
 
 async def discover_javbus(sub_id: str, cursor: str, client: httpx.AsyncClient | None = None,
-                          kind: str = "actor", pages: int = 2) -> dict:
+                          kind: str = "actor", pages: int = 2,
+                          full_series: bool = False) -> dict:
     """只做发现：把游标之后的**全部**作品列出来，不查磁力、不下判断。
 
     发现与提交分开才有得商量：发现是「这一页有什么」，提交是「这轮下几个」。
@@ -236,17 +284,29 @@ async def discover_javbus(sub_id: str, cursor: str, client: httpx.AsyncClient | 
     游标只在**确实走到旧游标边界**时才前移：只翻 pages 页就宣布「发现完了」，
     积压超过两页时中间那段永久漏掉（后面的轮次全从新游标往后看）。
     没走到边界就不动游标，下一轮接着往回翻，靠待办表去重。
+
+    当 full_series 为 True 时：支持全量历史回填，翻页深度自动扩展至翻到底或上限（默认 50 页）。
     """
     filter_type = "star" if kind == "actor" else "series"
+    # 番号前缀不是站内系列 ID：系列筛选会 404，改用搜索接口按「前缀-」过滤
+    prefix_mode = kind == "series" and looks_like_series_prefix(sub_id)
     result = {"items": [], "cursor": cursor, "error": "", "seen": 0, "pages_done": 0,
               "name": "", "caught_up": False}
+    effective_pages = 50 if (full_series and pages <= 2) else max(1, pages)
     try:
         seen: dict[str, dict] = {}
-        caught_up = cursor == ""          # 没有游标（首次订阅）：一页就够定基线
+        caught_up = (cursor == "" and not full_series)  # 首次追新：一页够定基线；全量：必须到底
         oldest = ""
-        for page in range(1, max(1, pages) + 1):
-            batch = await javbus.list_movies(filter_type, sub_id, page=page, client=client)
+        for page in range(1, effective_pages + 1):
+            if prefix_mode:
+                raw = await javbus.search(sub_id, page=page, client=client)
+                batch = [it for it in raw
+                         if (it.get("code") or "").upper().startswith(sub_id.upper() + "-")]
+            else:
+                batch = await javbus.list_movies(filter_type, sub_id, page=page, client=client)
             if not batch:
+                if prefix_mode and page < effective_pages and raw:
+                    continue                   # 这一页没命中前缀，继续往后翻
                 caught_up = True               # 翻到底了
                 break
             result["pages_done"] = page
@@ -275,7 +335,12 @@ async def discover_javbus(sub_id: str, cursor: str, client: httpx.AsyncClient | 
         names = [it.get("star") or it.get("series") for it in result["items"]]
         result["name"] = next((n for n in names if n), "")
         if not result["seen"]:
-            result["error"] = "JavBus 没有返回作品（ID 不对或接口不可用）"
+            if prefix_mode:
+                result["error"] = (f"JavBus 搜不到 {sub_id} 开头的作品，"
+                                   "或接口暂时不可用")
+            else:
+                result["error"] = (f"JavBus 没有返回作品（{sub_id or '空 ID'} 不是站内 ID，"
+                                   "或接口暂时不可用）")
         return result
     except Exception as exc:
         log.warning("JavBus 发现订阅 %s 失败：%s", sub_id, exc)
@@ -303,8 +368,13 @@ def pick_candidate(items: list[dict]) -> dict | None:
 
 
 def _choose(found: list[dict], code: str, max_size_gb: float,
-            tried: list[str] | None) -> tuple[dict | None, str]:
-    """从候选里挑一条：先过滤（体积上限、已试过），再排序挑最优。
+            tried: list[str] | None,
+            min_size_gb: float = 0,
+            require_subtitle: bool = False,
+            require_hd: bool = False,
+            min_seeders: int = 0,
+            exclude_keywords: str = "") -> tuple[dict | None, str]:
+    """从候选里挑一条：先过滤（体积、字幕、高清、做种数、排除词、已试过），再排序挑最优。
 
     顺序不能反：以前是先挑最优再看体积，首选超限就整部放弃，明明还有合规
     候选也不下。tried 是「这个番号已经试过并失败的磁力」，换源时跳过，
@@ -315,22 +385,75 @@ def _choose(found: list[dict], code: str, max_size_gb: float,
     tried_set = {t for t in (tried or []) if t}
     usable = []
     too_big = 0
+    too_small = 0
+    no_sub = 0
+    not_hd = 0
+    low_seeders = 0
+    kw_excluded = 0
+
+    ex_kws = [k.strip().upper() for k in re.split(r"[,，\s|/]+", exclude_keywords) if k.strip()] if exclude_keywords else []
+
     for m in found:
         if m.get("magnet") in tried_set:
             continue
-        size_bytes = int(m.get("size_bytes") or 0)
-        if max_size_gb and size_bytes / 1024 ** 3 > max_size_gb:
+        size_bytes = int(m.get("size_bytes") or (int(m.get("size_mb") or 0) * 1024 * 1024))
+        size_gb = size_bytes / (1024 ** 3) if size_bytes else 0
+        if max_size_gb and size_gb > max_size_gb:
             too_big += 1
             continue
+        if min_size_gb and size_gb < min_size_gb:
+            too_small += 1
+            continue
+
+        tags = " ".join(m.get("tags") or [])
+        name = m.get("name") or m.get("title") or ""
+        mag_text = f"{name} {tags}".upper()
+
+        if ex_kws and any(kw in mag_text for kw in ex_kws):
+            kw_excluded += 1
+            continue
+
+        has_sub = bool(m.get("has_subtitle")) or ("中文字幕" in tags) or ("字幕" in tags) or ("-C" in name.upper()) or ("_C" in name.upper())
+        if require_subtitle and not has_sub:
+            no_sub += 1
+            continue
+
+        is_hd = bool(m.get("is_hd")) or ("高清" in tags) or ("HD" in tags.upper()) or ("1080" in mag_text) or ("2160" in mag_text) or ("4K" in mag_text)
+        if require_hd and not is_hd:
+            not_hd += 1
+            continue
+
+        seeders = sources.seeder_count(m)
+        if min_seeders and seeders < min_seeders:
+            low_seeders += 1
+            continue
+
         usable.append(m)
+
     best = pick_candidate(usable)
     if not best:
-        if too_big:
+        if too_big and not (no_sub or not_hd or too_small or low_seeders or kw_excluded):
             return None, f"{too_big} 条候选都超过上限 {max_size_gb}GB"
+        reasons = []
+        if no_sub:
+            reasons.append(f"{no_sub} 条未含字幕")
+        if not_hd:
+            reasons.append(f"{not_hd} 条非高清")
+        if too_big:
+            reasons.append(f"{too_big} 条超过上限 {max_size_gb}GB")
+        if too_small:
+            reasons.append(f"{too_small} 条低于下限 {min_size_gb}GB")
+        if low_seeders:
+            reasons.append(f"{low_seeders} 条做种数不足 {min_seeders}")
+        if kw_excluded:
+            reasons.append(f"{kw_excluded} 条命中排除词")
+        if reasons:
+            return None, f"未满足筛选：{'；'.join(reasons)}"
         if tried_set:
             return None, "候选都试过了"
         return None, "还没有磁力"
-    size_bytes = int(best.get("size_bytes") or 0)
+
+    size_bytes = int(best.get("size_bytes") or (int(best.get("size_mb") or 0) * 1024 * 1024))
     return {
         "code": code,
         "magnet": best["magnet"],
@@ -346,51 +469,45 @@ def _choose(found: list[dict], code: str, max_size_gb: float,
 
 async def fetch_best(code: str, max_size_gb: float = 0,
                      client: httpx.AsyncClient | None = None,
-                     tried: list[str] | None = None) -> tuple[dict | None, str]:
-    """给一个番号挑磁力。返回 (候选, 说明)。说明用于告诉用户为什么没下。
-
-    候选来源：走 sources.search（问遍 javbus/sukebei/bt4g 全部源并合并）。
-    以前这里只问 javbus.magnets_for 一个源，于是「JavBus 没收录、但 sukebei
-    有」的番号永远下不来 —— 用户手动 /find 能搜到，订阅却像坏了。订阅是自动
-    流程，没有人在旁边换源，所以候选池必须够宽。
-
-    sources 的 javbus 源内部就是 javbus.search_magnets → javbus.magnets_for，
-    与原先那条路径**同源**，所以不存在「两条 javbus 路径重复取数」的问题；
-    同一资源在多个源出现时由 sources.dedupe 按 infoHash 去重。
-    """
-    # 候选要多取一些：体积上限与「已试过」的过滤要在**排序之后、截断之前**做，
-    # 否则合规的候选排在第 9 条以后就被截掉了，这里会误判成「都超过上限」。
-    # 多取 30 条足够覆盖过滤损耗，又不会让每部都翻上百条记录。
+                     tried: list[str] | None = None,
+                     filters: dict | None = None) -> tuple[dict | None, str]:
+    """给一个番号挑磁力。返回 (候选, 说明)。说明用于告诉用户为什么没下。"""
+    f = filters or {}
     found = await sources.search(code, client=client, limit=SEARCH_POOL)
-    return _choose(found, code, max_size_gb, tried)
+    return _choose(found, code, max_size_gb, tried,
+                   min_size_gb=float(f.get("min_size_gb") or 0),
+                   require_subtitle=bool(f.get("require_subtitle")),
+                   require_hd=bool(f.get("require_hd")),
+                   min_seeders=int(f.get("min_seeders") or 0),
+                   exclude_keywords=str(f.get("exclude_keywords") or ""))
 
 
 async def fetch_best_javbus(code: str, max_size_gb: float = 0,
                             client: httpx.AsyncClient | None = None,
-                            tried: list[str] | None = None) -> tuple[dict | None, str]:
-    """只问 JavBus 一个源的版本。
-
-    给「来源明确是 javbus 的订阅」用：那条链路的契约就是只查 JavBus，
-    换源会改变它的语义（游标与已知番号的判定都建立在「JavBus 没有就是没有」
-    之上）。通用订阅与心愿单走 fetch_best 的多源路径。
-    """
+                            tried: list[str] | None = None,
+                            filters: dict | None = None) -> tuple[dict | None, str]:
+    """只问 JavBus 一个源的版本。"""
+    f = filters or {}
     found = await javbus.magnets_for(code, client=client)
-    return _choose(found, code, max_size_gb, tried)
+    return _choose(found, code, max_size_gb, tried,
+                   min_size_gb=float(f.get("min_size_gb") or 0),
+                   require_subtitle=bool(f.get("require_subtitle")),
+                   require_hd=bool(f.get("require_hd")),
+                   min_seeders=int(f.get("min_seeders") or 0),
+                   exclude_keywords=str(f.get("exclude_keywords") or ""))
 
 
 async def check_javbus(sub_id: str, cursor: str, max_per_run: int = 1,
                        max_size_gb: float = 0, known_codes: set[str] | None = None,
                        client: httpx.AsyncClient | None = None,
-                       kind: str = "actor", pages: int = 2) -> dict:
-    """一轮订阅（无待办表时的简化版）：发现后按日期从旧到新取前几个查磁力。
-
-    真正的调度在 web.run_subscriptions 里走 backlog 待办表；这个函数保留给
-    一次性调用与测试，语义与待办版一致：游标只表示「发现到哪儿」，
-    不会被没磁力的作品卡住，也不会越过还没处理的作品。
-    """
+                       kind: str = "actor", pages: int = 2,
+                       filters: dict | None = None) -> dict:
+    """一轮订阅（无待办表时的简化版）：发现后按日期从旧到新取前几个查磁力。"""
     known = {c.upper() for c in (known_codes or set())}
     today = time.strftime("%Y-%m-%d")
-    out = await discover_javbus(sub_id, cursor, client=client, kind=kind, pages=pages)
+    f = filters or {}
+    out = await discover_javbus(sub_id, cursor, client=client, kind=kind, pages=pages,
+                                full_series=bool(f.get("full_series")))
     result = {"new": [], "cursor": cursor, "error": out["error"], "skipped": 0,
               "seen": out["seen"], "backlog": 0, "items": out["items"]}
     if out["error"] and not out["items"]:
@@ -399,10 +516,7 @@ async def check_javbus(sub_id: str, cursor: str, max_per_run: int = 1,
             if it["code"] not in known and it["date"] < today]
     result["backlog"] = len(todo)
     for it in todo[:max(1, int(max_per_run))]:
-        # 这条链路的来源明确是 javbus，契约就是只查 JavBus 一个源
-        # （游标与「已知番号」的判定都建立在「JavBus 没有就是没有」之上）。
-        # 通用订阅与心愿单走 fetch_best 的多源路径。
-        item, why = await fetch_best_javbus(it["code"], max_size_gb, client=client)
+        item, why = await fetch_best_javbus(it["code"], max_size_gb, client=client, filters=filters)
         if not item:
             log.info("%s 暂不下载：%s", it["code"], why)
             result["skipped"] += 1

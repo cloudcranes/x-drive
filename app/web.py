@@ -21,7 +21,6 @@ import uuid
 import asyncio
 import shutil
 import sqlite3
-import subprocess
 import tempfile
 import threading
 import urllib.error
@@ -34,25 +33,15 @@ from uuid import uuid4
 import httpx
 
 from . import (added, backlog, cleanup, cloudadd, cloudingest, cloudorganize, codes,
-               core, find, imgcache, meta, metadata, metatube, notify, preview, retry,
-               settings as settings_mod, sources, storage, store, subscribe, workspace,
-               xunlei, xunleipan)
+               core, coverstore, find, imgcache, meta, metadata, metatube, notify, preview, retry,
+               logbuf, settings as settings_mod, sources, storage, store, subscribe,
+               workspace, xunleipan)
 
 log = logging.getLogger("x-drive.web")
 
 STATE = os.getenv("STATE_PATH", "/data/state.json")
 METRICS = os.getenv("METRICS_PATH", "/data/metrics.json")
 PENDING_DIR = os.getenv("PENDING_DIR", "/data/pending")
-XUNLEI_URL = os.getenv("XUNLEI_URL", "http://127.0.0.1:2345").strip()
-XUNLEI_PARENT_ID = os.getenv("XUNLEI_PARENT_ID", "").strip()
-XUNLEI_PAN_AUTH = os.getenv("XUNLEI_PAN_AUTH", "").strip()
-XUNLEI_POLL = float(os.getenv("XUNLEI_POLL", "10") or 10)
-XUNLEI_SETTLE = float(os.getenv("XUNLEI_SETTLE", "30") or 0)
-# 面板里失败任务记录保留多少天；0 = 不自动清（只在手动点「清理失败」时清）
-PANEL_CLEAN_DAYS = float(os.getenv("PANEL_CLEAN_DAYS", "0") or 0)
-RCLONE_REMOTE = os.getenv("RCLONE_REMOTE", "gdrive").strip()
-DRIVE_ROOT = os.getenv("DRIVE_ROOT", "X-Drive").strip().strip("/")
-RCLONE_CONFIG = os.getenv("RCLONE_CONFIG", "/config/rclone/rclone.conf")
 # 刮削附件：默认全开；关掉就退回原来的「只有视频」行为
 SCRAPE_ON = os.getenv("SCRAPE", "1") not in ("0", "false", "False")
 NFO_ON = os.getenv("SCRAPE_NFO", "1") not in ("0", "false", "False")
@@ -87,6 +76,8 @@ PORT = int(os.getenv("WEB_PORT", "8080"))
 AUTH = os.getenv("WEB_AUTH", "").strip()
 HTML_PATH = Path(__file__).with_name("webui.html")
 LOGIN_PATH = Path(__file__).with_name("login.html")
+# 新版看板（Vue3 CDN 单文件）。旧版 webui.html 保留在 /legacy。
+TEMPLATE_PATH = Path(__file__).parent / "templates" / "index.html"
 
 
 SESSION_COOKIE = "xd_session"
@@ -162,16 +153,6 @@ def metrics_snapshot() -> dict:
 
 
 # ---------------------------------------------------------------- 下载任务
-
-# 迅雷客户端做成进程内单例：token、space、下载目录 id 都有缓存，
-# 每个任务新建一个就要多打三次 GET，面板忙时还会拖慢提交
-_XL: xunlei.Xunlei | None = None
-
-def xunlei_client() -> xunlei.Xunlei:
-    global _XL
-    if _XL is None:
-        _XL = xunlei.Xunlei(XUNLEI_URL, XUNLEI_PARENT_ID, TMP_ROOT, XUNLEI_PAN_AUTH)
-    return _XL
 
 # 任务表：重启不丢、同番号并发去重。JOBS 只是给旧代码留的内存镜像，
 # 所有真实状态以 STORE 为准。
@@ -526,7 +507,7 @@ def _dir_size(path: Path) -> int:
 def local_disk_inventory() -> dict:
     """本地残留盘点：只读列出 TMP_ROOT 与 STATE_DIR 下带归属标记的目录。
 
-    背景：归档回收（rclone purge）删的是 Drive，本地一个字节都不动。磁盘满了
+    背景：归档回收删的是 Drive，本地一个字节都不动。磁盘满了
     用户点回收，以为腾了空间，本地还是满的。这个接口把两处本地占用的目录
     摊开来，让用户看到「哪些是已归档但没清干净的残留、哪些是失败保留的原件」。
 
@@ -617,7 +598,7 @@ def img_cache_max_bytes() -> int:
 
 CANCEL: dict[str, threading.Event] = {}
 # 上传进度回调按线程传递：upload_folder 的两参签名被测试大量 monkeypatch，
-# 不适合加参数；CD2/OpenList 适配器有真实进度，就靠这个把进度送到 _upload_loop。
+# 不适合加参数；CD2 适配器有真实进度，就靠这个把进度送到 _upload_loop。
 _UPLOAD_PROGRESS = threading.local()
 
 
@@ -670,20 +651,6 @@ class LossOfLease(RuntimeError):
     """
 
 
-def rclone(*args: str, timeout: float = 7200.0) -> tuple[int, str, str]:
-    cmd = ["rclone", "--config", RCLONE_CONFIG, *args]
-    try:
-        done = subprocess.run(cmd, capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return 124, "", "rclone 超时"
-    return done.returncode, done.stdout.decode(errors="replace"), done.stderr.decode(errors="replace")
-
-
-# 把本模块这层 rclone 注入存储层：/api/storage/test 里 rclone 后端的自检走它，
-# 于是测试里 monkeypatch `web.rclone` 的替身照样生效（别在 storage 里另起一套 subprocess）。
-storage.set_runner(lambda *args, **kwargs: rclone(*args, **kwargs))
-
-
 def storage_backend():
     """当前存储后端实例（app/storage 的注册表按配置指纹缓存）。"""
     return storage.get()
@@ -725,20 +692,25 @@ def _cloud_submit(backend, job_id: str, source: str, my_inbox: str) -> dict:
     2.1/2.2：同一链接已有提交记录时**不再重复投**。AddOfflineFiles 对假磁力
     也回 success（实测），重投只可能制造重复落地或撞同名目录；沿用提交前
     快照继续观察，落地已完成时 wait_landing 立刻就能收下。
+
+    submitted_at 给 wait_landing 判断「迅雷侧任务消失」：进程重启后继续等
+    同一个提交时，不能把等待计时重置成重启那一刻。
     """
     prev_extra = _store().get(job_id).get("extra") or {}
     prev = prev_extra.get("cloud_submit") or {}
     if prev.get("url") == source and prev.get("inbox") == my_inbox \
             and prev.get("before") is not None:
         job_event(job_id, "stage", f"cloud 续接（有提交记录，不重复提交）到 {my_inbox}")
-        return {"before": dict(prev.get("before") or {}), "inbox": my_inbox}
+        return {"before": dict(prev.get("before") or {}), "inbox": my_inbox,
+                "submitted_at": float(prev.get("at") or time.time())}
     job_event(job_id, "stage", f"cloud 提交到 {my_inbox}")
     submitted = cloudadd.submit(backend, source, my_inbox)
+    at = time.time()
     job_update(job_id, extra={**prev_extra, "cloud_inbox": my_inbox, "cloud_url": source,
                               "cloud_submit": {"url": source, "inbox": my_inbox,
                                                "before": submitted["before"],
-                                               "at": time.time()}})
-    return submitted
+                                               "at": at}})
+    return {**submitted, "submitted_at": at}
 
 
 def xlp_apply_credentials(text: str, kind: str = "") -> dict:
@@ -1461,7 +1433,8 @@ def _cloud_run(job_id: str, source: str, code: str, key: str,
         return await cloudadd.wait_landing(
             backend, my_inbox, submitted["before"], source, get=get_setting,
             progress=on_progress, check_cancel=lambda: cancel_requested(job_id),
-            lease_check=lambda: require_lease(job_id, code))
+            lease_check=lambda: require_lease(job_id, code),
+            submitted_at=float(submitted.get("submitted_at") or 0))
 
     try:
         phase = time.monotonic()
@@ -1487,7 +1460,7 @@ def _cloud_run(job_id: str, source: str, code: str, key: str,
         for f in failed:
             job_event(job_id, "failed", f"整理 {f.get('source')} 失败：{f.get('error')}")
     return {"landed": [x.folder for x in landed], "records": records,
-            "inbox": my_inbox, "dest": dest, "_backend": backend,
+            "inbox": my_inbox, "inbox_root": inbox, "dest": dest, "_backend": backend,
             # 1.4：清理挪到记账之后，由调用方在归档落盘成功后执行
             "cleanup": pending, "failed": failed}
 
@@ -1524,6 +1497,7 @@ def _finish_cloud(job_id: str, source: str, out: dict) -> None:
             infohash=str(extra.get("infohash") or ""))
         _archive_lease(job_id, folder)
         core.update_state(STATE, {folder: record})
+        coverstore.warm_meta(record.get("meta") or {})
         job_event(job_id, "done", f"{folder} · {core.human_size(size)} · 云盘")
     last = records[-1]
     # extra 可能读不出来（序列化损坏）或不是字典 —— 那种情况下照样把归档
@@ -1545,6 +1519,16 @@ def _finish_cloud(job_id: str, source: str, out: dict) -> None:
 # 进程身份：租约写在任务记录里，谁持租谁执行；进程重启后 id 变了，
 # 旧租约自然会被判为过期（STALE_BEAT）而允许接手。
 PROC_ID = f"web-{os.getpid()}-{int(time.time())}"
+
+
+def _foreign_web_owner(owner: str) -> bool:
+    """上一代 web 进程留下的租约。
+
+    容器重启后 PID 经常复用（都是 1），不能只看 PID；PROC_ID 里的启动时间
+    能区分代次。旧进程已经不在了，但心跳可能还没过期（STALE_BEAT=120s），
+    只看心跳会把重启恢复卡在「resumed 之后没人接」。
+    """
+    return bool(owner) and owner.startswith("web-") and not owner.startswith(PROC_ID + ":")
 # 心跳间隔：取租约过期阈值的三分之一，漏两次都不会被误判为失联
 HEARTBEAT_INTERVAL = store.STALE_BEAT / 3
 # job_id -> 本次执行的租约 token。同一条记录可能被重试/恢复重新领取，
@@ -1725,6 +1709,29 @@ def run_web_job(job_id: str, source: str, code: str) -> None:
             lease_check=lambda: require_lease(job_id, code),
             event=lambda kind, detail: job_event(job_id, kind, detail))
         clock["clean"] = time.monotonic() - phase
+        if (leftover and not (out.get("failed") or [])
+                and get_setting("AUTO_CLEAN_SOURCE")):
+            clean_inbox = out.get("inbox") or ""
+            clean_root = out.get("inbox_root") or ""
+            try:
+                cloudadd.purge_task_inbox(
+                    backend_, clean_inbox, protected_root=clean_root,
+                    lease_check=lambda: require_lease(job_id, code),
+                    event=lambda kind, detail: job_event(job_id, kind, detail))
+                leftover = []
+            except (Cancelled, LossOfLease):
+                raise
+            except Exception as exc:        # noqa: BLE001 自动清理失败仍挂账
+                log.warning("自动清理任务收件目录 %s 失败：%s", clean_inbox, exc)
+                leftover.append({
+                    "source": clean_inbox, "src_root": clean_root,
+                    "dst_root": out.get("dest") or "", "target": "",
+                    "error": f"自动清理失败：{str(exc)[:160]}"})
+        if not leftover and lease_alive(job_id):
+            raw = (_store().get(job_id) or {}).get("extra")
+            extra = raw if isinstance(raw, dict) else {}
+            if extra.get("cleanup_pending"):
+                job_update(job_id, extra={**extra, "cleanup_pending": []})
         if leftover and lease_alive(job_id):
             job_update(job_id, extra={**(_store().get(job_id).get("extra") or {}),
                                       "cleanup_pending": leftover})
@@ -1808,6 +1815,23 @@ _waiting_lock = threading.Lock()
 # 任务什么时候开始排队的（记录用；不再有排队超时）
 _queued_at: dict[str, float] = {}
 
+# 全局并发闸门：所有来源（订阅/手动/恢复）合计，同时只允许这么多条真正开工。
+# 记的是本进程已经起线程的 job_id；重启后从库恢复的任务重新排队，由
+# pump_queue 按同一上限逐条放行。释放槽位的线程会立刻再 pump 一次补位。
+_admit_lock = threading.Lock()
+_active_jobs: set[str] = set()
+# 有槽位释放时叫醒调度线程补位，不必干等满 30 秒
+_queue_wake = threading.Event()
+
+
+def max_active_jobs() -> int:
+    """同时执行的任务数上限（设置可热改；读坏了按默认值兜底）。"""
+    try:
+        limit = int(get_setting("MAX_ACTIVE_JOBS"))
+    except (TypeError, ValueError):
+        limit = 0
+    return max(1, limit)
+
 def _pending_jobs() -> list[dict]:
     """正在占用下载槽的任务快照，算已占用的空间额度用。
 
@@ -1835,35 +1859,43 @@ def admit(job_id: str) -> bool:
     admit()，恢复窗口里新提交/重新入队的任务照样开下载。闸门关着时任务留在
     WAITING 里等 pump_queue 放行，不丢、也不落成终态。
 
+    **全局并发上限也在这里判**：订阅、手动、恢复合计只允许 MAX_ACTIVE_JOBS
+    条真正开工，超出的留在 WAITING 排队，前一条收尾后由调度线程补位。
+
     这里**不再判磁盘空间**（2026-10-25 起取消本地下载）：文件全程在云盘里，
     不落本地磁盘，本地还剩多少空间与这条任务能不能开工无关 ——
     以前按剩余空间拦着，磁盘满了任务就永远排着队，而它其实一个字节都不占本地。
     """
     if not scheduling_open():
         return False
-    with _waiting_lock:
-        item = WAITING.get(job_id)
-        if item is None:
+    with _admit_lock:
+        # 并发闸门：名额判断与领取放在同一把锁里，避免两个入口同时看到「还有空」
+        if len(_active_jobs) >= max_active_jobs():
             return False
-        source, code = item
-        token = f"{PROC_ID}:{job_id}:{uuid4().hex[:12]}"
-        if not _store().claim_owner(job_id, token):
-            job_event(job_id, "busy", "租约已被其他执行者持有，交还队列等下一轮")
-            return False
-        _store().update_cas(job_id, token, stage="downloading", error="")
-        WAITING.pop(job_id, None)
-        _queued_at.pop(job_id, None)
-        with _lease_lock:
-            LEASES[job_id] = token
-        with _jobs_lock:
-            JOBS.setdefault(job_id, {}).update(
-                {"stage": "downloading", "error": "", "queued_position": 0})
+        with _waiting_lock:
+            item = WAITING.get(job_id)
+            if item is None:
+                return False
+            source, code = item
+            token = f"{PROC_ID}:{job_id}:{uuid4().hex[:12]}"
+            if not _store().claim_owner(job_id, token):
+                job_event(job_id, "busy", "租约已被其他执行者持有，交还队列等下一轮")
+                return False
+            _store().update_cas(job_id, token, stage="downloading", error="")
+            WAITING.pop(job_id, None)
+            _queued_at.pop(job_id, None)
+            with _lease_lock:
+                LEASES[job_id] = token
+            with _jobs_lock:
+                JOBS.setdefault(job_id, {}).update(
+                    {"stage": "downloading", "error": "", "queued_position": 0})
+            _active_jobs.add(job_id)
     job_event(job_id, "claimed", token)
 
     def work() -> None:
-        _remember_thread(job_id)
-        _EXECUTION.set((job_id, token, _store()))
         try:
+            _remember_thread(job_id)
+            _EXECUTION.set((job_id, token, _store()))
             run_web_job(job_id, source, code)
         except Exception:
             # run_web_job 自己处理业务异常；走到这里的是它没兜住的那类（例如
@@ -1879,8 +1911,22 @@ def admit(job_id: str) -> bool:
         finally:
             with _threads_lock:
                 _threads.pop(job_id, None)
+            with _admit_lock:
+                _active_jobs.discard(job_id)
+            _queue_wake.set()          # 叫醒调度线程，立刻给下一条补位
 
-    threading.Thread(target=work, daemon=True, name=f"job-{job_id}").start()
+    try:
+        threading.Thread(target=work, daemon=True, name=f"job-{job_id}").start()
+    except Exception:
+        log.exception("任务 %s 的后台线程启动失败", job_id)
+        with _admit_lock:
+            _active_jobs.discard(job_id)
+        try:
+            job_update(job_id, stage="failed", error="后台线程启动失败，详见服务日志")
+        except Exception:
+            log.exception("任务 %s 的失败状态也没能落库", job_id)
+        _queue_wake.set()
+        return False
     return True
 
 def pump_queue() -> int:
@@ -1913,7 +1959,6 @@ def _refresh_queue_positions() -> None:
                 JOBS.setdefault(job_id, {}).update(
                     {"stage": "queued", "queued_position": idx, "error": hint})
 
-_last_clean = 0.0
 
 def requeue(job_id: str, source: str, code: str, stage: str = "queued") -> bool:
     """把已有任务重新放回磁盘闸门的队列（重启恢复、延期到期、手动重试都走这里）。
@@ -1923,7 +1968,12 @@ def requeue(job_id: str, source: str, code: str, stage: str = "queued") -> bool:
     job = _store().get(job_id)
     if not job:
         return False
-    if job.get("exec_owner") and float(job.get("exec_beat") or 0) >= time.time() - store.STALE_BEAT:
+    owner = str(job.get("exec_owner") or "")
+    if _foreign_web_owner(owner):
+        # 重启恢复：旧进程已经退出，但心跳可能还在 120s 窗口内。先释放，
+        # 否则下面的 admit→claim_owner 会拒绝接手，任务永远停在原阶段。
+        _store().release(job_id, owner)
+    elif owner and float(job.get("exec_beat") or 0) >= time.time() - store.STALE_BEAT:
         return False
     if not int(job.get("total") or 0) and code:
         # 体积未知就按同系列历史中位数估，否则闸门把 need 当 0 直接放行
@@ -2072,20 +2122,6 @@ def _resume_loop() -> None:
         log.info("重启恢复：入队 %d 个（其中 %d 个排队等空间），失败 %d 个",
                  out["requeued"], out["held"], out["failed"])
 
-def _panel_clean_tick() -> None:
-    """每天一次清掉面板里过期的失败任务记录（PANEL_CLEAN_DAYS>0 才启用）。"""
-    global _last_clean
-    pcd = get_setting("PANEL_CLEAN_DAYS")
-    if pcd <= 0 or time.time() - _last_clean < 86400:
-        return
-    _last_clean = time.time()
-    try:
-        out = clean_panel_errors(pcd, confirm=True)
-        if out.get("deleted"):
-            log.info("清理面板失败任务 %d 条", len(out["deleted"]))
-    except Exception as exc:
-        log.warning("清理面板失败任务出错：%s", exc)
-
 # ─────────────────────────────────────────── 每日 tick
 #
 # 每天做四件以前只有人能手动触发的事：
@@ -2169,7 +2205,6 @@ def _queue_loop() -> None:
     """后台调度：定期放行排队中的任务。"""
     while True:
         try:
-            _panel_clean_tick()
             try:
                 _daily_tick()
             except Exception:
@@ -2178,7 +2213,9 @@ def _queue_loop() -> None:
             pump_queue()
         except Exception:
             log.exception("调度出错")
-        time.sleep(DISK_CHECK_INTERVAL)
+        # 平时按固定间隔轮询；有任务收尾释放槽位时会 set，立即醒来补位
+        _queue_wake.wait(DISK_CHECK_INTERVAL)
+        _queue_wake.clear()
 
 _job_seq = 0
 _job_seq_lock = threading.Lock()
@@ -2198,7 +2235,7 @@ def start_job(source: str, code: str, info: dict | None = None) -> str:
         return ""
     # 入队事件由 store.start 与登记一起落库（时间戳一致），这里不再重复记
     job_update(job_id, stage="queued", percent=0.0, speed=0)
-    btih = xunlei.info_hash_of(source)
+    btih = xunleipan.info_hash_of(source)
     if btih:
         # 记下 infohash 作为「这是本任务投的」的证据，重启后才能续接自己的任务
         job_update(job_id, extra={**_store().get(job_id).get("extra", {}), "infohash": btih})
@@ -2247,6 +2284,7 @@ def backfill_meta(limit: int = 50) -> dict:
             failed.append(code)
             continue
         core.update_state(STATE, {key: {**state[key], "meta": info}})
+        coverstore.warm_meta(metadata.normalize_meta(info))
         done.append(code)
     return {"ok": True, "updated": done, "failed": failed,
             "remaining": max(0, len(todo) - len(done) - len(failed))}
@@ -2295,11 +2333,12 @@ def subs_snapshot() -> list[dict]:
 
 
 def add_sub(actor: str, max_per_run: int = 1, max_size_gb: float = 0,
-            name: str = "", kind: str = "actor", source: str = "javbus") -> dict:
-    """加一个订阅（演员或番号系列）。游标设成今天，只抓之后出的新片，不回填历史。
+            name: str = "", kind: str = "actor", source: str = "javbus",
+            filters: dict | None = None) -> dict:
+    """加一个订阅（演员或番号系列）。
 
-    source=javbus 时 ID 是站内 ID（演员如 `w5a`）；source=javdb 时是 /actors/xxx。
-    两者 ID 空间不同，键带 kind 区分，避免把同一个 ID 当成两种对象。
+    完整系列（full_series=True）时游标设为空串，触发全量历史回填；
+    否则游标设成今天，只抓之后出的新片，不回填历史。
     """
     if kind not in ("actor", "series"):
         kind = "actor"
@@ -2324,12 +2363,42 @@ def add_sub(actor: str, max_per_run: int = 1, max_size_gb: float = 0,
         subs_save(data)                     # 老键一次性迁成新格式
     if key in data:
         return {"ok": False, "error": f"{sub_id} 已经订阅过了"}
+    clean_filters = subscribe.sub_filters({"filters": filters, "max_size_gb": max_size_gb})
+    cursor = "" if clean_filters.get("full_series") else time.strftime("%Y-%m-%d")
     sub = subscribe.new_sub(sub_id, name or sub_id,
-                            cursor=time.strftime("%Y-%m-%d"),
+                            cursor=cursor,
                             max_per_run=max_per_run, max_size_gb=max_size_gb,
-                            kind=kind, source=source)
+                            kind=kind, source=source,
+                            filters=clean_filters)
     sub["key"] = key
     data[key] = sub
+    subs_save(data)
+    return {"ok": True, "sub": sub}
+
+
+def update_sub(key: str, updates: dict) -> dict:
+    """更新订阅的设置或筛选条件。"""
+    data = subs_load()
+    resolved_key = _resolve_key(data, key)
+    if not resolved_key:
+        return {"ok": False, "error": "订阅不存在"}
+    sub = data[resolved_key]
+    if "name" in updates:
+        sub["name"] = str(updates["name"] or "").strip() or sub.get("id") or resolved_key
+    if "max_per_run" in updates:
+        sub["max_per_run"] = max(1, int(updates["max_per_run"]))
+    if "max_size_gb" in updates:
+        sub["max_size_gb"] = max(0.0, float(updates["max_size_gb"]))
+    if "enabled" in updates:
+        sub["enabled"] = bool(updates["enabled"])
+    if "filters" in updates:
+        cur_filters = sub.get("filters") or {}
+        new_filters = subscribe.sub_filters({"filters": updates["filters"],
+                                             "max_size_gb": sub.get("max_size_gb") or 0})
+        # 如果从追新模式切换为全量回填，且当前游标非空，重置游标触发全量拉取
+        if new_filters.get("full_series") and not cur_filters.get("full_series"):
+            sub["cursor"] = ""
+        sub["filters"] = new_filters
     subs_save(data)
     return {"ok": True, "sub": sub}
 
@@ -2365,6 +2434,35 @@ def known_codes_now() -> set[str]:
     return codes
 
 
+BACKLOG_GROUPS = ("retry", "no_magnet", "no_quality", "filtered",
+                  "active", "done", "skipped")
+
+
+def _backlog_group(state: str, note: str, job: dict) -> str:
+    """把「为什么还没下到」归成可筛选的几类。
+
+    pending 的 note 是 fetch_best 写回的人话；这里只做归类，不改原文，
+    这样界面既能分堆，也能在原行里看到具体是哪一步没过。
+    """
+    if state == backlog.DONE:
+        return "done"
+    if state == backlog.SKIPPED:
+        return "skipped"
+    if state == backlog.QUEUED:
+        stage = str((job or {}).get("stage") or "")
+        return "retry" if stage in ("failed", "cancelled") else "active"
+    note = (note or "").strip()
+    if not note:
+        return "retry"
+    if "还没有磁力" in note or "没有磁力" in note or "候选都试过了" in note:
+        return "no_magnet"
+    if "非高清" in note or "清晰度" in note:
+        return "no_quality"
+    if note.startswith("未满足筛选") or "超过上限" in note or "低于下限" in note:
+        return "filtered"
+    return "retry"
+
+
 def backlog_view(key: str = "", limit: int = 200) -> dict:
     """待办中心：每条都解释「为什么还没下、什么时候再查、关联哪个任务」。
 
@@ -2389,14 +2487,19 @@ def backlog_view(key: str = "", limit: int = 200) -> dict:
                 why = (f"{max(0, int((next_at - time.time()) / 60))} 分钟后再查"
                        if next_at > time.time() else "下一轮就会尝试")
             elif state == backlog.QUEUED:
-                why = f"任务 {job.get('stage') or '进行中'}" + (
-                    f"：{job['error']}" if job.get("error") else "")
+                stage = job.get("stage") or "进行中"
+                if stage in ("failed", "cancelled"):
+                    why = "上次任务失败" + (f"：{job['error']}" if job.get("error") else "")
+                else:
+                    why = f"任务 {stage}" + (
+                        f"：{job['error']}" if job.get("error") else "")
             elif state == backlog.SKIPPED:
                 why = "已按策略跳过"
             else:
                 why = "已归档"
             rows.append({
                 "sub": sub_key, "code": code, "state": state,
+                "group": _backlog_group(state, item.get("note") or "", job),
                 "date": item.get("date") or "", "title": item.get("title") or "",
                 "tries": int(item.get("tries") or 0), "next_at": next_at,
                 "why": why, "note": item.get("note") or "",
@@ -2404,25 +2507,70 @@ def backlog_view(key: str = "", limit: int = 200) -> dict:
                 "tried": list(item.get("tried") or []),
             })
     rows.sort(key=lambda r: (r["state"] != backlog.PENDING, r["date"], r["code"]))
+    groups = {g: sum(1 for r in rows if r["group"] == g) for g in BACKLOG_GROUPS}
+    groups["all"] = len(rows)
     return {"ok": True, "items": rows[:max(1, int(limit))],
+            "groups": groups,
             "counts": {s: sum(1 for r in rows if r["state"] == s)
                        for s in (backlog.PENDING, backlog.QUEUED,
                                  backlog.SKIPPED, backlog.DONE)}}
 
 
 def retry_backlog(code: str, sub_key: str = "") -> dict:
-    """用户手动「再试一次」：把条目拉回 pending 并立刻可查（清掉退避与试过的候选）。"""
+    """用户手动「再试一次」：清掉退避后立刻查一次磁力，有就提交，没就写回原因。"""
+    code = (code or "").strip().upper()
     todo = backlog_load()
-    target = sub_key or next((k for k, b in todo.items() if code.upper() in b), "")
-    if not target:
-        return {"ok": False, "error": "待办里没有这个番号"}
-    item = (todo.get(target) or {}).get(code.upper())
+    target = sub_key or next((k for k, b in todo.items() if code in b), "")
+    item = (todo.get(target) or {}).get(code) if target else None
     if not item:
         return {"ok": False, "error": "待办里没有这个番号"}
+    data = subs_load()
+    if code in known_codes_now():
+        backlog.mark(todo, target, code, backlog.QUEUED, "已在归档或下载中")
+        item.pop("job_id", None)
+        subs_save(data, todo)
+        return {"ok": True, "sub": target, "code": code, "started": False,
+                "why": "已在归档或下载中"}
     item.update({"state": backlog.PENDING, "tries": 0, "next_at": 0, "note": "手动重试"})
     item.pop("job_id", None)
-    subs_save(subs_load(), todo)
-    return {"ok": True, "sub": target, "code": code.upper()}
+    sub = data.get(target) or {}
+    if target == WISH_KEY:
+        max_gb = float(item.get("max_size_gb") or 0)
+        filters = {}
+    else:
+        max_gb = float(sub.get("max_size_gb") or 0)
+        filters = subscribe.sub_filters(sub)
+    try:
+        best, why = asyncio.run(subscribe.fetch_best(
+            code, max_gb, tried=backlog.tried_of(todo, target, code),
+            filters=filters))
+    except Exception as exc:          # noqa: BLE001 网络问题要落回条目上，不能让按钮看起来没反应
+        log.warning("手动重试 %s 查询磁力失败：%s", code, exc)
+        item.update({"state": backlog.PENDING, "tries": 0, "next_at": 0,
+                     "note": f"查询失败：{str(exc)[:160]}"})
+        subs_save(data, todo)
+        return {"ok": False, "error": f"查询磁力失败：{str(exc)[:160]}"}
+    if not best:
+        why = why or "还没有磁力"
+        backlog.mark(todo, target, code, backlog.PENDING, why)
+        subs_save(data, todo)
+        return {"ok": True, "sub": target, "code": code, "started": False,
+                "why": why}
+    record = todo.get(target, {}).get(code) or {}
+    job_id = start_job(best["magnet"], code,
+                       {"name": record.get("title") or code,
+                        "size": int(best.get("size_mb") or 0) * 1024 * 1024,
+                        "screenshots": []})
+    if not job_id:
+        backlog.mark(todo, target, code, backlog.PENDING, "任务表里已有同番号任务")
+        subs_save(data, todo)
+        return {"ok": True, "sub": target, "code": code, "started": False,
+                "why": "任务表里已有同番号任务"}
+    backlog.mark(todo, target, code, backlog.QUEUED, f"job {job_id}", job_id=job_id)
+    backlog.note_tried(todo, target, code, best["magnet"])
+    subs_save(data, todo)
+    return {"ok": True, "sub": target, "code": code, "started": True,
+            "job": job_id, "size_mb": best.get("size_mb") or 0}
 
 
 def ignore_backlog(code: str, sub_key: str = "") -> dict:
@@ -2523,17 +2671,45 @@ def run_subscriptions(only: str = "") -> dict:
             continue
         budget = max(1, int(sub.get("max_per_run") or 1))
         max_gb = float(sub.get("max_size_gb") or 0)
+        filters = subscribe.sub_filters(sub)
+        full_series = bool(filters.get("full_series"))
         started, skipped = [], []
         error = ""
 
         if (sub.get("source") or "javbus") == "javbus":
             # 网络请求放在事务外：抓取可能要十几秒，不能攥着写锁
+            disc_kwargs = {"kind": sub.get("kind") or "actor"}
+            if full_series:
+                try:
+                    import inspect
+                    sig = inspect.signature(subscribe.discover_javbus)
+                    if "full_series" in sig.parameters:
+                        disc_kwargs["full_series"] = True
+                    else:
+                        disc_kwargs["pages"] = 50
+                except Exception:
+                    disc_kwargs["full_series"] = True
             found = asyncio.run(subscribe.discover_javbus(
                 sub.get("id") or key, sub.get("cursor") or "",
-                kind=sub.get("kind") or "actor"))
+                **disc_kwargs))
             error = found["error"]
             if found["items"]:
-                backlog.remember(todo, key, found["items"], today)
+                # 如果配置了关键词筛选，在番号/标题级别过滤
+                inc_kw = filters.get("include_keywords") or ""
+                exc_kw = filters.get("exclude_keywords") or ""
+                kept_items = []
+                for it in found["items"]:
+                    ok, why = subscribe.match_item_keywords(
+                        it.get("code") or "", it.get("title") or "",
+                        include_keywords=inc_kw,
+                        exclude_keywords=exc_kw)
+                    if ok:
+                        kept_items.append(it)
+                    else:
+                        backlog.remember(todo, key, [it], today)
+                        backlog.mark(todo, key, it["code"], backlog.SKIPPED, why)
+                if kept_items:
+                    backlog.remember(todo, key, kept_items, today)
             data[key]["cursor"] = found["cursor"]
             # 只填了裸 ID 的订阅，补一个能看懂的名字（用户自己起过的不要覆盖）
             if found.get("name") and data[key].get("name") in ("", data[key].get("id")):
@@ -2549,8 +2725,28 @@ def run_subscriptions(only: str = "") -> dict:
             if code in known:
                 backlog.mark(todo, key, code, backlog.QUEUED, "已在归档或下载中")
                 continue
+            record = (todo.get(key) or {}).get(code) or {}
+            # 关键词过滤双重校验（防止遗留 pending 条目未被过滤）
+            ok, why = subscribe.match_item_keywords(
+                code, record.get("title") or "",
+                include_keywords=filters.get("include_keywords") or "",
+                exclude_keywords=filters.get("exclude_keywords") or "")
+            if not ok:
+                backlog.mark(todo, key, code, backlog.SKIPPED, why)
+                skipped.append({"code": code, "why": why})
+                continue
+
+            best_kwargs = {"tried": backlog.tried_of(todo, key, code)}
+            try:
+                import inspect
+                sig = inspect.signature(subscribe.fetch_best)
+                if "filters" in sig.parameters:
+                    best_kwargs["filters"] = filters
+            except Exception:
+                best_kwargs["filters"] = filters
+
             item, why = asyncio.run(subscribe.fetch_best(
-                code, max_gb, tried=backlog.tried_of(todo, key, code)))
+                code, max_gb, **best_kwargs))
             if not item:
                 backlog.mark(todo, key, code, backlog.PENDING, why)
                 skipped.append({"code": code, "why": why})
@@ -2712,16 +2908,6 @@ def build_cleanup_plan(dry_run: bool = True) -> dict:
     return result
 
 
-def _drop_share(backend, record: dict) -> None:
-    """删归档时顺手删掉当初建的分享（OpenList）。取不到 id 就什么都不做。"""
-    hook = getattr(backend, "drop_share", None)
-    if hook is None:
-        return
-    sid = storage.openlist_link_id((record or {}).get("link") or "")
-    if sid:
-        hook(sid)
-
-
 def purge_archives(codes_to_drop: list[str]) -> list[dict]:
     """真正删除：远端目录 + state 记录。任一失败就保留记录，便于重试。"""
     done = []
@@ -2743,21 +2929,12 @@ def purge_archives(codes_to_drop: list[str]) -> list[dict]:
         except storage.StorageError as exc:
             log.warning("删除 %s 跳过：%s", code, exc)
             continue
-        if backend.kind != "rclone":
-            try:
-                # 按记录定位（1.5）：云添加的归档在 CLOUD_DEST，不能拿全局根拼路径
-                receipt = backend.purge(archive_locator(record))
-            except storage.StorageError as exc:
-                log.warning("删除 %s 失败：%s", code, exc)
-                continue
-            log.info("删除 %s：%s", code, receipt)
-            _drop_share(backend, record)
-        else:
-            target = f"{RCLONE_REMOTE}:{rel}"
-            rc, _, err = rclone("purge", target, timeout=1800.0)
-            if rc != 0:
-                log.warning("删除 %s 失败：%s", code, err.strip()[:200])
-                continue
+        try:
+            receipt = backend.purge(rel)
+        except storage.StorageError as exc:
+            log.warning("删除 %s 失败：%s", code, exc)
+            continue
+        log.info("删除 %s：%s", code, receipt)
         if code in state:
             state.pop(code, None)
             core.save_state(STATE, state)
@@ -2801,37 +2978,11 @@ def rename_archive(old: str, new: str) -> dict:
         base = archive_locator(state[old])
     except storage.StorageError as exc:
         return {"ok": False, "error": str(exc)}
-    if backend.kind != "rclone":
-        return _rename_archive_backend(backend, old, wanted, state)
-
-    parent = base.rsplit("/", 1)[0] if "/" in base else ""
-    src = f"{RCLONE_REMOTE}:{base}"
-    dst_rel = f"{parent}/{wanted}".strip("/")
-    dst = f"{RCLONE_REMOTE}:{dst_rel}"
-    rc, out, err = rclone("lsf", f"{RCLONE_REMOTE}:{parent}", "--dirs-only", timeout=180.0)
-    if rc == 0 and wanted in {line.strip().strip("/") for line in out.splitlines()}:
-        return {"ok": False, "error": f"Drive 里已有 {DRIVE_ROOT}/{wanted}，先处理掉同名目录"}
-
-    rc, _, err = rclone("move", src, dst, timeout=3600.0)
-    if rc != 0:
-        return {"ok": False, "error": f"移动 Drive 目录失败：{err.strip()[:200]}"}
-    rclone("rmdir", src, timeout=180.0)          # 搬干净后空目录留着没用
-
-    record = dict(state[old])
-    record["code"] = wanted
-    record["path"] = dst
-    if record.get("rel"):
-        record["rel"] = dst_rel
-    rc, out, _ = rclone("link", dst, timeout=120.0)
-    if rc == 0 and out.strip().startswith("http"):
-        record["link"] = out.strip()
-    core.rekey_state(STATE, old, wanted, record)
-    log.info("归档改名 %s → %s", old, wanted)
-    return {"ok": True, "from": old, "code": wanted, "link": record.get("link") or ""}
+    return _rename_archive_backend(backend, old, wanted, state)
 
 
 def _rename_archive_backend(backend, old: str, wanted: str, state: dict) -> dict:
-    """OpenList / CloudDrive2 的改名：列一遍根目录查重，再让后端自己改名。
+    """CloudDrive2 的改名：列一遍根目录查重，再让后端自己改名。
 
     顺序仍是「先动远端、再动记录」：远端失败就原样留着，重试安全。
     改的是**记录定位的那个目录**（1.5）：云添加的归档在 CLOUD_DEST，
@@ -2867,19 +3018,13 @@ def _rename_archive_backend(backend, old: str, wanted: str, state: dict) -> dict
 
 
 def wanted_name(key: str, record: dict) -> str:
-    """规范名：`YYYY-MM-DD 番号 标题`（有元数据时），否则只有番号。
+    """规范名：只保留番号本身，例如 TCHB-029。
 
-    只留文件名安全字符，长度封顶 —— 目录名过长的通配/同步工具会出错。
+    云盘目录名要能直接按番号检索，不掺日期和标题；识别不出番号时返回空串，
+    让调用方保持原名（`unclassified-…` 不动）。
     """
     base = codes.canonical(key) or codes.canonical((record or {}).get("code") or "")
-    if not base:
-        return ""
-    meta = (record or {}).get("meta") or {}
-    date = (meta.get("release_date") or "").strip()[:10]
-    title = re.sub(r"[^0-9A-Za-z\u3040-\u30ff\u4e00-\u9fff]+", "-", meta.get("title") or "")
-    title = title.strip("-")[:100 - len(base) - len(date)]
-    parts = [p for p in (date if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) else "", base, title) if p]
-    return " ".join(parts)[:100]
+    return base
 
 def normalize_plan() -> dict:
     """扫一遍归档，按规范给出改名清单。
@@ -2951,40 +3096,6 @@ def series_median(code: str, state: dict) -> int:
     mid = len(sizes) // 2
     return sizes[mid] if len(sizes) % 2 else (sizes[mid - 1] + sizes[mid]) // 2
 
-def panel_errors(days: float) -> list[dict]:
-    """面板里失败超过 days 天的任务记录（不含今天的）：僵尸清理由此驱动。"""
-    cutoff = time.time() - max(0.0, days) * 86400
-    out = []
-    for item in panel_tasks().get("tasks") or []:
-        if item.get("phase") != xunlei.ERROR:
-            continue
-        try:
-            when = datetime.datetime.fromisoformat(item.get("updated") or "").timestamp()
-        except (TypeError, ValueError):
-            continue
-        if when < cutoff:
-            out.append(item)
-    return out
-
-def clean_panel_errors(days: float = 7.0, confirm: bool = False) -> dict:
-    """清理面板里的失败任务记录。默认只出清单，confirm 才真删。"""
-    victims = panel_errors(days)
-    if not confirm:
-        return {"ok": True, "days": days, "delete": victims,
-                "hint": "需要 confirm=true 才会删除"}
-    xl = xunlei_client()
-    done, failed = [], []
-    for item in victims:
-        async def one(task_id=item["id"]):
-            async with xl.client() as client:
-                await xl.remove(client, task_id)
-        try:
-            asyncio.run(one())
-            done.append(item["id"])
-        except Exception as exc:
-            failed.append({"id": item["id"], "error": str(exc)[:200]})
-    return {"ok": True, "deleted": done, "failed": failed}
-
 def subscribe_suggestions(limit: int = 8) -> dict:
     """从已归档元数据里统计常看的演员与系列，供一键订阅。
 
@@ -3013,7 +3124,8 @@ def subscribe_suggestions(limit: int = 8) -> dict:
             "archived": len(state)}
 
 def subscribe_from_suggestion(kind: str, name: str, max_per_run: int = 1,
-                              max_size_gb: float = 0, sub_id: str = "") -> dict:
+                              max_size_gb: float = 0, sub_id: str = "",
+                              filters: dict | None = None) -> dict:
     """把建议落成订阅：显式给的 ID 优先，其次缓存，最后联网解析。
 
     手填的 ID 会写进缓存 —— 同一个名字下次就不用再问。
@@ -3031,7 +3143,7 @@ def subscribe_from_suggestion(kind: str, name: str, max_per_run: int = 1,
         if name:
             meta._save_id(name, kind, parsed)
         return add_sub(parsed, max_per_run=max_per_run, max_size_gb=max_size_gb,
-                       name=name or parsed, kind=kind)
+                       name=name or parsed, kind=kind, filters=filters)
     sub_id = meta.cached_id(name, kind)
     if not sub_id:
         try:
@@ -3041,7 +3153,7 @@ def subscribe_from_suggestion(kind: str, name: str, max_per_run: int = 1,
     if not sub_id:
         return {"ok": False, "error": f"站内搜不到「{name}」的 javdb ID，请手动填链接"}
     return add_sub(sub_id, max_per_run=max_per_run, max_size_gb=max_size_gb,
-                   name=name, kind=kind)
+                   name=name, kind=kind, filters=filters)
 
 def magnet_search(code: str, limit: int = 8) -> dict:
     """按番号搜磁力（只读，不提交），同时附上这个番号的元信息。
@@ -3085,37 +3197,6 @@ def magnet_preview(magnet: str) -> dict:
             "info": info or {}, "found": bool(info)}
 
 
-def panel_tasks() -> dict:
-    """迅雷面板里的任务（含本程序之外的），供看板展示，免得再开一个 2345 页面看队列。"""
-    xl = xunlei_client()
-
-    async def main() -> dict:
-        async with xl.client() as client:
-            tasks = await xl.tasks(client)
-        return {
-            "tasks": [
-                {
-                    "id": t.get("id"),
-                    "name": t.get("name") or "",
-                    "phase": t.get("phase") or "",
-                    "percent": float(t.get("progress") or 0),
-                    "speed": int((t.get("params") or {}).get("speed") or 0),
-                    "size": int(t.get("file_size") or 0),
-                    "error": (t.get("params") or {}).get("error") or "",
-                    "path": (t.get("params") or {}).get("real_path") or "",
-                    "updated": t.get("updated_time") or "",
-                }
-                for t in tasks
-                # 只留还没结束的：历史完成记录几十条，塞满侧栏没有意义
-                if (t.get("phase") or "") != xunlei.DONE
-            ]
-        }
-
-    try:
-        return asyncio.run(main())
-    except Exception as exc:
-        return {"error": str(exc)[:200], "tasks": []}
-
 def series_of(code: str) -> str:
     """系列名 = 番号去掉最后一段数字（SSIS-123 → SSIS，FC2-PPV-4422110 → FC2-PPV）。"""
     parts = [p for p in (code or "").split("-") if p]
@@ -3137,9 +3218,84 @@ def kind_of(files: list[str]) -> str:
     return "空目录"
 
 
+WATCH_KEY = "watch"
+WATCH_KEEP = 500
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number == number else default
+
+
+def watch_view() -> dict[str, dict]:
+    """观看状态：进度秒数、时长、百分比、是否看完、是否收藏。"""
+    raw = _store().state_get(WATCH_KEY)
+    out = {}
+    for code, record in (raw or {}).items():
+        if not isinstance(record, dict):
+            continue
+        pos = max(0.0, _as_float(record.get("pos")))
+        dur = max(0.0, _as_float(record.get("dur")))
+        pct = min(100, round(pos * 100 / dur)) if dur > 0 else 0
+        out[str(code).upper()] = {
+            "pos": round(pos, 1),
+            "dur": round(dur, 1),
+            "pct": pct,
+            "done": bool(record.get("done")),
+            "fav": bool(record.get("fav")),
+            "at": record.get("at") or "",
+        }
+    return out
+
+
+def watch_update(code: str, pos=None, dur=None, done=None, fav=None) -> dict:
+    """写一条观看状态。进度到 90% 自动算已看；收藏与进度分开存。"""
+    code = str(code or "").strip().upper()
+    if not code:
+        return {}
+
+    def merge(data: dict) -> dict:
+        old = data.get(code)
+        record = dict(old) if isinstance(old, dict) else {}
+        if dur is not None:
+            value = _as_float(dur)
+            if value > 0:
+                record["dur"] = round(value, 1)
+        if pos is not None:
+            record["pos"] = round(max(0.0, _as_float(pos)), 1)
+        duration = _as_float(record.get("dur"))
+        if duration > 0 and _as_float(record.get("pos")) > duration:
+            record["pos"] = round(duration, 1)
+        if done is not None:
+            record["done"] = bool(done)
+            if not record["done"]:
+                record["pos"] = round(max(0.0, _as_float(pos)), 1) if pos is not None else 0.0
+        if fav is not None:
+            record["fav"] = bool(fav)
+        if done is None and duration > 0 and _as_float(record.get("pos")) / duration >= 0.9:
+            record["done"] = True
+        if record.get("done") and duration > 0:
+            record["pos"] = round(duration, 1)
+        record["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        record["ts"] = time.time()
+        data[code] = record
+        if len(data) > WATCH_KEEP:
+            keep = sorted(data, key=lambda k: _as_float((data.get(k) or {}).get("ts")),
+                          reverse=True)[:WATCH_KEEP]
+            data = {k: data[k] for k in keep}
+        return data
+
+    _store().state_mutate(WATCH_KEY, merge)
+    return watch_view().get(code) or {}
+
+
 def collect() -> dict:
     """把 state 摊成看板要的列表：每条 = 一个番号。"""
     state = core.load_state(STATE)
+    watches = watch_view()
     items = []
     for key, item in state.items():
         files = item.get("files") or []
@@ -3168,6 +3324,7 @@ def collect() -> dict:
                 # 元数据只读缓存，不在渲染时联网；没抓过的用 backfill 补
                 "meta": metadata.normalize_meta(
                     item.get("meta") or meta.cached(code) or {}),
+                "watch": watches.get(str(code).upper()) or {},
             }
         )
     items.sort(key=lambda t: t["at"] or "", reverse=True)
@@ -3187,6 +3344,14 @@ def collect() -> dict:
         "health": {"parse": True},
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
+
+
+SPA_ROUTES = ("/", "/index.html", "/archive", "/search", "/rows", "/queue", "/subs", "/settings",
+              "/maint", "/logs")
+# 旧版看板单独挂在 /legacy，新版（Vue3）占默认路由。
+LEGACY_ROUTES = ("/legacy", "/legacy/", "/legacy/index.html")
+# 新版只做媒体库/清单/队列/设置四页；维护台与运行日志仍只有旧版有 → 302 过去。
+LEGACY_VIEW_PATHS = {"/logs": "logs", "/maint": "maint"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3328,6 +3493,31 @@ class Handler(BaseHTTPRequestHandler):
                 "count": len(ids), "preview": preview,
             })
             return
+        if path == "/api/watch":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            payload = self._payload(4096)
+            code = str(payload.get("code") or "").strip()
+            if not code:
+                self._json({"ok": False, "error": "缺少番号"}, 400)
+                return
+            record = _find_archive_record(core.load_state(STATE), code)
+            if not record:
+                self._json({"ok": False, "error": f"{code} 没有归档记录"}, 404)
+                return
+            done = payload.get("done")
+            fav = payload.get("fav")
+            watch = watch_update(
+                str(record.get("code") or code),
+                pos=payload.get("pos"),
+                dur=payload.get("dur"),
+                done=None if done is None else bool(done),
+                fav=None if fav is None else bool(fav),
+            )
+            self._json({"ok": True, "code": code, "watch": watch})
+            return
         if path == "/api/job/stop":
             if not self._authorized():
                 self._drain()
@@ -3417,55 +3607,6 @@ class Handler(BaseHTTPRequestHandler):
             result = rename_archive(payload.get("code") or "", payload.get("to") or "")
             self._json(result, 200 if result.get("ok") else 409)
             return
-        if path == "/api/xunlei/cleanup":
-            if not self._authorized():
-                self._drain()
-                self._json({"ok": False, "error": "unauthorized"}, 401)
-                return
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
-            except (ValueError, json.JSONDecodeError):
-                payload = {}
-            # days=0 表示「连今天的也算」：以前 `or` 会把 0 当成没填而退回 7 天，
-            # 于是刚失败的线段永远清不掉（面板上全是失败任务却一条也清不了）
-            raw_days = payload.get("days")
-            days = float(raw_days if raw_days is not None
-                         else (get_setting("PANEL_CLEAN_DAYS") or 7))
-            self._json(clean_panel_errors(days, bool(payload.get("confirm"))))
-            return
-        if path == "/api/xunlei/control":
-            if not self._authorized():
-                self._drain()
-                self._json({"ok": False, "error": "unauthorized"}, 401)
-                return
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                payload = json.loads(self.rfile.read(min(length, 4096)) or b"{}") or {}
-            except (ValueError, json.JSONDecodeError):
-                payload = {}
-            task_id = (payload.get("id") or "").strip()
-            action = (payload.get("action") or "").strip()
-            if not task_id or action not in ("pause", "resume", "delete"):
-                self._json({"ok": False, "error": "需要 id 与 action（pause/resume/delete）"}, 400)
-                return
-
-            async def control() -> None:
-                xl = xunlei_client()
-                async with xl.client() as client:
-                    if action == "delete":
-                        await xl.remove(client, task_id)
-                    elif action == "pause":
-                        await xl.pause(client, task_id)
-                    else:
-                        await xl.control(client, task_id, "running")
-
-            try:
-                asyncio.run(control())
-                self._json({"ok": True, "id": task_id, "action": action})
-            except Exception as exc:
-                self._json({"ok": False, "error": str(exc)[:200]}, 502)
-            return
         if path == "/api/jobs/clear":
             if not self._authorized():
                 self._drain()
@@ -3523,6 +3664,7 @@ class Handler(BaseHTTPRequestHandler):
                 int(payload.get("max_per_run") or 1),
                 float(payload.get("max_size_gb") or 0),
                 payload.get("id") or "",
+                filters=payload.get("filters"),
             )
             self._json(result, 200 if result.get("ok") else 400)
             return
@@ -3540,7 +3682,22 @@ class Handler(BaseHTTPRequestHandler):
                                int(payload.get("max_per_run") or 1),
                                float(payload.get("max_size_gb") or 0),
                                payload.get("name") or "",
-                               payload.get("kind") or "actor"))
+                               payload.get("kind") or "actor",
+                               payload.get("source") or "javbus",
+                               filters=payload.get("filters")))
+            return
+        if path == "/api/subs/update":
+            if not self._authorized():
+                self._drain()
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 8192)) or b"{}") or {}
+            except (ValueError, json.JSONDecodeError):
+                payload = {}
+            sub_id = payload.get("id") or payload.get("key") or ""
+            self._json(update_sub(sub_id, payload))
             return
         if path == "/api/subs/toggle":
             if not self._authorized():
@@ -3759,8 +3916,7 @@ class Handler(BaseHTTPRequestHandler):
             if code not in state:
                 self._json({"ok": False, "error": f"{code} 不在归档记录里"}, 404)
                 return
-            target = (f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}" if storage.kind() == "rclone"
-                      else f"{storage.kind()}:{storage.rel(code)}")
+            target = state[code].get("path") or ""
             # 删除不可逆：没显式 confirm 只回报将删什么
             if not payload.get("confirm"):
                 self._json({"ok": True, "code": code, "target": target,
@@ -3792,17 +3948,29 @@ class Handler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path == "/api/health":
             self._json(health())
             return
-        if not self._authorized():
-            path = urlsplit(self.path).path
-            self._login(page=path in ("/", "/index.html"))
-            return
         parts = urlsplit(self.path)
         path = parts.path
-        if path in ("/", "/index.html"):
+        if not self._authorized():
+            self._login(page=path in SPA_ROUTES or path in LEGACY_ROUTES
+                        or path in LEGACY_VIEW_PATHS)
+            return
+        if path in LEGACY_ROUTES:
             try:
                 body = HTML_PATH.read_bytes()
             except OSError as exc:
                 self._send(500, f"webui.html 读取失败: {exc}".encode(), "text/plain; charset=utf-8")
+                return
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+        if path in LEGACY_VIEW_PATHS:
+            self._send(302, b"", "text/plain; charset=utf-8",
+                       {"Location": f"/legacy#/{LEGACY_VIEW_PATHS[path]}"})
+            return
+        if path in SPA_ROUTES:
+            try:
+                body = TEMPLATE_PATH.read_bytes()
+            except OSError as exc:
+                self._send(500, f"index.html 读取失败: {exc}".encode(), "text/plain; charset=utf-8")
                 return
             self._send(200, body, "text/html; charset=utf-8")
             return
@@ -3925,8 +4093,13 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(urlsplit(self.path).query)
             self._json(magnet_search((query.get("code") or [""])[0]))
             return
-        if path == "/api/xunlei":
-            self._json(panel_tasks())
+        if path == "/api/logs":
+            query = parse_qs(parts.query)
+            self._json(logbuf.tail(
+                limit=int((query.get("limit") or ["300"])[0] or 300),
+                level=(query.get("level") or [""])[0],
+                q=(query.get("q") or [""])[0],
+            ))
             return
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -4098,8 +4271,6 @@ def backfill_infohash() -> dict:
     infohash 可以从记录里的磁力链接（source）反推，推不出来的（本地下载
     时代的老记录压根没存磁力）就跳过 —— 不编。
     """
-    from . import xunlei
-
     state = core.load_state(STATE) or {}
     updated, skipped = [], []
     for key, record in state.items():
@@ -4111,7 +4282,7 @@ def backfill_infohash() -> dict:
         if not source:
             skipped.append(key)
             continue
-        ih = xunlei.info_hash_of(source)
+        ih = xunleipan.info_hash_of(source)
         if not ih:
             skipped.append(key)
             continue
@@ -4316,7 +4487,7 @@ def scrape_sync(code: str, fields: dict | None = None, lock: list[str] | None = 
 def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> dict:
     """只把附件推到 Drive，不重传视频。
 
-    在一个临时目录里重新生成附件，再用 rclone 逐文件 copyto —— 视频已经在云端，
+    在一个临时目录里重新生成附件，再通过 CloudDrive2 逐文件上传 —— 视频已经在云端，
     重新整目录 copy 会把它当成新文件再传一遍。
 
     only 是「只重推这几个附件」的白名单（失败重试用）：只认固定的附件文件名，
@@ -4360,26 +4531,20 @@ def sync_attachments(code: str, record: dict, only: list[str] | None = None) -> 
         out = metadata.write_sidecar(work, rec, [], code=code, locks=locks,
                                      poster=poster, want_nfo=get_setting("SCRAPE_NFO"), keep=kept)
         generated = [n for n in out["written"] if n != metadata.MANIFEST_NAME]
-        target = f"{RCLONE_REMOTE}:{DRIVE_ROOT}/{code}"
         try:
             backend = storage_backend()
         except Exception as exc:
             raise RuntimeError(f"存储后端不可用：{exc}") from exc
         validate_archive_backend(backend, record)
         rel = archive_locator(record)            # 1.5：按记录定位，云归档在 CLOUD_ROOT
-        target = f"{RCLONE_REMOTE}:{rel}"
 
         def push(name: str) -> tuple[bool, str]:
             """推一个附件；返回 (是否成功, 失败原因)。"""
-            if backend.kind != "rclone":
-                try:
-                    backend.upload_file(work / name, f"{rel}/{name}")
-                    return True, ""
-                except storage.StorageError as exc:
-                    return False, str(exc)[:200]
-            rc, _, err = rclone("copyto", str(work / name), f"{target}/{name}",
-                                timeout=300.0)
-            return (True, "") if rc == 0 else (False, err.strip()[:200])
+            try:
+                backend.upload_file(work / name, f"{rel}/{name}")
+                return True, ""
+            except storage.StorageError as exc:
+                return False, str(exc)[:200]
 
         pushed, failed, skipped = [], [], []
         manifest_first = metadata.MANIFEST_NAME in out["written"]
@@ -4457,55 +4622,17 @@ def _record_after_sync(record: dict, work: Path, pushed: list, failed: list) -> 
 def validate_archive_backend(backend, record: dict) -> None:
     """Never apply an old record to a newly configured, different backend."""
     try:
-        metadata.validate_archive_backend(record, backend.kind, RCLONE_REMOTE)
+        metadata.validate_archive_backend(record, backend.kind)
     except ValueError as exc:
         raise storage.StorageError(str(exc)) from exc
 
 
-def _rel_from_path(path: str, code: str) -> str:
-    """从记录里的 `后端:远端/路径` 派生后端内相对路径。
-
-    只认**末段等于番号**的情况：路径写错、番号对不上时宁可返回空串，
-    让调用方退回全局根，而不是拿着一条可能指向别的目录的路径去删文件。
-    """
-    text = str(path or "").strip()
-    if not text or ":" not in text:
-        return ""
-    _kind, _, tail = text.partition(":")
-    rel = tail.strip("/")
-    if not rel or any(bit in (".", "..") for bit in rel.split("/")) or "\\" in rel:
-        return ""
-    if code and rel.rsplit("/", 1)[-1] != code:
-        return ""
-    return rel
-
-
 def archive_locator(record: dict) -> str:
-    """按归档记录定位远端目录，返回后端内相对路径。
-
-    记录里有 1.5 写入的定位三元组（backend/root/rel）就直接用 —— 云添加的
-    归档在 CLOUD_DEST，而全局 STORAGE_ROOT 可能是另一个根（或者后来被改过），
-    曾经就是「记录写着 cloud:X-Drive/DEMO，核验却去 legacy-root/DEMO 找」。
-    旧记录没有三元组，退回 storage.rel(code) 的老算法（行为与升级前一致）。
-    """
-    record = record or {}
-    rel = str(record.get("rel") or "").strip("/")
-    if rel:
-        if any(bit in (".", "..") for bit in rel.split("/")) or "\\" in rel:
-            raise storage.StorageError("归档路径不合法")
-        return rel
-    code = str(record.get("code") or "").strip("/")
-    if ".." in code or "/" in code or "\\" in code:
-        raise storage.StorageError(f"归档番号不合法：{code!r}")
-    # 旧记录没有三元组，但 path 记着**归档当时**的真实远端位置
-    # （clouddrive2:迅雷云盘/X-Drive/MIMK-267）。拿它派生 rel 比退回全局根准：
-    # 归档是在当时的根下写的，后来改了 STORAGE_ROOT 也会照旧找对地方
-    # （实测 MIMK-267 正是这样：全局根已是 Downloads/downloads/test，
-    #  退回全局根只会报「路径不存在」，而实际文件在 迅雷云盘/X-Drive 下）。
-    derived = _rel_from_path(record.get("path"), code)
-    if derived:
-        return derived
-    return storage.rel(code)
+    """Resolve the recorded CloudDrive2 archive, preserving historical roots."""
+    try:
+        return metadata.archive_location(record)
+    except ValueError as exc:
+        raise storage.StorageError(str(exc)) from exc
 
 
 def remote_ls(folder: str, timeout: float = 180.0, rel_path: str = "") -> list[dict]:
@@ -4519,25 +4646,14 @@ def remote_ls(folder: str, timeout: float = 180.0, rel_path: str = "") -> list[d
     except Exception as exc:
         raise RuntimeError(f"列目录失败：{exc}") from exc
     rel = (rel_path or "").strip("/") or storage.rel(folder)
-    if backend.kind != "rclone":
-        try:
-            entries = backend.list_files(rel)
-        except storage.StorageError as exc:
-            raise RuntimeError(f"列目录失败：{exc}") from exc
-        return [{"name": e.name, "size": e.size} for e in entries]
-    rc, out, err = rclone("lsjson", f"{RCLONE_REMOTE}:{rel}",
-                          "--files-only", timeout=timeout)
-    if rc != 0:
-        raise RuntimeError(f"列目录失败：{err.strip()[:200]}")
     try:
-        items = json.loads(out or "[]")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"列目录返回不可解析：{exc}") from exc
-    return [{"name": str(i.get("Name") or ""), "size": int(i.get("Size") or 0)}
-            for i in items if i.get("Name")]
+        entries = backend.list_files(rel)
+    except storage.StorageError as exc:
+        raise RuntimeError(f"列目录失败：{exc}") from exc
+    return [{"name": e.name, "size": e.size} for e in entries]
 
 
-def _probe_remote_readable(code: str, record: dict) -> list[str]:
+def _probe_remote_readable(code: str, record: dict, entries: list[dict] | None = None) -> tuple[list[str], list[str]]:
     """抽一个远端媒体文件，读它的**头尾各一小段** —— 读不出来就是真坏了。
 
     为什么光比大小不够：传回过程被打断（进程被杀、容器重建）会留下
@@ -4551,7 +4667,8 @@ def _probe_remote_readable(code: str, record: dict) -> list[str]:
     try:
         backend = storage_backend()
         rel = archive_locator(record)
-        entries = remote_ls(code, rel_path=rel)
+        if entries is None:
+            entries = remote_ls(code, rel_path=rel)
         media = [e for e in entries
                  if Path(str(e.get("name") or "")).suffix.lower() in
                  (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".mov", ".rmvb", ".iso")]
@@ -4642,7 +4759,8 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
     try:
         # 按记录定位：云添加的归档在 CLOUD_DEST，不跟全局 STORAGE_ROOT 走
         validate_archive_backend(storage_backend(), record)
-        remote = {i["name"]: i["size"] for i in remote_ls(code, rel_path=archive_locator(record))}
+        entries_list = remote_ls(code, rel_path=archive_locator(record))
+        remote = {i["name"]: i["size"] for i in entries_list}
     except Exception as exc:
         return {"ok": False, "code": code, "error": str(exc)[:200], "state": "检查失败"}
 
@@ -4659,7 +4777,7 @@ def verify_archive(code: str, confirm: bool = False) -> dict:
     unreadable = []
     unreadable_now = []
     if not missing and not sized:
-        unreadable, unreadable_now = _probe_remote_readable(code, record)
+        unreadable, unreadable_now = _probe_remote_readable(code, record, entries=entries_list)
     if missing:
         verdict = "缺文件"
     elif sized:
@@ -5009,7 +5127,9 @@ def _restore_blockers() -> list[str]:
         waiting = list(WAITING.keys())
     if waiting:
         out.append(f"内存队列里还有 {len(waiting)} 个排队任务")
-    live = running_threads()
+    with _admit_lock:
+        # _active_jobs 覆盖「已占槽位、线程还没登记进 _threads」的那一小段窗口
+        live = sorted(set(running_threads()) | _active_jobs)
     if live:
         out.append(f"还有 {len(live)} 个任务线程在跑：{'、'.join(live[:5])}")
     return out
@@ -5049,6 +5169,8 @@ def _clear_memory_state() -> None:
         _lease_live.clear()
     with _threads_lock:
         _threads.clear()
+    with _admit_lock:
+        _active_jobs.clear()
 
 
 def restore_apply(source: str, confirm: bool = False) -> dict:
@@ -5138,7 +5260,7 @@ def restore_apply(source: str, confirm: bool = False) -> dict:
                     "reconcile_required": True, "paused": True,
                     "mark_written": marked_in, "errors": mark_errors,
                     "trusted": False, "error": error,
-                    "hint": "先确认服务已停止调度，再核对任务表与迅雷面板；"
+                    "hint": "先确认服务已停止调度，再核对任务表与云盘归档；"
                             "修好磁盘/权限后重新执行恢复"}
         log.warning("已用 %s 覆盖任务库，进入待对账；确认前不自动调度", source)
         return {"ok": True, "restored_from": source, "safety": safety,
@@ -5146,7 +5268,7 @@ def restore_apply(source: str, confirm: bool = False) -> dict:
                 "reconcile_required": True, "paused": paused(),
                 "mark_written": marked_in,
                 "needs_migration": pre.get("needs_migration"),
-                "hint": "已暂停调度。先对账（任务列表与迅雷面板对照），"
+                "hint": "已暂停调度。先对账（任务列表与云盘归档对照），"
                         "确认后调用 /api/restore/confirm 才会继续调度"}
 
 
@@ -5205,8 +5327,26 @@ def restore_status() -> dict:
             "mark": _store().state_get(RECONCILE_KEY), "mark_detail": reconcile_mark()}
 
 
+def _cover_urls() -> list[str]:
+    state = core.load_state(STATE)
+    out: list[str] = []
+    for rec in state.values():
+        if not isinstance(rec, dict):
+            continue
+        meta_rec = rec.get("meta") or {}
+        for url in (meta_rec.get("cover"), meta_rec.get("cover_url")):
+            if url:
+                out.append(str(url))
+        for url in meta_rec.get("previews") or []:
+            if url:
+                out.append(str(url))
+    return out
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logbuf.install()
+    coverstore.start_warmer(_cover_urls)
     httpd = serve()
     # 磁盘空间调度线程：排队任务要能被自动放行，不能只靠提交时那一次判断
     threading.Thread(target=_queue_loop, daemon=True, name="disk-queue").start()

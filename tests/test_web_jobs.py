@@ -360,110 +360,42 @@ def test_purge_archives_keeps_state_on_failure(server, monkeypatch):
     """Drive 删不掉时不能把 state 记录也删了，否则归档会「消失」但文件还在。"""
     base, _ = server
     core.save_state(web.STATE, {"KEEP-1": {"code": "KEEP-1", "size": 1}})
-    monkeypatch.setattr(web, "rclone", lambda *a, **kw: (1, "", "purge 失败"))
+    class Backend:
+        kind = "clouddrive2"
+        def purge(self, rel):
+            raise web.storage.StorageError("purge failed")
+    monkeypatch.setattr(web, "storage_backend", lambda: Backend())
     removed = web.purge_archives(["KEEP-1"])
     assert removed == []
     assert "KEEP-1" in core.load_state(web.STATE)
-
-def test_panel_tasks_hides_finished(monkeypatch):
-    """看板只列未结束的迅雷任务：历史完成记录几十条，塞满侧栏没意义。"""
-    class FakeXl:
-        def client(self, *a, **kw):
-            raise AssertionError("不该真连")
-
-    tasks = [
-        {"id": "A", "name": "跑着", "phase": "PHASE_TYPE_RUNNING", "progress": 42,
-         "file_size": 100, "params": {"speed": "1024", "real_path": "/downloads/A"}},
-        {"id": "B", "name": "旧的", "phase": "PHASE_TYPE_COMPLETE", "progress": 100,
-         "file_size": 100, "params": {}},
-        {"id": "C", "name": "死了", "phase": "PHASE_TYPE_ERROR", "progress": 3,
-         "file_size": 100, "params": {"error": "任务超时"}},
-    ]
-
-    class Xl(FakeXl):
-        async def tasks(self, client):
-            return tasks
-        async def __aenter__(self):  # pragma: no cover
-            return self
-
-    monkeypatch.setattr(web, "xunlei_client", lambda: Xl())
-    Xl.client = lambda self, *a, **kw: _NullCtx()
-    data = web.panel_tasks()
-    assert [t["id"] for t in data["tasks"]] == ["A", "C"]
-    assert data["tasks"][1]["error"] == "任务超时"
-
-class _NullCtx:
-    async def __aenter__(self): return None
-    async def __aexit__(self, *exc): return False
-
-def test_xunlei_control_routes_actions(monkeypatch):
-    """看板上的暂停/继续/删除走同一个入口，按 action 分派到客户端方法。"""
-    calls = []
-
-    class Xl:
-        def client(self, *a, **kw): return _NullCtx()
-        async def pause(self, client, tid): calls.append(("pause", tid))
-        async def remove(self, client, tid): calls.append(("remove", tid))
-        async def control(self, client, tid, phase): calls.append(("control", tid, phase))
-
-    monkeypatch.setattr(web, "xunlei_client", lambda: Xl())
-    for action, want in (("pause", ("pause", "T1")),
-                         ("delete", ("remove", "T1")),
-                         ("resume", ("control", "T1", "running"))):
-        calls.clear()
-        monkeypatch.setattr(web, "asyncio", __import__("asyncio"))
-        code, data = post_free(("POST", "/api/xunlei/control", {"id": "T1", "action": action}))
-        assert code == 200 and data["ok"], (action, data)
-        assert calls == [want], (action, calls)
-
-def test_xunlei_control_rejects_unknown_action():
-    code, data = post_free(("POST", "/api/xunlei/control", {"id": "T1", "action": "selfdestruct"}))
-    assert code == 400 and not data["ok"]
-
-def post_free(spec):
-    """直接调 Handler.do_POST：不启服务器，鉴权留空时自动放行。"""
-    method, path, payload = spec
-    body = json.dumps(payload).encode()
-    h = web.Handler.__new__(web.Handler)
-    h.path = path
-    h.headers = {"Content-Length": str(len(body))}
-    h.rfile = io.BytesIO(body)
-    out = {}
-    def send_response(code, *a): out["code"] = code
-    def send_header(*a): pass
-    def end_headers(): pass
-    h.send_response = send_response
-    h.send_header = send_header
-    h.end_headers = end_headers
-    h.wfile = io.BytesIO()
-    h._authorized = lambda: True
-    h.do_POST()
-    return out["code"], json.loads(h.wfile.getvalue().decode() or "{}")
 
 # ---------------------------------------------------------------- 归档改名
 
 def _archive(tmp_path, monkeypatch, state: dict, drive_dirs=()):
     monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
-    monkeypatch.setattr(web, "RCLONE_CONFIG", "/dev/null")
-    monkeypatch.setattr(web, "DRIVE_ROOT", "X-Drive")
-    monkeypatch.setattr(web, "RCLONE_REMOTE", "gdrive")
+    monkeypatch.setattr(web.storage, "root", lambda: "X-Drive")
+    state = {key: {**record, "backend": "clouddrive2",
+                   "path": f"clouddrive2:X-Drive/{key}", "rel": f"X-Drive/{key}"}
+             for key, record in state.items()}
     core.save_state(web.STATE, state)
     calls = []
 
-    def fake_rclone(*args, timeout=0):
-        calls.append(args)
-        if args[0] == "lsf":
-            return 0, "\n".join(drive_dirs), ""
-        if args[0] == "link":
-            return 0, "https://drive/folder/" + args[1].rsplit("/", 1)[-1], ""
-        return 0, "", ""
+    class Backend:
+        kind = "clouddrive2"
+        def list_dirs(self, rel):
+            return list(drive_dirs)
+        def rename_dir(self, rel, name):
+            calls.append(("rename", rel, name))
+        def link(self, rel):
+            return "https://drive/folder/" + rel.rsplit("/", 1)[-1]
 
-    monkeypatch.setattr(web, "rclone", fake_rclone)
+    backend_inst = Backend()
+    monkeypatch.setattr(web, "storage_backend", lambda: backend_inst)
     return calls
 
 def test_rename_archive_moves_drive_and_state(tmp_path, monkeypatch):
     calls = _archive(tmp_path, monkeypatch, {
-        "SSIS-123": {"code": "SSIS-123", "path": "gdrive:X-Drive/SSIS-123",
+        "SSIS-123": {"code": "SSIS-123", "path": "clouddrive2:X-Drive/SSIS-123",
                      "files": ["SSIS-123.mp4"], "size": 1, "at": "2026-10-20T00:00:00"},
     })
     out = web.rename_archive("SSIS-123", "SSIS-124")
@@ -471,10 +403,9 @@ def test_rename_archive_moves_drive_and_state(tmp_path, monkeypatch):
     state = core.load_state(web.STATE)
     assert list(state) == ["SSIS-124"], "旧键要删掉，不能留两条指向同一个 Drive 目录"
     assert state["SSIS-124"]["code"] == "SSIS-124"
-    assert state["SSIS-124"]["path"] == "gdrive:X-Drive/SSIS-124"
+    assert state["SSIS-124"]["path"] == "clouddrive2:X-Drive/SSIS-124"
     assert state["SSIS-124"]["link"].endswith("SSIS-124")
-    assert ("move", "gdrive:X-Drive/SSIS-123", "gdrive:X-Drive/SSIS-124") in calls
-    assert ("rmdir", "gdrive:X-Drive/SSIS-123") in calls, "搬完把空目录清掉"
+    assert calls == [("rename", "X-Drive/SSIS-123", "SSIS-124")]
 
 def test_rename_archive_sanitises_name(tmp_path, monkeypatch):
     _archive(tmp_path, monkeypatch, {
@@ -498,7 +429,7 @@ def test_rename_archive_rejects_existing_drive_dir(tmp_path, monkeypatch):
         "SSIS-123": {"code": "SSIS-123", "path": "x", "files": [], "size": 0, "at": ""},
     }, drive_dirs=["SSIS-123", "SSIS-999"])
     out = web.rename_archive("SSIS-123", "SSIS-999")
-    assert out["ok"] is False and "Drive" in out["error"]
+    assert out["ok"] is False and "远端已有" in out["error"]
 
 def test_rename_archive_rejects_bad_name(tmp_path, monkeypatch):
     _archive(tmp_path, monkeypatch, {
@@ -510,8 +441,10 @@ def test_rename_archive_keeps_record_when_move_fails(tmp_path, monkeypatch):
     _archive(tmp_path, monkeypatch, {
         "SSIS-123": {"code": "SSIS-123", "path": "x", "files": [], "size": 0, "at": ""},
     })
-    monkeypatch.setattr(web, "rclone",
-                        lambda *a, timeout=0: (1, "", "permission denied"))
+    def denied(*args):
+        raise web.storage.StorageError("permission denied")
+    backend = web.storage_backend()
+    monkeypatch.setattr(backend, "rename_dir", denied)
     out = web.rename_archive("SSIS-123", "SSIS-124")
     assert out["ok"] is False
     assert list(core.load_state(web.STATE)) == ["SSIS-123"], "搬失败要原样留着，重试安全"
@@ -553,28 +486,22 @@ def test_normalize_plan_is_idempotent(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- 自动改名
 
-def test_auto_name_uses_release_date_and_title(tmp_path, monkeypatch):
-    """有元数据就用规范名：`YYYY-MM-DD 番号 标题`，去掉文件名非法字符。"""
+def test_auto_name_uses_pure_code(tmp_path, monkeypatch):
+    """归档目录只留番号，不掺日期和标题；旧键也能识别出番号。"""
     monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
-    core.save_state(web.STATE, {"SSIS-123": {
-        "code": "SSIS-123", "files": ["a.mp4"], "size": 1, "at": "2026-10-20T00:00:00",
-        "meta": {"release_date": "2026-09-12", "title": "絶頂/中出し:特集"}}})
+    core.save_state(web.STATE, {"2025-07-18-TCHR-035-TCHR-035": {
+        "code": "TCHR-035", "files": ["a.mp4"], "size": 1, "at": "2026-10-20T00:00:00",
+        "meta": {"release_date": "2025-07-18", "title": "絶頂/中出し:特集"}}})
     plan = web.normalize_plan()
-    assert plan["rename"] == [{"code": "SSIS-123",
-                               "to": "2026-09-12 SSIS-123 絶頂-中出し-特集"}], plan
+    assert plan["rename"] == [{"code": "2025-07-18-TCHR-035-TCHR-035",
+                               "to": "TCHR-035"}], plan
+
 
 def test_auto_name_without_meta_falls_back_to_code(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
     core.save_state(web.STATE, {"ssis_123": {"code": "ssis_123", "files": [], "size": 0, "at": ""}})
     assert web.normalize_plan()["rename"] == [{"code": "ssis_123", "to": "SSIS-123"}]
 
-def test_auto_name_truncates_long_titles(tmp_path, monkeypatch):
-    monkeypatch.setattr(web, "STATE", str(tmp_path / "state.json"))
-    core.save_state(web.STATE, {"SSIS-123": {
-        "code": "SSIS-123", "files": [], "size": 0, "at": "",
-        "meta": {"title": "很" * 300}}})
-    got = web.normalize_plan()["rename"][0]["to"]
-    assert got.startswith("SSIS-123 ") and len(got) <= 100
 
 # ---------------------------------------------------------------- 未分类自愈
 
@@ -618,43 +545,6 @@ def test_start_job_estimates_total_when_size_unknown(tmp_path, monkeypatch):
     assert web.JOBS[job_id]["estimated"] is True
 
 # ---------------------------------------------------------------- 僵尸任务清理
-
-def _panel(monkeypatch, tasks):
-    class Xl:
-        def client(self, *a, **kw): return _NullCtx()
-    monkeypatch.setattr(web, "panel_tasks", lambda: {"tasks": tasks})
-    monkeypatch.setattr(web, "xunlei_client", lambda: Xl())
-    return Xl()
-
-def test_clean_panel_errors_only_old_failures(monkeypatch):
-    # 日期必须相对 now 算：写死绝对时间会变成时间炸弹 ——
-    # 2026-10-29 就踩到了：'fresh' 写的是 2026-10-22，前一天还是 6 天前，
-    # 过了零点刚好跨过 7 天阈值，于是它也被判成「旧失败」，测试无故变红。
-    now = datetime.datetime.now().astimezone()
-    old = (now - datetime.timedelta(days=30)).isoformat()
-    fresh = (now - datetime.timedelta(days=1)).isoformat()
-    _panel(monkeypatch, [
-        {"id": "A", "name": "old-err", "phase": "PHASE_TYPE_ERROR", "updated": old},
-        {"id": "B", "name": "new-err", "phase": "PHASE_TYPE_ERROR", "updated": fresh},
-        {"id": "C", "name": "running", "phase": "PHASE_TYPE_RUNNING", "updated": old},
-    ])
-    plan = web.clean_panel_errors(7)
-    assert [i["id"] for i in plan["delete"]] == ["A"]
-    assert "confirm" in plan["hint"]
-
-
-def test_clean_panel_errors_confirm_deletes(monkeypatch):
-    removed = []
-    class Xl:
-        def client(self, *a, **kw): return _NullCtx()
-        async def remove(self, client, task_id): removed.append(task_id)
-    monkeypatch.setattr(web, "xunlei_client", lambda: Xl())
-    monkeypatch.setattr(web, "panel_tasks", lambda: {"tasks": [
-        {"id": "A", "name": "old-err", "phase": "PHASE_TYPE_ERROR",
-         "updated": (datetime.datetime.now().astimezone()
-                     - datetime.timedelta(days=30)).isoformat()}]})
-    out = web.clean_panel_errors(7, confirm=True)
-    assert out["deleted"] == ["A"] and removed == ["A"]
 
 # ---------------------------------------------------------------- 订阅建议
 
@@ -1054,29 +944,3 @@ def test_delete_unknown_job(server):
     base, _ = server
     status, data = post(base, "/api/job/delete", {"id": "ghost", "confirm": True})
     assert status == 200 and data["ok"] is False and "没有" in data["error"]
-
-
-def test_panel_cleanup_days_zero_means_today_too(tmp_path, monkeypatch):
-    """days=0 必须真的按 0 天算：以前 `or` 把它当没填，刚失败的永远清不掉。"""
-    calls = []
-    monkeypatch.setattr(web, "clean_panel_errors",
-                        lambda days, confirm: calls.append((days, confirm)) or {"ok": True})
-    state_file = tmp_path / "state.json"
-    core.save_state(str(state_file), {})
-    monkeypatch.setattr(web, "STATE", str(state_file))
-    monkeypatch.setattr(web, "AUTH", "")
-    httpd = web.serve("127.0.0.1", 0)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    try:
-        host, port = "127.0.0.1", httpd.server_address[1]
-        c = http.client.HTTPConnection(host, port, timeout=10)
-        c.request("POST", "/api/xunlei/cleanup",
-                  body=json.dumps({"days": 0, "confirm": True}),
-                  headers={"Content-Type": "application/json"})
-        r = c.getresponse(); r.read()
-        assert r.status == 200
-        c.close()
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-    assert calls == [(0.0, True)], f"days 被吃掉了：{calls}"

@@ -1,0 +1,10 @@
+services:
+  web:
+    # 端口直接落在宿主机（不用 docker-proxy 转发），WEB_PORT 是容器里
+    # 网页真正监听的端口，healthcheck 也读它。
+    network_mode: host
+    ports: !reset []
+    environment:
+      WEB_PORT: "${WEB_PORT:-18091}"
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.allinone", "--health"]

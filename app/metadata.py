@@ -15,8 +15,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
+
+from . import coverstore
 
 log = logging.getLogger("x-drive.metadata")
 
@@ -59,6 +62,11 @@ _ALIAS = {
 }
 
 
+def public_cover(url: str) -> str:
+    """JavBus 封面与 DMM 预览图已托管到 Cloudflare R2，页面只读 R2 直链。"""
+    return coverstore.public_url(url)
+
+
 def normalize_meta(rec: dict) -> dict:
     """把一条元数据记录归一到站内那套字段名。
 
@@ -72,6 +80,12 @@ def normalize_meta(rec: dict) -> dict:
             continue
         if _blank(out.get(new)):
             out[new] = value
+    for key in ("cover", "cover_url"):
+        if out.get(key):
+            out[key] = public_cover(out[key])
+    previews = out.get("previews")
+    if isinstance(previews, list):
+        out["previews"] = [public_cover(url) for url in previews if url]
     return out
 
 
@@ -238,22 +252,45 @@ def archive_manifest(work: Path, names: list[str], scraped: dict,
             "total_size": sum(e["size"] for e in media_entries)}
 
 
-def validate_archive_backend(record: dict, kind: str, remote: str = "") -> None:
-    """Shared Web/Bot guard; a persisted location must not cross backends."""
-    which = str((record or {}).get("backend") or "")
-    if which and which != kind:
-        raise ValueError(f"归档后端 {which} 与当前后端 {kind} 不符，保留记录")
-    if which == "rclone":
-        saved = record.get("remote") or str(record.get("path") or "").split(":", 1)[0]
-        if saved and saved != remote:
-            raise ValueError("归档 rclone remote 与当前配置不符，保留记录")
+def validate_archive_backend(record: dict, kind: str) -> None:
+    """Require positive CloudDrive2 identity before touching persisted archives."""
+    record = record or {}
+    which = str(record.get("backend") or "").strip().lower()
+    path = str(record.get("path") or "").strip()
+    prefix = path.partition(":")[0].lower() if ":" in path else ""
+    if (kind != "clouddrive2" or which not in ("", kind)
+            or prefix not in ("", kind) or record.get("remote")
+            or not (which == kind or prefix == kind)):
+        raise ValueError("归档后端身份未确认为 CloudDrive2，保留记录")
+
+
+def archive_location(record: dict) -> str:
+    """Resolve only positively identified CloudDrive2 archives; never reinterpret legacy paths."""
+    validate_archive_backend(record, "clouddrive2")
+    code = str(record.get("code") or "").strip()
+    if not code or code in (".", "..") or any(ch in code for ch in "/\\:"):
+        raise ValueError("归档番号不合法")
+    rel = str(record.get("rel") or "").strip("/")
+    if not rel:
+        path = str(record.get("path") or "").strip()
+        if path.startswith("clouddrive2:"):
+            rel = path.partition(":")[2].strip("/")
+            if rel.rsplit("/", 1)[-1] != code:
+                raise ValueError("归档路径与番号不符")
+        else:
+            from . import storage
+            rel = storage.rel(code)
+    if (not rel or any(bit in ("", ".", "..") for bit in rel.split("/"))
+            or "\\" in rel or ":" in rel):
+        raise ValueError("归档路径不合法")
+    return rel
 
 
 def archive_record(code: str, path: str, link: str | None, files, size: int,
                    source: str, work: Path, scraped: dict | None = None,
                    manifest_files: list[str] | None = None, infohash: str = "",
                    locks=None, pending: bool = False, at: str | None = None,
-                   backend: str = "", root: str = "", rel: str = "", remote: str = "") -> dict:
+                   backend: str = "", root: str = "", rel: str = "") -> dict:
     """一条归档记录的完整字段契约。web 的 _finish 与 bot 的 run_task 都写这一份。
 
     以前两条路径各写一遍，bot 写出的记录少了 meta/manifest/infohash/locked/
@@ -281,8 +318,6 @@ def archive_record(code: str, path: str, link: str | None, files, size: int,
     }
     if backend:
         record.update(backend=backend, root=root, rel=rel)
-        if remote:
-            record["remote"] = remote
     if infohash:                              # 有才写，没有不编
         record["infohash"] = str(infohash)
     if locks:

@@ -63,7 +63,7 @@ def classify(text: str) -> str:
     if text.startswith("❌"):
         if "解析" in text:
             return "parse_fail"
-        if "上传" in text or "rclone" in text:
+        if "上传" in text:
             return "upload_fail"
         if "没有可下载" in text:
             return "no_media"

@@ -101,6 +101,25 @@ def test_loose_delete_failure_is_visible_to_pending_cleanup(monkeypatch):
     assert cloud.files['inbox/ad.txt'] == 1
 
 
+def test_cleanup_allows_dots_inside_dropped_file_name():
+    """文件名里的连续点是合法字符，不能当路径穿越拦掉。"""
+    name = '美女荷官竟然被....vip1129.mp4'
+    cloud = Cloud({'inbox/seed/main.mp4': 100, f'inbox/seed/{name}': 1})
+    plan = organize(cloud)
+    receipt = cloudorganize.cleanup_source(cloud, 'inbox', plan, 'archive')
+    assert receipt == '已清理已知丢弃文件，保留源目录外壳'
+    assert cloud.deleted == [f'inbox/seed/{name}']
+
+
+def test_cleanup_still_rejects_dotdot_file_name():
+    cloud = Cloud({'inbox/seed/main.mp4': 100, 'inbox/seed/..': 1})
+    plan = organize(cloud)
+    with pytest.raises(cloudorganize.OrganizeError, match='清理文件名不安全'):
+        cloudorganize.cleanup_source(cloud, 'inbox', plan, 'archive')
+    assert cloud.deleted == []
+
+
+
 def test_existing_empty_inbox_single_file_reaches_landing():
     cloud = Cloud({})
     before = cloudingest.snapshot_strict(cloud, 'inbox')

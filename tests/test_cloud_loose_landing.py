@@ -111,3 +111,30 @@ def test_cleanup_of_normal_dir_keeps_empty_shell():
                               folder_code="MAAN-1199")
     cloudorganize.cleanup_source(B(), "inbox/task", plan, "X-Drive")
     assert purged == [], "无已知残留时只保留源目录壳"
+
+
+def test_organize_landed_canonicalizes_folder_code(monkeypatch):
+    """旧归档键/带后缀的任务名进到云盘时，目标目录必须是纯番号。"""
+    from app import cloudadd
+
+    class _Item:
+        folder = "seed"
+        files = [{"name": "a.mp4", "size": 100}]
+        total = 100
+
+    seen = {}
+
+    def fake_apply(backend, src_root, plan, folder_code="", dst_root=""):
+        seen["folder_code"] = folder_code
+        return {"target": plan.target, "folder": f"dest/{plan.target}",
+                "files": ["TCHB-029.mp4"], "size": 100, "dropped": []}
+
+    class _Backend:
+        kind = "clouddrive2"
+
+    monkeypatch.setattr(cloudadd.cloudorganize, "apply", fake_apply)
+    records, _, failed = cloudadd.organize_landed(
+        [_Item()], _Backend(), "inbox", "dest", "2025-01-02-TCHB-029-TCHB-029")
+    assert failed == []
+    assert seen["folder_code"] == "TCHB-029"
+    assert records[0]["folder"] == "TCHB-029"

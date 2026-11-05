@@ -9,14 +9,15 @@
   /* 两级结构：左侧固定侧栏（品牌 / 统计 / 筛选 / 状态），右侧内容区（工具条 + 卡片网格）。
      窄屏时侧栏收进抽屉，工具条变成上下两行。 */
   :root{
-    --bg:#000; --panel:rgba(13,13,13,.85); --panel-2:rgba(20,20,20,.9);
-    --line:rgba(255,255,255,.10); --line-soft:rgba(255,255,255,.06); --line-2:rgba(251,219,163,.22);
-    --text:#f8fafc; --text-2:#dbe2ec; --muted:#a3b0c2; --dim:#6b7c94; --faint:#4a5566;
-    --cyan:#3ebaf4; --cyan-dim:rgba(62,186,244,.10); --green:#5fd38d; --red:#ef6a6a; --violet:#c9a3ff;
+    --bg:#07090e; --bg-deep:#04060a; --panel:rgba(12,17,29,.85); --panel-2:rgba(18,25,42,.9);
+    --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.05); --line-2:rgba(225,29,72,.28);
+    --text:#f8fafc; --text-2:#cbd5e1; --muted:#94a3b8; --dim:#64748b; --faint:#475569;
+    --cyan:#38bdf8; --cyan-dim:rgba(56,189,248,.12); --green:#10b981; --red:#ef4444; --violet:#818cf8;
+    --rose:#e11d48; --rose-glow:rgba(225,29,72,.38); --indigo:#6366f1;
     --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
-    --sans:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
     --side:264px;        /* 侧栏宽度 */
-    --bar-w:302px;       /* 任务队列宽度 */
+    --bar-w:308px;       /* 任务队列宽度 */
     --pad:24px;          /* 内容区左右内边距 */
     --gap:16px;
     --radius:12px;
@@ -25,9 +26,11 @@
   html{scrollbar-gutter:stable}
   body{
     margin:0; min-height:100vh; color:var(--text); background:var(--bg);
+    background-color:#07090e;
     background-image:
-      radial-gradient(760px 460px at 92% -12%, rgba(62,186,244,.13), transparent 66%),
-      radial-gradient(560px 380px at -6% 4%, rgba(236,72,153,.06), transparent 70%);
+      radial-gradient(ellipse at 8% -5%, rgba(225,29,72,.12) 0%, transparent 48%),
+      radial-gradient(ellipse at 92% 5%, rgba(99,102,241,.14) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 100%, rgba(56,189,248,.08) 0%, transparent 60%);
     background-attachment:fixed;
     font:15px/1.6 var(--sans); -webkit-font-smoothing:antialiased;
   }
@@ -80,11 +83,11 @@
   .side-block .nav{overflow-y:auto; min-height:0; margin-right:-4px; padding-right:4px}
   .brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.02em; font-size:17px;
     padding:0 4px}
-  .brand .mark{width:28px;height:28px;border-radius:9px;display:grid;place-items:center; flex:none;
-    background:linear-gradient(150deg,rgba(62,186,244,.32),rgba(62,186,244,.08));
-    border:1px solid rgba(62,186,244,.4); box-shadow:0 0 20px -8px rgba(62,186,244,.9)}
-  .brand .mark svg{width:14px;height:14px;stroke:var(--cyan)}
-  .brand i{font-style:normal; color:var(--cyan)}
+  .brand .mark{width:32px;height:32px;border-radius:10px;display:grid;place-items:center; flex:none;
+    background:linear-gradient(135deg,rgba(225,29,72,.4),rgba(99,102,241,.25));
+    border:1px solid rgba(225,29,72,.5); box-shadow:0 0 20px -4px rgba(225,29,72,.6)}
+  .brand .mark svg{width:16px;height:16px;stroke:#fff}
+  .brand i{font-style:normal; color:var(--rose); text-shadow:0 0 14px var(--rose-glow)}
 
   .side-h{display:flex; align-items:center; justify-content:space-between;
     font-family:var(--mono); font-size:10.5px; font-weight:700; letter-spacing:.12em;
@@ -95,8 +98,9 @@
 
   /* 统计 */
   .stat{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line-soft);
-    border:1px solid var(--line); border-radius:var(--radius); overflow:hidden}
-  .stat div{background:rgba(10,10,10,.9); padding:10px 12px}
+    border:1px solid var(--line); border-radius:var(--radius); overflow:hidden;
+    box-shadow:0 4px 18px -4px rgba(0,0,0,.6)}
+  .stat div{background:rgba(12,17,29,.88); padding:10px 12px; backdrop-filter:blur(10px)}
   .stat b{display:block; font-family:var(--mono); font-size:17px; font-weight:800; line-height:1.25;
     letter-spacing:-.02em; font-variant-numeric:tabular-nums}
   .stat span{display:block; font-size:10.5px; color:var(--dim); letter-spacing:.03em; margin-top:1px}
@@ -107,8 +111,11 @@
     border-radius:7px; background:none; text-align:left; color:var(--muted); font-size:13px;
     transition:background .14s, color .14s}
   .nav .it:hover{background:rgba(255,255,255,.05); color:var(--text)}
-  .nav .it.on{background:rgba(62,186,244,.11); color:var(--cyan)}
-  .nav .it.on .n{color:var(--cyan)}
+  .nav .it.on{background:linear-gradient(90deg,rgba(225,29,72,.18),rgba(225,29,72,.04));
+    color:#fff; border-color:rgba(225,29,72,.42); font-weight:600;
+    box-shadow:inset 3px 0 0 var(--rose)}
+  .nav .it.on .n{color:var(--rose)}
+  .nav .it.on svg{stroke:var(--rose)}
   .nav .it .n{font-family:var(--mono); font-size:11.5px; color:var(--dim); margin-left:auto;
     font-variant-numeric:tabular-nums}
   .nav .it .t{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
@@ -138,17 +145,32 @@
   /* ───────────────────────── 内容区 */
   .shell{margin-left:var(--side); display:flex; align-items:flex-start; min-width:0}
   .main{flex:1; min-width:0}
-  .toolbar{position:sticky; top:0; z-index:20; display:flex; flex-direction:column; gap:9px;
-    padding:14px var(--pad) 11px; background:rgba(0,0,0,.84); backdrop-filter:blur(16px);
-    border-bottom:1px solid var(--line)}
-  .tb-row{display:flex; align-items:center; gap:10px; min-width:0}
+  .toolbar{position:sticky; top:0; z-index:20; display:flex; flex-direction:column; gap:10px;
+    padding:14px var(--pad) 12px; background:rgba(7,9,14,.84); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px);
+    border-bottom:1px solid var(--line); box-shadow:0 4px 20px -8px rgba(0,0,0,.7)}
+  .tb-row{display:flex; align-items:center; gap:12px; min-width:0}
   .tb-search{flex:1; min-width:0; position:relative; display:flex; align-items:center}
-  .tb-search svg{position:absolute; left:11px; width:14px; height:14px; stroke:var(--dim); pointer-events:none}
-  .tb-search input{width:100%; padding:8px 12px 8px 33px; border-radius:8px; font:inherit; font-size:13px;
-    border:1px solid var(--line); background:rgba(13,13,13,.9); color:var(--text); outline:none;
-    transition:border-color .16s, box-shadow .16s}
+  .tb-search svg{position:absolute; left:12px; width:15px; height:15px; stroke:var(--dim); pointer-events:none}
+  .tb-search input{width:100%; padding:9px 12px 9px 36px; border-radius:10px; font:inherit; font-size:13px;
+    border:1px solid var(--line); background:rgba(15,21,35,.85); color:var(--text); outline:none;
+    transition:border-color .16s, box-shadow .16s, background .16s}
   .tb-search input::placeholder{color:var(--faint)}
-  .tb-search input:focus{border-color:rgba(62,186,244,.55); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+  .tb-search input:focus{border-color:rgba(225,29,72,.6); box-shadow:0 0 0 3px rgba(225,29,72,.15); background:rgba(18,26,44,.95)}
+  .search-kbd{position:absolute; right:10px; padding:2px 6px; font-family:var(--mono); font-size:10px;
+    color:var(--faint); border:1px solid var(--line); border-radius:4px; background:rgba(255,255,255,.04);
+    pointer-events:none; font-weight:600}
+
+  /* 顶栏存储配额胶囊 */
+  .top-capsule{display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border-radius:999px;
+    font-family:var(--mono); font-size:11.5px; background:rgba(15,22,36,.8); border:1px solid rgba(255,255,255,.1);
+    color:var(--muted); cursor:pointer; transition:all .18s; user-select:none; white-space:nowrap; flex:none}
+  .top-capsule:hover{border-color:rgba(56,189,248,.45); color:#f8fafc; background:rgba(20,32,54,.9);
+    box-shadow:0 0 16px -4px rgba(56,189,248,.3)}
+  .top-capsule-dot{width:7px; height:7px; border-radius:50%; background:#10b981; box-shadow:0 0 8px #10b981; flex:none}
+  .top-capsule-dot.warn{background:#f59e0b; box-shadow:0 0 8px #f59e0b}
+  .top-capsule-dot.err{background:#ef4444; box-shadow:0 0 8px #ef4444}
+  .top-capsule-lbl{color:var(--dim); font-size:10.5px}
+  .top-capsule-val{font-weight:700; color:#f8fafc}
   .tb-seg{display:flex; gap:1px; padding:2px; border-radius:9px; border:1px solid var(--line);
     background:rgba(13,13,13,.9); flex:none}
   .tb-seg button{border:0; background:none; padding:5px 11px; border-radius:7px; font-size:12.5px;
@@ -163,13 +185,14 @@
   .pill .x{font-size:13px; line-height:1; opacity:.7}
   .pill .cnt{font-family:var(--mono); font-size:10.5px; color:var(--dim)}
   .spacer{flex:1; min-width:0}
-  .primary{display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:8px;
-    border:1px solid transparent; font-weight:700; font-size:13px; white-space:nowrap;
-    color:#04140d; background:linear-gradient(150deg,var(--cyan),#2b9fd0);
-    box-shadow:0 6px 18px -10px rgba(62,186,244,.9); transition:filter .16s, transform .16s}
-  .primary:hover{filter:brightness(1.08)}
+  .primary{display:inline-flex; align-items:center; gap:6px; padding:8px 15px; border-radius:8px;
+    border:1px solid rgba(255,255,255,.12); font-weight:700; font-size:13px; white-space:nowrap;
+    color:#fff; background:linear-gradient(135deg,var(--rose),#be123c);
+    box-shadow:0 4px 18px -4px rgba(225,29,72,.6); transition:filter .16s, transform .16s, box-shadow .16s;
+    cursor:pointer}
+  .primary:hover{filter:brightness(1.08); box-shadow:0 6px 22px -2px rgba(225,29,72,.75)}
   .primary:active{transform:translateY(1px)}
-  .primary svg{width:13px;height:13px;stroke:#04140d}
+  .primary svg{width:13px;height:13px;stroke:#fff}
   .queuebtn{position:relative; display:inline-flex; align-items:center; gap:7px; padding:8px 12px;
     border-radius:8px; border:1px solid var(--line); background:rgba(13,13,13,.9); color:var(--muted);
     font-size:12.5px; white-space:nowrap; transition:color .14s, border-color .14s, background .14s}
@@ -247,13 +270,13 @@
   .grid{display:grid; gap:var(--gap); padding:14px var(--pad) 72px;
     grid-template-columns:repeat(auto-fill, minmax(196px,1fr))}
 
-  .card{position:relative; display:flex; flex-direction:column; border:1px solid var(--line);
-    border-radius:var(--radius); background:linear-gradient(180deg,rgba(19,19,19,.92),rgba(9,9,9,.95));
-    overflow:hidden; box-shadow:0 6px 20px -14px rgba(0,0,0,.9);
-    transition:border-color .18s, box-shadow .18s, transform .18s}
-  .card:hover{border-color:rgba(62,186,244,.42); transform:translateY(-2px);
-    box-shadow:0 16px 30px -22px rgba(0,0,0,.95), 0 0 22px -14px rgba(62,186,244,.75)}
-  .card.hl{border-color:rgba(62,186,244,.6); box-shadow:0 0 0 3px rgba(62,186,244,.12)}
+  .card{position:relative; display:flex; flex-direction:column; border:1px solid rgba(255,255,255,.07);
+    border-radius:var(--radius); background:rgba(14,19,32,.72); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    overflow:hidden; box-shadow:0 4px 20px -4px rgba(0,0,0,.6);
+    transition:border-color .22s cubic-bezier(0.16,1,0.3,1), box-shadow .22s, transform .22s}
+  .card:hover{border-color:rgba(225,29,72,.45); transform:translateY(-4px);
+    box-shadow:0 16px 36px -8px rgba(0,0,0,.85), 0 0 20px -2px rgba(225,29,72,.28)}
+  .card.hl{border-color:rgba(225,29,72,.7); box-shadow:0 0 0 3px rgba(225,29,72,.2)}
 
   /* 封面：等比填充，固定 800×538 比例（JavBus 官方封面规格）避免不同图尺寸把网格撑乱 */
   /* 底纹常驻：图还没回来（图床慢 / 代理还在超时重试）时，也别让人对着
@@ -276,12 +299,14 @@
   .poster-card{gap:0}
   .poster-card .card-cover{aspect-ratio:800/538; border-bottom:none; position:relative; cursor:pointer}
   .poster-card .card-cover:focus-visible{outline:2px solid var(--cyan); outline-offset:-2px}
-  .poster-card .card-title{padding:8px 11px 10px; font-size:12px; line-height:1.4;
-    -webkit-line-clamp:2; color:var(--text-2)}
+  .poster-card .card-title{padding:10px 12px 12px; font-size:12.5px; font-weight:500; line-height:1.45;
+    -webkit-line-clamp:2; color:var(--text-2); transition:color .16s}
+  .poster-card:hover .card-title{color:#fff}
   .poster-card .why.cleanup-pending{padding:0 11px 10px}
-  .card-code{position:absolute; left:0; bottom:0; font-family:var(--mono); font-size:10px;
-    font-weight:700; letter-spacing:.06em; padding:3px 7px; color:var(--text);
-    background:linear-gradient(transparent, rgba(0,0,0,.85) 55%); text-shadow:0 1px 3px rgba(0,0,0,.9)}
+  .card-code{position:absolute; left:8px; bottom:8px; font-family:var(--mono); font-size:10.5px;
+    font-weight:700; letter-spacing:.05em; padding:3px 8px; border-radius:6px; color:#fff;
+    background:rgba(8,11,18,.88); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    border:1px solid rgba(255,255,255,.16); box-shadow:0 4px 12px rgba(0,0,0,.6)}
   .card-actors{padding:8px 13px 0; display:flex; flex-wrap:wrap; gap:5px}
   .actor-chip{font:inherit; font-size:10.5px; padding:2px 8px; border-radius:999px; cursor:pointer;
     color:var(--violet); border:1px solid rgba(201,163,255,.28); background:rgba(201,163,255,.07)}
@@ -348,9 +373,22 @@
   .subs-kind button:hover{border-color:rgba(62,186,244,.35)}
 
   .subs-opts{display:flex; gap:14px; align-items:center; font-size:11.5px; color:var(--muted);
-    font-family:var(--mono)}
+    font-family:var(--mono); flex-wrap:wrap}
   .subs-opts input{width:62px; padding:5px 7px; border-radius:6px; border:1px solid var(--line);
     background:rgba(0,0,0,.6); color:var(--text); font:inherit; font-family:var(--mono)}
+  .subs-scope{display:flex; gap:14px; align-items:center; font-size:11.5px; color:var(--text-2)}
+  .subs-scope label{display:inline-flex; align-items:center; gap:5px; cursor:pointer}
+  .subs-filter-box{display:flex; flex-direction:column; gap:7px; padding:9px 12px; border-radius:8px;
+    background:rgba(255,255,255,.02); border:1px solid var(--line-soft); margin-top:2px}
+  .subs-filter-row{display:flex; gap:14px; align-items:center; flex-wrap:wrap; font-size:11.5px; color:var(--text-2)}
+  .subs-filter-row label{display:inline-flex; align-items:center; gap:5px; cursor:pointer}
+  .subs-filter-row input[type="text"]{width:160px; padding:4px 8px; font-size:11.5px; border-radius:6px;
+    border:1px solid var(--line); background:rgba(0,0,0,.6); color:var(--text); font-family:var(--mono)}
+  .subs-badges{display:flex; gap:4px; align-items:center; flex-wrap:wrap}
+  .subs-badge{display:inline-block; font-size:10px; padding:1px 6px; border-radius:4px; font-family:var(--mono);
+    background:rgba(255,255,255,.06); color:var(--muted); border:1px solid var(--line-soft); white-space:nowrap}
+  .subs-badge.cyan{background:rgba(62,186,244,.12); color:var(--cyan); border-color:rgba(62,186,244,.35)}
+  .subs-badge.green{background:rgba(60,200,120,.12); color:#4ade80; border-color:rgba(60,200,120,.35)}
   .subs-list{margin-top:10px; display:flex; flex-direction:column; gap:6px}
   .sub-row{display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:8px;
     border:1px solid var(--line-soft); background:rgba(255,255,255,.02); font-size:12px}
@@ -419,23 +457,30 @@
      所以文字版必须放开宽度。 */
   .iconbtn.txt{width:auto; min-width:54px; height:26px; padding:0 10px; white-space:nowrap;
     font-size:11.5px; letter-spacing:.02em}
-  .dlayer{position:fixed; inset:0; background:rgba(0,0,0,.72); display:flex; align-items:center;
-    justify-content:center; z-index:200; padding:20px; animation:fadein .12s ease-out}
-  @keyframes fadein{from{opacity:0} to{opacity:1}}
-  .dpanel{background:var(--panel,#141414); border:1px solid var(--line); border-radius:12px;
-    max-width:min(860px, 94vw); max-height:88vh; overflow:auto; padding:16px}
-  .dhead{display:flex; align-items:center; gap:10px; margin-bottom:12px}
-  .dcode{font-family:var(--mono); font-size:14px; font-weight:700; color:var(--text); margin-right:auto}
-  .dtop{display:flex; gap:14px; align-items:flex-start}
+  .dlayer{position:fixed; inset:0; background:rgba(3,5,10,.82); backdrop-filter:blur(16px);
+    -webkit-backdrop-filter:blur(16px); display:flex; align-items:center;
+    justify-content:center; z-index:200; padding:20px; animation:fadein .14s cubic-bezier(0.16,1,0.3,1)}
+  @keyframes fadein{from{opacity:0; transform:scale(.98)} to{opacity:1; transform:none}}
+  .dpanel{background:rgba(13,18,30,.96); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px);
+    border:1px solid rgba(255,255,255,.12); border-radius:16px;
+    max-width:min(900px, 94vw); max-height:88vh; overflow:auto; padding:20px 22px;
+    box-shadow:0 24px 64px -12px rgba(0,0,0,.95), 0 0 32px rgba(225,29,72,.15)}
+  .dhead{display:flex; align-items:center; gap:12px; margin-bottom:16px;
+    padding-bottom:12px; border-bottom:1px solid var(--line)}
+  .dcode{font-family:var(--mono); font-size:16px; font-weight:800; color:#fff;
+    letter-spacing:.03em; margin-right:auto; text-shadow:0 0 16px rgba(225,29,72,.35)}
+  .dtop{display:flex; gap:18px; align-items:flex-start}
   /* 图还没回来时也占住 800×538 的位置：否则 0 高，图一加载整块内容往下跳 */
-  .dcover{width:220px; border-radius:8px; flex:none; aspect-ratio:800/538; object-fit:cover;
-    background:linear-gradient(160deg,rgba(62,186,244,.06),transparent 62%),#0a0a0a}
-  .dmeta{display:flex; flex-direction:column; gap:5px; min-width:0}
-  .dtitle{font-size:13px; line-height:1.5; color:var(--text); margin-bottom:4px}
-  .drow{display:flex; gap:8px; font-size:11.5px; line-height:1.5}
-  .dk{font-family:var(--mono); color:var(--faint); flex:none; min-width:56px}
+  .dcover{width:260px; border-radius:10px; flex:none; aspect-ratio:800/538; object-fit:cover;
+    border:1px solid rgba(255,255,255,.1); box-shadow:0 8px 24px -4px rgba(0,0,0,.7);
+    background:linear-gradient(160deg,rgba(225,29,72,.1),transparent 65%),#0a0d16}
+  .dmeta{display:flex; flex-direction:column; gap:6px; min-width:0; flex:1}
+  .dtitle{font-size:14px; font-weight:600; line-height:1.5; color:#fff; margin-bottom:6px}
+  .drow{display:flex; gap:10px; font-size:12px; line-height:1.55}
+  .dk{font-family:var(--mono); color:var(--dim); flex:none; min-width:64px; font-weight:600}
   .dv{color:var(--text); word-break:break-word}
-  .dsub{margin:14px 0 8px; font-family:var(--mono); font-size:11px; color:var(--faint)}
+  .dsub{margin:16px 0 10px; font-family:var(--mono); font-size:11px; font-weight:700;
+    letter-spacing:.06em; color:var(--dim); text-transform:uppercase}
   /* 播放器：原地铺一层，视频占满可用宽度 */
   .player-panel{max-width:min(1080px, 96vw); width:min(1080px, 96vw)}
   .player-video{width:100%; max-height:74vh; display:block; background:#000;
@@ -487,26 +532,13 @@
   .findtitle{font-size:12.5px; color:var(--text); line-height:1.45;
     display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden}
   .findmeta{font-family:var(--mono); font-size:10.5px; color:var(--faint); line-height:1.5}
-  .queue-foot{padding-top:11px; margin-top:10px; border-top:1px solid var(--line-soft);
-    display:flex; gap:8px; flex-wrap:wrap}
   .queue-list{display:grid; gap:8px; grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
     max-height:min(62vh,760px); overflow-y:auto; padding:2px 2px 6px}
-  /* 空态与「迅雷面板」分隔标题要独占整行，别被网格挤成一格 */
-  .queue-list .queue-empty, .queue-list .queue-sec{grid-column:1/-1}
+  /* 空态要独占整行，别被网格挤成一格 */
+  .queue-list .queue-empty{grid-column:1/-1}
   .queue-empty{margin:28px 8px; text-align:center; font-size:12.5px; color:var(--dim); line-height:1.8}
-  /* 「迅雷面板」那一段的标题。以前借用 .queue-empty（居中 + 28px 留白），
-     在列表里像一条居中错误提示，还把上下任务撑出大段空白。 */
   #queue-flash{color:var(--cyan); flex:none}
   #queue-flash.err{color:var(--red)}
-  .queue-sec{display:flex; align-items:center; gap:8px; margin:14px 2px 3px;
-    font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
-    color:var(--faint)}
-  .queue-sec::after{content:""; flex:1; height:1px; background:var(--line-soft)}
-  /* 迅雷面板那一段可点开/收起：默认收起（那是外部下载器的任务，不是本程序的任务） */
-  .queue-sec.xl-head{cursor:pointer; user-select:none; margin:10px 2px 3px}
-  .queue-sec.xl-head:hover{color:var(--muted)}
-  .queue-sec .xl-caret{font-size:11px; color:var(--dim); letter-spacing:0}
-  .queue-sec.err{color:#ff9b9b}
   .job{padding:9px 10px; border:1px solid var(--line); border-radius:9px; background:rgba(17,17,17,.85);
     display:flex; flex-direction:column; gap:6px}
   .job .jtop{display:flex; align-items:center; gap:7px; min-width:0}
@@ -766,12 +798,638 @@
     .dpanel{padding:13px}
     .dhead{margin-bottom:10px}
   }
+  /* ═════════════════════════════════════════════════════════════════════
+     2026-10 UI 重构：近黑画布 + 粉紫辉光 + 圆角应用框架
+     结构：.frame > (aside.side | .shell > .main + aside.rail)
+     ═════════════════════════════════════════════════════════════════════ */
+  :root{
+    --bg:#050407; --bg-deep:#030205; --panel:rgba(16,14,20,.72); --panel-2:rgba(22,19,28,.9);
+    --line:rgba(255,255,255,.08); --line-soft:rgba(255,255,255,.045); --line-2:rgba(255,47,109,.32);
+    --text:#f5f2f8; --text-2:#d7d2df; --muted:#9a94a6; --dim:#77717f; --faint:#544f5d;
+    --cyan:#ff5d8f; --cyan-dim:rgba(255,93,143,.12); --green:#3ddc97; --red:#ff4767; --violet:#a78bfa;
+    --rose:#ff2f6d; --rose-glow:rgba(255,47,109,.42); --indigo:#8b5cf6;
+    --accent:#ff2f6d; --accent-2:#b06cff; --accent-soft:rgba(255,47,109,.13);
+    --side-w:228px; --rail-w:214px;
+    --radius:16px;
+  }
+  html{scrollbar-gutter:auto}
+  body{
+    height:100vh; overflow:hidden;
+    background-color:#050407;
+    background-image:
+      radial-gradient(60% 55% at 6% -8%, rgba(255,47,109,.30) 0%, transparent 62%),
+      radial-gradient(55% 50% at 96% 2%, rgba(139,92,246,.26) 0%, transparent 60%),
+      radial-gradient(70% 60% at 50% 108%, rgba(190,60,160,.16) 0%, transparent 62%);
+    background-attachment:fixed;
+    font-size:14px;
+  }
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.10); border-radius:20px; border:3px solid transparent; background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.2); background-clip:content-box}
+
+  .frame{
+    position:relative;
+    display:flex; width:calc(100% - 36px); max-width:1680px; height:calc(100vh - 36px);
+    margin:18px auto; overflow:hidden;
+    border-radius:26px; border:1px solid rgba(255,255,255,.075);
+    background:linear-gradient(180deg, rgba(22,18,28,.62) 0%, rgba(8,7,11,.92) 42%, rgba(6,5,9,.98) 100%);
+    box-shadow:
+      0 50px 140px -50px rgba(0,0,0,.95),
+      0 0 90px -20px rgba(255,47,109,.28),
+      0 0 130px -40px rgba(139,92,246,.28),
+      inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  .frame::before{
+    content:""; position:absolute; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(70% 60% at 100% 0%, rgba(255,47,109,.10), transparent 60%),
+      radial-gradient(50% 50% at 0% 100%, rgba(139,92,246,.10), transparent 60%);
+  }
+
+  /* ── 左侧栏 ───────────────────────────────────────────────── */
+  .side{
+    position:relative; inset:auto; z-index:2;
+    width:var(--side-w); flex:none; height:100%;
+    display:flex; flex-direction:column; gap:16px;
+    padding:22px 16px 16px;
+    border-right:1px solid rgba(255,255,255,.055);
+    background:linear-gradient(180deg, rgba(26,22,32,.55), rgba(9,8,12,.72));
+    overflow-y:auto;
+  }
+  .side .brand{font-size:19px; letter-spacing:-.01em; gap:10px; padding:2px 4px 6px}
+  .side .brand .mark{
+    width:32px; height:32px; border-radius:10px;
+    background:linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow:0 8px 22px -8px rgba(255,47,109,.85), inset 0 1px 0 rgba(255,255,255,.25);
+  }
+  .side .brand .mark svg{width:17px;height:17px;stroke:#fff}
+  .side .brand i{color:var(--accent); font-style:normal}
+
+  .stat{display:grid; grid-template-columns:1fr 1fr; gap:7px; background:none; border:0; padding:0; box-shadow:none}
+  .stat div{background:rgba(255,255,255,.028); border:1px solid rgba(255,255,255,.055); border-radius:11px; padding:8px 10px}
+  .stat b{display:block; font-size:15px; font-weight:650; letter-spacing:-.01em; color:#f3eff7; line-height:1.25}
+  .stat span{display:block; margin-top:2px; font-size:9.5px; letter-spacing:.05em; color:#79737f; white-space:nowrap}
+
+  .side-h{font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:#6d6775; padding:0 6px 6px; display:flex; align-items:center; justify-content:space-between}
+  .side-h button{background:none; border:0; color:var(--accent); font-size:10.5px; letter-spacing:0; cursor:pointer}
+  .side-block{padding:0}
+  .nav{gap:3px}
+  .nav .it{
+    height:40px; padding:0 11px; border-radius:11px; gap:11px;
+    font-size:13px; color:#a7a1b1; border:1px solid transparent;
+    transition:background .16s, color .16s, border-color .16s;
+  }
+  .nav .it svg{width:16px;height:16px; opacity:.72; flex:none}
+  .nav .it:hover{background:rgba(255,255,255,.05); color:#fff; border-color:rgba(255,255,255,.06)}
+  .nav .it.on{
+    color:#fff; border-color:rgba(255,47,109,.34);
+    background:linear-gradient(90deg, rgba(255,47,109,.17), rgba(255,47,109,.03));
+    box-shadow:0 6px 20px -14px rgba(255,47,109,.8), inset 0 0 0 1px rgba(255,255,255,.03);
+  }
+  .nav .it.on svg{opacity:1; stroke:var(--accent)}
+  .nav .it .n{margin-left:auto; font-family:var(--mono); font-size:10.5px; color:#8a8493; background:rgba(255,255,255,.06); padding:1px 6px; border-radius:20px}
+  .nav .it.on .n{background:rgba(255,47,109,.25); color:#fff}
+  .dimtabs{display:flex; gap:3px; padding:3px; border-radius:10px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.05); margin-bottom:8px}
+  .dimtabs button{flex:1; padding:5px 4px; border-radius:7px; font-size:11px; color:#8f899a; border:0}
+  .dimtabs button.on{background:rgba(255,255,255,.08); color:#fff; box-shadow:0 2px 8px -4px #000}
+  .side-mid{overflow-y:auto; flex:1 1 auto; min-height:0; margin:0; padding:0 2px 0 0}
+  .side-block + .side-block{margin-top:16px}
+  .side-mid::-webkit-scrollbar{width:5px}
+
+  .side-foot{border-top:1px solid rgba(255,255,255,.06); margin-top:auto; padding:14px 4px 2px; gap:9px}
+  .side-foot .status{font-size:11.5px; color:#8b8494}
+  .side-foot .dot{width:6px;height:6px}
+  .side-foot .side-actions{gap:7px}
+  .side-foot .ghost{height:32px; border-radius:9px; font-size:11.5px; padding:0 9px; background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.06); color:#b3adbd}
+  .side-foot .ghost:hover{background:rgba(255,255,255,.07); color:#fff}
+  #updated{font-size:10px; color:#5f5968; font-family:var(--mono)}
+
+  /* ── 右侧筛选栏 ──────────────────────────────────────────── */
+  .rail{
+    width:var(--rail-w); flex:none; height:100%; z-index:2;
+    padding:24px 18px 24px 2px; overflow-y:auto;
+    display:flex; flex-direction:column; gap:16px;
+    border-left:1px solid rgba(255,255,255,.045);
+  }
+  .rail .nav{display:flex; flex-direction:column; gap:5px; overflow:visible; flex-wrap:nowrap}
+  .rail .nav .it{
+    width:100%; height:34px; padding:0 11px; border-radius:9px; font-size:12px;
+    border:1px solid rgba(255,255,255,.055); background:rgba(255,255,255,.022); color:#b5afc0;
+  }
+  .rail .nav .it:hover{background:rgba(255,255,255,.05); border-color:rgba(255,255,255,.1); color:#fff}
+  .rail .nav .it.on{border-color:rgba(255,47,109,.4); background:rgba(255,47,109,.14); color:#fff}
+  .rail .nav .it .t{font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .rail .nav .it .n{font-family:var(--mono); font-size:9.5px; color:#726c7c; margin-left:6px}
+  .rail .nav .it.on .n{color:rgba(255,255,255,.75)}
+  .rail .side-h{padding:0 2px 8px}
+  .rail .side-mid{overflow:visible}
+  .rail .dimtabs{display:none}
+  .rail-more{height:30px; border-radius:8px; border:1px dashed rgba(255,255,255,.09); background:none; color:#8b8494; font-size:11px}
+  .rail-more:hover{color:#fff; border-color:rgba(255,47,109,.4)}
+
+  /* ── 内容区骨架 ──────────────────────────────────────────── */
+  .shell{
+    position:relative;
+    flex:1; min-width:0; height:100%;
+    display:flex; margin-left:0; overflow:hidden;
+  }
+  .main{flex:1; min-width:0; height:100%; overflow-y:auto; overflow-x:hidden; padding:0; position:relative}
+
+  .toolbar{
+    position:sticky; top:0; z-index:30;
+    padding:18px 26px 14px; gap:0;
+    background:linear-gradient(180deg, rgba(10,9,13,.92) 55%, rgba(10,9,13,.55) 100%);
+    backdrop-filter:blur(20px) saturate(1.2);
+    border-bottom:1px solid rgba(255,255,255,.05);
+  }
+  .tb-row{display:flex; align-items:center; gap:10px}
+  .tb-search{flex:1 1 auto; max-width:600px; position:relative}
+  .tb-search svg{position:absolute; left:14px; top:50%; transform:translateY(-50%); width:16px; height:16px; color:#6f6979; pointer-events:none}
+  .tb-search input{
+    width:100%; height:42px; padding:0 76px 0 42px;
+    background:rgba(255,255,255,.045); border:1px solid rgba(255,255,255,.07);
+    border-radius:12px; color:#f2eef6; font-size:13px; outline:none;
+    transition:border-color .16s, background .16s, box-shadow .16s;
+  }
+  .tb-search input::placeholder{color:#6a6474; font-size:12.5px}
+  .tb-search input:focus{border-color:rgba(255,47,109,.5); background:rgba(255,255,255,.06); box-shadow:0 0 0 3px rgba(255,47,109,.12)}
+  .search-kbd{position:absolute; right:12px; top:50%; transform:translateY(-50%); font-size:10px; color:#6a6474; border:1px solid rgba(255,255,255,.08); border-radius:5px; padding:1px 5px; background:rgba(255,255,255,.03)}
+  .tb-right{margin-left:auto; display:flex; align-items:center; gap:9px}
+  .top-capsule{
+    display:flex; align-items:center; gap:8px; height:42px; padding:0 13px;
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.07);
+    border-radius:12px; font-size:11.5px; color:#8d879a; white-space:nowrap;
+    transition:border-color .16s, background .16s;
+  }
+  .top-capsule:hover{border-color:rgba(255,255,255,.13); background:rgba(255,255,255,.06)}
+  .top-capsule-dot{width:6px; height:6px; border-radius:50%; background:var(--green); box-shadow:0 0 8px var(--green)}
+  .top-capsule-lbl{letter-spacing:.02em}
+  .top-capsule-val{font-weight:650; color:#f1edf5; font-size:12px}
+  .account{display:flex; align-items:center; gap:8px; padding-left:3px; cursor:default}
+  .avatar{
+    width:34px; height:34px; border-radius:50%; display:grid; place-items:center;
+    background:linear-gradient(140deg, #ff2f6d, #8b5cf6);
+    color:#fff; font-size:12.5px; font-weight:700; letter-spacing:.02em;
+    box-shadow:0 6px 18px -8px rgba(255,47,109,.9), inset 0 1px 0 rgba(255,255,255,.3);
+  }
+  .acc-name{font-size:12.5px; color:#c9c3d2}
+  .tb-seg{display:flex; gap:3px; padding:3px; border-radius:9px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.05); flex:none}
+  .tb-seg button{border-radius:7px; padding:5px 10px; font-size:11.5px; color:#8d879a}
+  .tb-seg button.on{background:rgba(255,255,255,.09); color:#fff}
+  .tb-seg[hidden]{display:none}
+  .sortsel{height:34px; border-radius:9px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.07); color:#c9c3d2; font-size:11.5px; padding:0 9px; outline:none}
+  .iconbtn{width:38px; height:38px; border-radius:10px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.06); color:#b3adbd}
+  .iconbtn:hover{background:rgba(255,255,255,.08); color:#fff}
+  #sidebtn{display:none}
+  #railbtn{display:none}
+
+  .primary{
+    background:linear-gradient(135deg, #ff2f6d, #d4134c);
+    box-shadow:0 10px 26px -12px rgba(255,47,109,.9), inset 0 1px 0 rgba(255,255,255,.18);
+    border-radius:10px; font-weight:600;
+  }
+  .primary:hover{filter:brightness(1.07)}
+  .ghostbtn{border-radius:10px; background:rgba(255,255,255,.045); border:1px solid rgba(255,255,255,.07); color:#cfc9d8; font-size:12px}
+  .ghostbtn:hover{background:rgba(255,255,255,.08); color:#fff}
+  .pill{border-radius:9px; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.04); font-size:11.5px}
+  .filters{padding-top:10px; gap:7px}
+  .filters .chip{border-radius:8px; background:rgba(255,47,109,.10); border:1px solid rgba(255,47,109,.25); color:#ffc3d4; font-size:11px}
+
+  /* ── 结果条 ─────────────────────────────────────────────── */
+  .resultbar{padding:20px 26px 6px; gap:10px; align-items:flex-end}
+  .resultbar h2{font-size:26px; font-weight:700; letter-spacing:-.025em; color:#fbf8fd}
+  .resultbar .sub{font-size:11.5px; color:#7d7787; padding-bottom:5px; font-family:var(--mono)}
+  .resultbar .right{gap:8px; margin-left:auto}
+
+  /* ── 卡片网格 ───────────────────────────────────────────── */
+  .grid{
+    grid-template-columns:repeat(auto-fill, minmax(200px, 1fr));
+    gap:26px 18px; padding:18px 26px 90px;
+  }
+  .feed-more{display:flex; justify-content:center; padding:0 26px 34px}
+  .feed-more[hidden]{display:none}
+  .feed-more button{
+    padding:9px 18px; border-radius:999px; border:1px solid rgba(255,255,255,.12);
+    background:rgba(255,255,255,.04); color:var(--muted); font:inherit;
+    font-size:12.5px; cursor:pointer; transition:color .2s, border-color .2s, background .2s;
+  }
+  .feed-more button:hover{
+    color:#fff; border-color:rgba(255,47,109,.45); background:rgba(255,47,109,.08);
+  }
+  .card{
+    background:transparent; border:0; border-radius:0; padding:0; overflow:visible;
+    box-shadow:none; transition:transform .22s ease;
+  }
+  .card:hover{transform:translateY(-4px); border-color:transparent; box-shadow:none}
+  .poster-card{background:transparent; border:0}
+  .card-cover, .poster-card .card-cover{
+    position:relative; aspect-ratio:800/536; border-radius:14px; overflow:hidden;
+    background:linear-gradient(160deg, #191521, #0a090d);
+    border:1px solid rgba(255,255,255,.07);
+    box-shadow:0 14px 34px -18px rgba(0,0,0,.9);
+    transition:border-color .2s, box-shadow .2s;
+  }
+  .card:hover .card-cover{
+    border-color:rgba(255,47,109,.45);
+    box-shadow:0 22px 48px -20px rgba(0,0,0,.95), 0 0 26px -8px rgba(255,47,109,.45);
+  }
+  .card-cover img{width:100%; height:100%; object-fit:cover; display:block;
+    transition:transform .5s ease, filter .25s ease}
+  .card:hover .card-cover img{transform:scale(1.045)}
+  /* 隐私模糊：首页/搜索页封面默认盖一层毛玻璃，点“隐私模糊”才显示原图。
+     只作用于有封面的卡片，NO COVER 空态不受影响。 */
+  body.privacy-covers .card-cover.has-cover::after{
+    content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
+    background:linear-gradient(145deg, rgba(24,20,32,.40), rgba(8,7,12,.62));
+    -webkit-backdrop-filter:blur(10px) saturate(1.15);
+    backdrop-filter:blur(10px) saturate(1.15);
+  }
+  body.privacy-covers .card-cover.has-cover::before{
+    content:"隐私模糊"; position:absolute; z-index:3; left:50%; top:50%;
+    transform:translate(-50%,-50%); pointer-events:none;
+    padding:5px 10px; border-radius:999px; white-space:nowrap;
+    color:rgba(255,255,255,.76); background:rgba(10,9,13,.46);
+    border:1px solid rgba(255,255,255,.16);
+    font-family:var(--mono); font-size:10px; letter-spacing:.08em;
+    -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
+  }
+  body.privacy-covers .card-cover.has-cover img{
+    filter:blur(16px) saturate(.72); transform:scale(1.08);
+  }
+  body.privacy-covers .card:hover .card-cover.has-cover img{transform:scale(1.08)}
+  .card-cover .ph, .card-cover .card-ph{width:100%; height:100%; display:grid; place-items:center; color:#6a6373; font-family:var(--mono); font-size:11px; letter-spacing:.1em}
+  .card-res, .card-sub, .card-201{
+    position:absolute; z-index:2; display:inline-flex; align-items:center; gap:4px;
+    padding:3px 7px; border-radius:6px; font-size:9px; font-weight:650; letter-spacing:.06em;
+    background:rgba(5,4,8,.74); border:1px solid rgba(255,255,255,.14); color:#f3eef7;
+    backdrop-filter:blur(8px);
+  }
+  .card-res{top:8px; left:8px}
+  .card-sub{left:8px; bottom:8px; color:#ffd0dc; border-color:rgba(255,47,109,.35); background:rgba(40,4,15,.72)}
+  .card-201{top:8px; right:8px; color:#c9b6ff; border-color:rgba(139,92,246,.4); background:rgba(18,8,36,.72)}
+  .card-watch{
+    position:absolute; top:8px; right:8px; z-index:2; display:inline-flex; align-items:center;
+    padding:3px 7px; border-radius:6px; font-size:9px; font-weight:650; letter-spacing:.06em;
+    background:rgba(8,5,16,.78); border:1px solid rgba(139,92,246,.45); color:#d8c9ff;
+    backdrop-filter:blur(8px);
+  }
+  .card-prog{position:absolute; left:0; right:0; bottom:0; z-index:3; height:3px; background:rgba(0,0,0,.62)}
+  .card-prog i{display:block; height:100%; background:linear-gradient(90deg,#ff2f6d,#a06cff)}
+  .card-info{padding:10px 2px 0}
+  .card-title{
+    font-size:12.5px; font-weight:600; line-height:1.4; color:#eee9f2; letter-spacing:-.005em;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    min-height:2.8em;
+  }
+  .card:hover .card-title{color:#fff}
+  .card-meta{
+    margin-top:5px; display:flex; align-items:center; gap:5px; flex-wrap:wrap;
+    font-family:var(--mono); font-size:10px; color:#847e8d; letter-spacing:.01em;
+  }
+  .card-meta b{color:#b7b1c1; font-weight:600}
+.card-code{position:static; left:auto; bottom:auto; display:inline; padding:0; border:0; border-radius:0;
+  background:none; box-shadow:none; -webkit-backdrop-filter:none; backdrop-filter:none;
+  color:inherit; font:inherit; letter-spacing:0}
+  .card-chips{display:flex; gap:4px; margin-top:7px; overflow:hidden; height:17px; flex-wrap:nowrap}
+  .chip-tag{
+    flex:none; font-size:9px; letter-spacing:.03em; padding:1px 6px; border-radius:5px;
+    background:rgba(255,255,255,.045); border:1px solid rgba(255,255,255,.05); color:#8d8797;
+  }
+  .card-pending{margin-top:6px; font-size:9px; color:#ffae7a; letter-spacing:.04em}
+  .card-fav{
+    margin-left:auto; flex:none; display:inline-flex; align-items:center; justify-content:center;
+    width:20px; height:20px; padding:0; border:0; border-radius:5px; background:transparent;
+    color:#7f7889; font:inherit; font-size:13px; line-height:1; cursor:pointer;
+  }
+  .card-fav:hover{color:#ffd166; background:rgba(255,209,102,.08)}
+  .card-fav.on{color:#ffd166}
+
+  /* ── 继续观看 ──────────────────────────────────────────── */
+  .continue-strip{
+    margin:14px 26px 0; padding:12px 14px 14px; border:1px solid rgba(255,255,255,.07);
+    border-radius:16px; background:rgba(255,255,255,.022);
+  }
+  .continue-strip[hidden]{display:none}
+  .continue-head{display:flex; align-items:baseline; gap:8px; margin-bottom:10px}
+  .continue-head span:first-child{font-size:12px; font-weight:650; color:#eee9f2; letter-spacing:.02em}
+  .continue-row{display:flex; gap:10px; overflow-x:auto; padding-bottom:2px; scrollbar-width:thin}
+  .continue-card{
+    flex:none; width:176px; padding:0; text-align:left; font:inherit; color:inherit;
+    border:1px solid rgba(255,255,255,.07); border-radius:12px;
+    background:rgba(255,255,255,.025); cursor:pointer; overflow:hidden;
+  }
+  .continue-card:hover{border-color:rgba(255,47,109,.35); background:rgba(255,47,109,.06)}
+  .continue-cover{position:relative; aspect-ratio:16/9; background:#16131b; overflow:hidden}
+  .continue-cover img{width:100%; height:100%; object-fit:cover; display:block}
+  .continue-prog{position:absolute; left:0; right:0; bottom:0; height:3px; background:rgba(0,0,0,.62)}
+  .continue-prog i{display:block; height:100%; background:linear-gradient(90deg,#ff2f6d,#a06cff)}
+  .continue-body{display:flex; align-items:center; justify-content:space-between; gap:6px; padding:7px 8px}
+  .continue-body b{font-size:10.5px; color:#ded8e6; font-weight:650}
+  .continue-body span{font-family:var(--mono); font-size:9px; color:#847e8d; white-space:nowrap}
+
+  /* ── 面板 / 空态 ────────────────────────────────────────── */
+  .panel{
+    background:rgba(255,255,255,.022); border:1px solid rgba(255,255,255,.06);
+    border-radius:16px; margin:14px 26px 0; padding:16px 18px;
+  }
+  .panel h3{font-size:13px}
+  .subs-suggest{margin-top:14px; padding-top:10px; border-top:1px solid rgba(255,255,255,.06)}
+  .subs-suggest > summary{
+    list-style:none; cursor:pointer; display:flex; align-items:center; gap:7px;
+    font-size:11px; letter-spacing:.03em; color:#8b8596; padding:2px 0;
+  }
+  .subs-suggest > summary::-webkit-details-marker{display:none}
+  .subs-suggest > summary::before{content:"＋"; font-family:var(--mono); color:#ff5c86}
+  .subs-suggest[open] > summary::before{content:"−"}
+  .subs-suggest > summary:hover{color:#d7d2de}
+  .subs-suggest .sub-row{margin-top:6px}
+  .backlog-groups{display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 2px}
+  .backlog-groups button{
+    font:inherit; font-size:11px; color:var(--dim); cursor:pointer;
+    display:inline-flex; align-items:center; gap:5px;
+    padding:4px 9px; border-radius:999px;
+    border:1px solid rgba(255,255,255,.1); background:rgba(255,255,255,.03);
+  }
+  .backlog-groups button:hover{color:var(--text); border-color:rgba(255,255,255,.2)}
+  .backlog-groups button b{font-weight:600; color:var(--text-2); font-variant-numeric:tabular-nums}
+  .backlog-groups button.on{
+    color:#ffd7e2; border-color:rgba(255,47,109,.55);
+    background:rgba(255,47,109,.14);
+  }
+  .backlog-groups button.on b{color:#fff}
+  .empty{padding:60px 26px; color:#6f6979}
+  .empty b{color:#a9a3b3}
+
+  /* ── 任务队列 ───────────────────────────────────────────── */
+  .queue-head{padding:2px 0 14px; gap:10px}
+  .queue-head h3{font-size:17px; font-weight:750; letter-spacing:-.02em}
+  .qstats{display:flex; gap:6px; flex-wrap:wrap}
+  .qstat{display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px;
+    font-family:var(--mono); font-size:10.5px; color:#8d879a;
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.07)}
+  .qstat b{color:#e7e2ee; font-weight:700}
+  .qstat.run{color:#ff8aa8; background:rgba(255,47,109,.1); border-color:rgba(255,47,109,.3)}
+  .qstat.wait{color:#c9a6ff; background:rgba(176,108,255,.09); border-color:rgba(176,108,255,.26)}
+  .qstat.bad{color:#ff9b9b; background:rgba(255,90,90,.09); border-color:rgba(255,90,90,.28)}
+  .qstat.okk{color:#7ee2a0; background:rgba(74,222,128,.08); border-color:rgba(74,222,128,.24)}
+  .queue-head .hint{flex:1 1 180px; font-family:var(--mono); font-size:11px; color:#847e8d}
+  .queue-head .r{gap:8px}
+  .queue-head .ghostbtn{padding:6px 11px; font-size:11.5px}
+  #queue-flash{font-size:11px; color:#ff8aa8}
+  #queue-flash.err{color:#ff9b9b}
+  .queue-list{grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:12px;
+    max-height:none; overflow:visible; padding:2px 2px 4px}
+  .queue-sec{font-size:10px; color:#6f6979; letter-spacing:.14em}
+  .job{padding:13px 14px 12px; gap:9px; border-radius:14px;
+    background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.018));
+    border:1px solid rgba(255,255,255,.07); transition:border-color .16s}
+  .job:hover{border-color:rgba(255,47,109,.26)}
+  .job .jcode{font-size:12.5px}
+  .job .jst{font-size:9.5px; letter-spacing:.05em; padding:2px 8px; border-radius:999px;
+    color:#a8a2b2; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08)}
+  .job .jst.s-downloading,.job .jst.s-uploading,.job .jst.s-cloud{
+    color:#ff8aa8; background:rgba(255,47,109,.11); border-color:rgba(255,47,109,.3)}
+  .job .jst.s-organizing{color:#c9a6ff; background:rgba(176,108,255,.1); border-color:rgba(176,108,255,.28)}
+  .job .jst.s-done{color:#7ee2a0; background:rgba(74,222,128,.1); border-color:rgba(74,222,128,.26)}
+  .job .jst.s-failed,.job .jst.s-cancelled{color:#ff9b9b; background:rgba(255,90,90,.1); border-color:rgba(255,90,90,.28)}
+  .job .jacts{gap:8px}
+  .job .jacts button{font-size:10.5px; color:#8d879a; padding:2px 0; border:0; background:none}
+  .job .jacts button:hover{color:#fff}
+  .job .jacts .jstop:hover{color:#ff9b9b}
+  .jprog{display:flex; align-items:center; gap:10px}
+  .jprog .jbar{flex:1; height:4px; border-radius:999px; background:rgba(255,255,255,.07)}
+  .jprog .jbar i{background:linear-gradient(90deg,#ff2f6d,#b06cff)}
+  .job.done .jprog .jbar i{background:linear-gradient(90deg,#3ddc84,#7ee2a0)}
+  .job.failed .jprog .jbar i{background:#ff5a5a}
+  .job.done{border-color:rgba(74,222,128,.18)}
+  .job.failed{border-color:rgba(255,90,90,.26)}
+  .job .jpct{font-family:var(--mono); font-size:10.5px; color:#cfc9d8; min-width:34px; text-align:right}
+  .job .jmeta{font-size:10.5px; color:#847e8d; min-width:0}
+  .job .jmeta > span:first-child{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .job .jmeta a{color:#ff8aa8}
+  .queue-empty{margin:64px auto; max-width:340px; color:#6f6979}
+  .queue-empty .qe-t{font-size:14px; font-weight:650; color:#cfc9d8; margin-bottom:6px}
+  .queue-empty .qe-s{font-size:11.5px; font-family:var(--mono)}
+
+  /* ── 运行日志 ───────────────────────────────────────────── */
+  .log-head{display:flex; align-items:center; gap:12px; padding:2px 0 14px; flex-wrap:wrap}
+  .log-head h3{font-size:17px; font-weight:750; letter-spacing:-.02em}
+  .log-head .hint{font-family:var(--mono); font-size:11px; color:#847e8d}
+  .log-head .r{margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .logseg{padding:2px; border-radius:9px}
+  .logseg button{padding:4px 10px; font-size:11px; border-radius:7px}
+  #log-q{height:30px; width:180px; border-radius:8px; padding:0 10px;
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
+    color:#c9c3d2; font-size:11.5px; font-family:var(--sans); outline:none}
+  #log-q:focus{border-color:rgba(255,47,109,.4); background:rgba(255,255,255,.06)}
+  .log-head .ghostbtn{padding:6px 11px; font-size:11.5px}
+  .loglist{height:calc(100vh - 292px); min-height:320px; overflow:auto; padding:8px;
+    border-radius:14px; background:rgba(0,0,0,.34);
+    border:1px solid rgba(255,255,255,.07);
+    font-family:var(--mono); font-size:11.5px; line-height:1.62}
+  .lrow{display:grid; grid-template-columns:64px 58px minmax(0,1fr); gap:10px;
+    padding:3px 8px; border-radius:6px; align-items:start}
+  .lrow:hover{background:rgba(255,255,255,.035)}
+  .lt{color:#6d6777; font-size:10.5px; padding-top:1px; font-variant-numeric:tabular-nums}
+  .llv{font-size:9px; letter-spacing:.06em; text-align:center; padding:1px 0;
+    border-radius:4px; color:#8d879a; background:rgba(255,255,255,.05); margin-top:1px}
+  .lv-info .llv{color:#9fd0ff; background:rgba(80,160,255,.1)}
+  .lv-warning .llv{color:#ffd18a; background:rgba(255,190,80,.12)}
+  .lv-error .llv,.lv-critical .llv{color:#ff9b9b; background:rgba(255,90,90,.14)}
+  .lmsg{color:#c9c3d2; white-space:pre-wrap; word-break:break-word}
+  .lv-error .lmsg,.lv-critical .lmsg{color:#ffb4b4}
+  .log-empty{padding:60px 12px; text-align:center; color:#6f6979; font-size:12px}
+
+  /* ── 详情弹层 ───────────────────────────────────────────── */
+  .dlayer{
+    position:fixed; inset:0; z-index:200; display:grid; place-items:center; padding:28px;
+    background:rgba(4,3,6,.7); backdrop-filter:blur(26px) saturate(1.1);
+    animation:fadeIn .18s ease;
+  }
+  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+  @keyframes popIn{from{opacity:0; transform:translateY(14px) scale(.985)}to{opacity:1; transform:none}}
+  .dpanel{
+    position:relative; width:100%; max-width:1060px; max-height:min(92vh, 900px);
+    display:flex; flex-direction:column; overflow:hidden;
+    background:linear-gradient(180deg, #121016 0%, #0a090d 60%);
+    border:1px solid rgba(255,255,255,.09); border-radius:24px; padding:0;
+    box-shadow:0 60px 160px -40px rgba(0,0,0,.95), 0 0 90px -30px rgba(255,47,109,.35), inset 0 1px 0 rgba(255,255,255,.06);
+    animation:popIn .22s cubic-bezier(.2,.8,.2,1);
+  }
+  .dhero{display:flex; gap:24px; padding:30px 30px 20px; position:relative; flex:none}
+  .dposter{
+    width:240px; flex:none; aspect-ratio:800/536; border-radius:14px; object-fit:cover;
+    border:1px solid rgba(255,255,255,.1); background:#15121b;
+    box-shadow:0 24px 50px -22px #000;
+  }
+  .dposter.ph{display:grid; place-items:center; color:#5a5463; font-family:var(--mono); font-size:11px}
+  .dinfo{flex:1; min-width:0; padding-top:4px}
+  .dcode-big{font-size:36px; font-weight:800; letter-spacing:-.03em; line-height:1.1; color:#fff}
+  .dname{margin-top:8px; font-size:15px; color:#e4dfea; line-height:1.5; max-width:640px}
+  .dorig{margin-top:4px; font-size:11.5px; color:#807a8a; letter-spacing:.02em; font-family:var(--mono)}
+  .dpills{display:flex; flex-wrap:wrap; gap:6px; margin-top:14px}
+  .dpill{
+    padding:3px 9px; border-radius:6px; font-size:10.5px; letter-spacing:.03em;
+    background:rgba(255,255,255,.055); border:1px solid rgba(255,255,255,.07); color:#c6c0cf;
+  }
+  .dpill.pink{background:rgba(255,47,109,.14); border-color:rgba(255,47,109,.32); color:#ffc2d2}
+  .dpill.violet{background:rgba(139,92,246,.14); border-color:rgba(139,92,246,.3); color:#cdb9ff}
+  .dmeta-line{margin-top:14px; font-size:11.5px; color:#837d8d; display:flex; flex-wrap:wrap; gap:6px 14px}
+  .dmeta-line b{color:#cfc9d8; font-weight:600}
+  .dclose{
+    position:absolute; top:18px; right:18px; width:34px; height:34px; border-radius:50%;
+    display:grid; place-items:center; border:1px solid rgba(255,255,255,.1);
+    background:rgba(255,255,255,.05); color:#b7b1c1; font-size:15px; line-height:1; cursor:pointer;
+  }
+  .dclose:hover{background:rgba(255,47,109,.18); border-color:rgba(255,47,109,.4); color:#fff}
+
+  .dtabs{display:flex; gap:26px; padding:0 30px; border-bottom:1px solid rgba(255,255,255,.07); flex:none}
+  .dtab{
+    position:relative; padding:12px 0 13px; border:0; background:none; cursor:pointer;
+    font-size:12.5px; color:#837d8d; letter-spacing:.01em;
+  }
+  .dtab:hover{color:#d7d2df}
+  .dtab.on{color:#fff}
+  .dtab.on::after{content:""; position:absolute; left:0; right:0; bottom:-1px; height:2px; border-radius:2px; background:linear-gradient(90deg, var(--accent), var(--accent-2))}
+  .dbody{padding:20px 30px 28px; overflow-y:auto; flex:1; min-height:0}
+  .dpane{display:none}
+  .dpane.on{display:block}
+
+  .ovgrid{display:grid; grid-template-columns:1fr 1fr; gap:0 32px}
+  .ovrow{display:flex; gap:14px; padding:9px 0; border-bottom:1px solid rgba(255,255,255,.045); font-size:12.5px; align-items:flex-start}
+  .ovrow .k{flex:none; width:74px; color:#7b7585; font-size:11.5px; padding-top:1px}
+  .ovrow .v{flex:1; min-width:0; color:#ded9e5; word-break:break-word}
+  .ovrow .v.mono{font-family:var(--mono); font-size:11.5px; color:#b9b3c3}
+  .ovrow .v a{color:#ff7a9e; text-decoration:none; border-bottom:1px solid rgba(255,122,158,.25)}
+  .ovrow .v a:hover{color:#fff}
+  .ovrow.full{grid-column:1 / -1}
+  .ovsum{grid-column:1 / -1; padding:14px 0 4px; color:#b6b0bf; font-size:12.5px; line-height:1.75; white-space:pre-wrap}
+
+  .mtool{display:flex; align-items:center; gap:10px; margin-bottom:12px; font-size:11.5px; color:#7f7989}
+  .mtool .sp{flex:1}
+  .mtool select{height:30px; border-radius:8px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.07); color:#c9c3d2; font-size:11px; padding:0 8px}
+  .mtable{display:flex; flex-direction:column; gap:7px}
+  .mhead, .mrow{display:grid; grid-template-columns:minmax(0,1fr) 84px 92px 104px 148px; gap:14px; align-items:center}
+  .mhead{padding:0 14px 4px; font-size:9.5px; letter-spacing:.14em; color:#6d6777; text-transform:uppercase; font-family:var(--mono)}
+  .mrow{
+    padding:12px 14px; border-radius:12px;
+    background:rgba(255,255,255,.028); border:1px solid rgba(255,255,255,.055);
+    transition:background .15s, border-color .15s;
+  }
+  .mrow:hover{background:rgba(255,255,255,.05); border-color:rgba(255,255,255,.1)}
+  .mname{min-width:0}
+  .mname b{display:block; font-size:12.5px; font-weight:600; color:#eae5ef; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .mname span{display:block; margin-top:3px; font-family:var(--mono); font-size:9.5px; color:#6e6878; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .mseed{font-family:var(--mono); font-size:12px; color:#eae5ef}
+  .mseed.hot{color:#4ade80}
+  .msize{font-family:var(--mono); font-size:11.5px; color:#bdb7c7}
+  .mflags{display:flex; gap:4px; flex-wrap:wrap}
+  .mflag{font-size:9px; letter-spacing:.05em; padding:2px 6px; border-radius:5px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.06); color:#95909f}
+  .mflag.sub{background:rgba(255,47,109,.12); border-color:rgba(255,47,109,.3); color:#ffbed0}
+  .mflag.hd{background:rgba(139,92,246,.12); border-color:rgba(139,92,246,.3); color:#cbb6ff}
+  .mflag.done{background:rgba(61,220,151,.1); border-color:rgba(61,220,151,.28); color:#7ff0bb}
+  .addbtn{
+    justify-self:end; height:32px; padding:0 12px; border-radius:8px; border:0; cursor:pointer;
+    font-size:11px; font-weight:650; color:#fff; white-space:nowrap;
+    background:linear-gradient(135deg, #ff2f6d, #d4134c);
+    box-shadow:0 8px 20px -10px rgba(255,47,109,.95), inset 0 1px 0 rgba(255,255,255,.18);
+    transition:filter .15s, transform .15s;
+  }
+  .addbtn:hover{filter:brightness(1.1); transform:translateY(-1px)}
+  .addbtn:disabled{background:rgba(255,255,255,.05); color:#6f6979; box-shadow:none; cursor:default; transform:none; border:1px solid rgba(255,255,255,.06)}
+  .mhint{padding:26px 0; text-align:center; color:#7a7484; font-size:12px}
+  .mhint.err{color:#ff8ca6}
+  .mhint button{margin-left:8px; color:#ff9db6; background:none; border:0; cursor:pointer; font-size:12px; text-decoration:underline}
+
+  .filelist{display:flex; flex-direction:column; gap:6px}
+  .frow{display:flex; align-items:center; gap:10px; padding:10px 13px; border-radius:10px; background:rgba(255,255,255,.026); border:1px solid rgba(255,255,255,.05)}
+  .frow .ic{width:26px; height:26px; border-radius:7px; display:grid; place-items:center; background:rgba(255,47,109,.12); color:#ff9bb5; font-size:9px; font-weight:700; letter-spacing:.02em; flex:none}
+  .frow .fn{flex:1; min-width:0; font-family:var(--mono); font-size:11.5px; color:#cfc9d8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .frow .fs{font-family:var(--mono); font-size:10.5px; color:#7c7687}
+  .frow .fp{width:62px; text-align:right; font-size:9px; letter-spacing:.1em; color:#6f6979}
+  .dnote{padding:16px 0 6px; font-size:11.5px; color:#7a7484; line-height:1.7}
+  .dactions{display:flex; flex-wrap:wrap; gap:8px; padding-top:18px; margin-top:6px; border-top:1px solid rgba(255,255,255,.06)}
+  .dactions .ghost, .dactions .primary{height:34px; padding:0 14px; border-radius:9px; font-size:12px; display:inline-flex; align-items:center; gap:6px}
+  .dactions .ghost{border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.04); color:#cfc9d8}
+  .dactions .ghost:hover{background:rgba(255,255,255,.08); color:#fff}
+  .dactions .danger{color:#ff8ba4; border-color:rgba(255,71,103,.25)}
+  .dactions .danger:hover{background:rgba(255,71,103,.14); color:#ffd0da}
+  .dactions .sp{flex:1}
+
+  /* 灯箱 / 预览墙沿用旧结构，仅调色 */
+  .dwall .dthumb{border-radius:10px; border-color:rgba(255,255,255,.07)}
+  .lightbox{background:rgba(4,3,6,.9); backdrop-filter:blur(18px)}
+
+  /* 窄屏：筛选栏收进抽屉 */
+  #railscrim{position:fixed; inset:0; z-index:59; background:rgba(3,2,5,.6); backdrop-filter:blur(4px)}
+  #scrim{position:fixed; inset:0; z-index:65; background:rgba(3,2,5,.6); backdrop-filter:blur(4px)}
+  @media(max-width:1280px){
+    .grid{grid-template-columns:repeat(auto-fill, minmax(164px, 1fr))}
+  }
+  @media(max-width:1180px){
+    #railbtn{display:grid}
+    .rail{
+      position:fixed; z-index:60; top:0; right:0; bottom:0; width:272px; height:100%;
+      padding:20px 18px; background:#0b0a0f; border-left:1px solid rgba(255,255,255,.09);
+      box-shadow:-30px 0 80px -30px #000; transform:translateX(104%);
+      transition:transform .26s cubic-bezier(.2,.8,.2,1);
+    }
+    body.rail-open .rail{transform:none}
+    .rail .dimtabs{display:flex}
+    .top-capsule-lbl{display:none}
+  }
+  @media(max-width:960px){
+    .frame{width:100%; height:100vh; margin:0; border-radius:0; border:0}
+    .side{position:fixed; left:0; top:0; bottom:0; width:262px; height:100%; z-index:70; transform:translateX(-102%); transition:transform .26s cubic-bezier(.2,.8,.2,1); background:#0a090e; box-shadow:30px 0 80px -30px #000}
+    .side.open{transform:none}
+    #sidebtn{display:grid}
+    .toolbar{padding:12px 16px 10px}
+    .resultbar{padding:16px 16px 4px}
+    .resultbar h2{font-size:22px}
+    .grid{padding:14px 16px 70px; gap:20px 14px; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr))}
+    .panel{margin:12px 16px 0}
+    .dlayer{padding:0}
+    .dpanel{max-width:none; width:100%; height:100%; max-height:none; border-radius:0; border:0}
+    .dhero{padding:22px 18px 16px; gap:16px}
+    .dposter{width:180px}
+    .dcode-big{font-size:26px}
+    .dtabs{padding:0 18px; gap:18px; overflow-x:auto}
+    .dbody{padding:16px 18px 24px}
+    .ovgrid{grid-template-columns:1fr}
+    .mhead{display:none}
+    .mrow{display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px}
+    .mname{flex:1 1 100%}
+    .mflags{display:none}
+    .addbtn{margin-left:auto}
+    .dclose{top:12px; right:12px}
+  }
+  @media(max-width:620px){
+    .acc-name{display:none}
+    .log-head .r{width:100%; margin-left:0}
+    #log-q{flex:1; width:auto; min-width:0}
+    .loglist{height:calc(100vh - 360px)}
+    .lrow{grid-template-columns:52px 48px minmax(0,1fr); gap:8px}
+    .top-capsule{padding:0 10px}
+    .top-capsule-val{font-size:11px}
+    .tb-search input{height:38px; font-size:12.5px; padding-right:44px}
+    .search-kbd{display:none}
+    .resultbar h2{font-size:19px}
+    .resultbar .sub{display:none}
+    .grid{grid-template-columns:repeat(2, minmax(0,1fr)); gap:18px 11px; padding:12px 14px 60px}
+    .card-info{padding-top:8px}
+    .card-title{font-size:11.5px}
+    .dhero{flex-direction:column; gap:14px}
+    .dposter{width:100%; max-width:260px; align-self:flex-start}
+    .dcode-big{font-size:24px}
+    .dname{font-size:13px}
+  }
   @media(prefers-reduced-motion:reduce){
     *{transition:none !important; animation:none !important}
   }
 </style>
 </head>
 <body>
+<div class="frame">
 
 <!-- ───────── 侧栏 -->
 <aside class="side" id="side">
@@ -804,6 +1462,11 @@
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 6h11M3 12h11M3 18h7"/><path d="m16 12 3 3 3-3"/><path d="M19 15V6"/></svg>
         <span class="t">任务队列</span><span class="n" id="queue-n"></span></button>
+      <button class="it" id="log-open" type="button" title="运行日志：bot 与网页的实时输出">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="m4 17 5-5-5-5"/><path d="M12 19h8"/></svg>
+        <span class="t">运行日志</span></button>
       <button class="it" id="subs-open" type="button" title="订阅演员 / 系列，自动追新">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
@@ -814,26 +1477,13 @@
              stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         <span class="t">设置</span></button>
+      <button class="it" id="maint-open" type="button"
+              title="归档维护：补刮与字段纠正、远端完整性检查、目录命名">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14.7 6.3a4 4 0 0 1 5 5L9 22l-5 1 1-5L14.7 6.3z"/><path d="M12 9l3 3"/></svg>
+        <span class="t">归档维护</span></button>
     </nav>
-  </div>
-
-  <!-- 系列 / 月份放同一个滚动容器：矮屏和移动端也能滚到底，页脚永远钉住可见 -->
-  <div class="side-mid" id="side-mid">
-    <div class="side-block series">
-      <div class="side-h"><span id="dim-label">系列</span>
-        <button id="clear-series" type="button" hidden>清除</button></div>
-      <div class="dimtabs" id="dimtabs">
-        <button type="button" data-dim="series" class="on">系列</button>
-        <button type="button" data-dim="actor">演员</button>
-        <button type="button" data-dim="maker">片商</button>
-      </div>
-      <nav class="nav" id="nav-series"></nav>
-    </div>
-
-    <div class="side-block month">
-      <div class="side-h">月份 <button id="clear-month" type="button" hidden>清除</button></div>
-      <nav class="nav" id="nav-month"></nav>
-    </div>
   </div>
 
   <div class="side-foot">
@@ -872,15 +1522,22 @@
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round">
           <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
         </svg>
-        <input id="q" type="search" placeholder="搜索番号 / 系列 / 文件名；输入番号回车可搜网络资源   ( / )" autocomplete="off">
+        <input id="q" type="search" placeholder="搜索番号、系列、文件名…" autocomplete="off">
+        <kbd class="search-kbd">/</kbd>
       </div>
-      <div class="tb-seg" id="kindseg">
-        <button type="button" data-filter="all" class="on">全部</button>
-        <button type="button" data-filter="video">视频</button>
-        <button type="button" data-filter="image">图片</button>
+      <div class="tb-right">
+        <button class="iconbtn" id="railbtn" type="button" aria-label="筛选">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="currentColor" stroke="none"/>
+            <circle cx="15" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="8" cy="18" r="2" fill="currentColor" stroke="none"/></svg>
+        </button>
+        <div class="top-capsule" id="top-storage" title="CloudDrive2 存储配额与运行状态（点击可直接打开存储设置）" role="button" tabindex="0">
+          <span class="top-capsule-dot" id="top-storage-dot"></span>
+          <span class="top-capsule-lbl">CloudDrive2</span>
+          <span class="top-capsule-val" id="top-storage-val">20.0 TB 可用</span>
+        </div>
+        <div class="account"><span class="avatar">U</span><span class="acc-name">User</span></div>
       </div>
-      <button class="ghostbtn" id="maint-open" type="button"
-              title="归档维护：补刮与字段纠正、远端完整性检查、目录命名">归档维护</button>
     </div>
     <div class="tb-row filters" id="activefilters"></div>
   </div>
@@ -892,25 +1549,46 @@
         <button type="button" data-kind="series">番号系列</button>
       </div>
       <input id="sub-actor" type="text" autocomplete="off" spellcheck="false"
-             placeholder="演员页 ID 或链接，例如 YnZ1K 或 https://javdb.com/actors/YnZ1K">
+             placeholder="JavBus 演员 ID 或链接，例如 w5a 或 https://javbus.com/star/w5a">
+      <div class="subs-scope" id="sub-scope-box">
+        <span style="color:var(--muted)">订阅范围：</span>
+        <label><input type="radio" name="sub-scope" value="new" checked> 仅追新（只抓今天之后）</label>
+        <label><input type="radio" name="sub-scope" value="full"> 完整系列（全量回填历史）</label>
+      </div>
       <div class="subs-opts">
         <label>每次最多 <input id="sub-max" type="number" min="1" max="5" value="1"></label>
         <label>单片上限 <input id="sub-size" type="number" min="0" step="0.5" value="8">GB</label>
+        <label>单片下限 <input id="sub-minsize" type="number" min="0" step="0.5" value="0">GB</label>
+        <label>做种数≥ <input id="sub-seeders" type="number" min="0" value="0"></label>
+      </div>
+      <div class="subs-filter-box">
+        <div class="subs-filter-row">
+          <span style="color:var(--muted)">资源条件：</span>
+          <label><input type="checkbox" id="sub-req-sub"> 必须中文字幕</label>
+          <label><input type="checkbox" id="sub-req-hd"> 必须高清</label>
+        </div>
+        <div class="subs-filter-row">
+          <span style="color:var(--muted)">关键词过滤：</span>
+          <label>排除词 <input id="sub-exclude" type="text" placeholder="例如 VR, 4K (逗号分隔)"></label>
+          <label>包含词 <input id="sub-include" type="text" placeholder="例如 破解, 中字"></label>
+        </div>
       </div>
     </div>
     <div class="panel-actions">
       <button class="primary" id="sub-add" type="button">添加订阅</button>
+      <button class="ghost" id="sub-cancel-edit" type="button" style="display:none">取消编辑</button>
       <button class="ghost" id="sub-run" type="button">立即检查全部</button>
       <button class="ghost" id="sub-close" type="button">关闭</button>
       <span class="hint" id="sub-hint"></span>
     </div>
     <div class="subs-list" id="subs-list"></div>
-    <div class="subs-tip">订阅只会抓「添加之后」新出的片，不会回填历史。每轮受条数和体积上限约束。</div>
+    <div class="subs-tip">完整系列会全量回填历史所有作品至待办中心，按每轮名额自动拉取；仅追新则只抓今日后新出作品。番号前缀（如 TCHB、MIMK）按搜索发现，只收该前缀的番号。</div>
 
     <!-- 待办中心：订阅发现但还没下到的片。以前这里只有一个数字，用户看不出
          卡在哪、也动不了它；后端 /api/subs 已经把每条的「为什么」算好了
          （why 字段是人话），这里只负责把它显示出来并给两个操作入口。 -->
     <div class="meta-h">待办中心 · 没下到的片都在这儿</div>
+    <div class="backlog-groups" id="backlog-groups"></div>
     <div class="panel-actions">
       <span class="hint" id="backlog-hint"></span>
       <button class="ghost" id="backlog-refresh" type="button">刷新待办</button>
@@ -1051,6 +1729,14 @@
     <h2 id="result-title">全部归档</h2>
     <span class="sub" id="result-sub"></span>
     <span class="right">
+      <button class="pill" id="search-back" type="button" hidden>← 返回归档</button>
+      <button class="pill on" id="privacy-toggle" type="button" aria-pressed="true"
+              title="封面已模糊；点击显示原图（仅本次打开有效）">隐私模糊</button>
+      <div class="tb-seg" id="kindseg">
+        <button type="button" data-filter="all" class="on">全部</button>
+        <button type="button" data-filter="video">视频</button>
+        <button type="button" data-filter="image">图片</button>
+      </div>
       <button class="pill" id="resbtn" type="button" hidden
               title="拿这个番号去网上找磁力（不提交，先看候选）">搜资源</button>
       <select class="sortsel" id="sortsel" aria-label="排序">
@@ -1061,6 +1747,14 @@
       </select>
     </span>
   </div>
+
+  <section class="continue-strip" id="continue-strip" hidden aria-label="继续观看">
+    <div class="continue-head">
+      <span>继续观看</span>
+      <span class="sub" id="continue-sub"></span>
+    </div>
+    <div class="continue-row" id="continue-row"></div>
+  </section>
 
   <!-- 搜索框里粘贴磁力 / 直链时的提交区 -->
   <section class="panel" id="submit-slot" hidden aria-label="提交云添加"></section>
@@ -1075,13 +1769,14 @@
        关键词搜索（搜索框回车 → /api/find）仍保留，那是另一条路。 -->
 
   <div class="grid" id="feed"></div>
+  <div class="feed-more" id="feed-more" hidden><button type="button">加载更多</button></div>
   <div id="empty-slot"></div>
 
   <!-- ───────── 任务队列：主内容区的视图（不再从右侧滑出） -->
   <section class="panel wide queuepanel" id="queue" hidden aria-label="任务队列">
     <div class="queue-head">
       <h3>任务队列</h3>
-      <span class="badge" id="queue-stat"></span>
+      <div class="qstats" id="queue-stat"></div>
       <span class="hint" id="queue-hint"></span>
       <span class="hint" id="queue-flash"></span>
       <div class="r">
@@ -1095,15 +1790,54 @@
       </div>
     </div>
     <div class="queue-list" id="jobs"></div>
-    <div class="queue-foot">
-      <button class="ghostbtn" id="panel-clean" type="button" title="清掉迅雷面板里所有失败任务记录（含今天，不动已下载文件）">
-        清理面板失败
-      </button>
-    </div>
   </section>
-</div>
+
+  <!-- ───────── 运行日志：bot 与网页共写 data/x-drive.log -->
+  <section class="panel wide logpanel" id="logpanel" hidden aria-label="运行日志">
+    <div class="log-head">
+      <h3>运行日志</h3>
+      <span class="hint" id="log-hint">实时 · 2 秒刷新</span>
+      <div class="r">
+        <div class="tb-seg logseg" id="log-level">
+          <button type="button" data-level="" class="on">全部</button>
+          <button type="button" data-level="INFO">信息</button>
+          <button type="button" data-level="WARNING">警告</button>
+          <button type="button" data-level="ERROR">错误</button>
+        </div>
+        <input id="log-q" type="search" placeholder="过滤关键词" autocomplete="off">
+        <button class="ghostbtn" id="log-pause" type="button">暂停</button>
+        <button class="ghostbtn" id="log-refresh" type="button">刷新</button>
+      </div>
+    </div>
+    <div class="loglist" id="log-list"></div>
+  </section>
+</div><!-- /.main -->
+
+<!-- ───────── 右侧筛选栏：系列 / 演员 / 片商 / 月份 -->
+<aside class="rail" id="rail" aria-label="筛选">
+  <div class="side-mid" id="side-mid">
+    <div class="side-block series">
+      <div class="side-h"><span id="dim-label">系列</span>
+        <button id="clear-series" type="button" hidden>清除</button></div>
+      <div class="dimtabs" id="dimtabs">
+        <button type="button" data-dim="series" class="on">系列</button>
+        <button type="button" data-dim="actor">演员</button>
+        <button type="button" data-dim="maker">片商</button>
+      </div>
+      <nav class="nav" id="nav-series"></nav>
+    </div>
+
+    <div class="side-block month">
+      <div class="side-h">月份 <button id="clear-month" type="button" hidden>清除</button></div>
+      <nav class="nav" id="nav-month"></nav>
+    </div>
+  </div>
+</aside>
+</div><!-- /.shell -->
+</div><!-- /.frame -->
 
 <div class="scrim" id="scrim" hidden></div>
+<div class="scrim" id="railscrim" hidden></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -1154,19 +1888,13 @@ const view = {q: "", kind: "all", series: "", month: "", sort: "new",
   dim: "series"};
 // 当前主内容区是哪个视图（archive / download / subs / meta / health / settings / queue）
 let currentView = "archive";
+let privacyCovers = true;   // 首页封面默认模糊：公共场合打开不尴尬，本次打开可手动关闭
 let sideExpanded = false;   // 系列列表是否展开全部
-const allTasks = new Map();
+var allTasks = new Map();
 
 const KIND_LABEL = {all: "全部归档", video: "只看视频", image: "只看图片"};
 
-function matches(t) {
-  if (view.kind === "video" && t.cat !== "video") return false;
-  if (view.kind === "image" && t.cat !== "image") return false;
-  if (view.series) {
-    const v = dimValues(t, view.dim);
-    if (!v.includes(view.series)) return false;
-  }
-  if (view.month && t.month !== view.month) return false;
+function matchText(t) {
   // 搜索框里粘的是磁力 / 直链时，那不是「筛选词」：别拿整串 URL 去比站内文本
   const qk = queryKind(view.q);
   const qtext = (qk.kind === "magnet" || qk.kind === "link") ? "" : view.q;
@@ -1179,6 +1907,22 @@ function matches(t) {
                (m.categories || []).join(" "), m.date]
     .map(v => (v || "").toLowerCase()).join(" ");
   return hay.includes(qtext.trim().toLowerCase()) || strip(hay).includes(q);
+}
+
+function matches(t) {
+  if (view.kind === "video" && t.cat !== "video") return false;
+  if (view.kind === "image" && t.cat !== "image") return false;
+  if (view.series) {
+    const v = dimValues(t, view.dim);
+    if (!v.includes(view.series)) return false;
+  }
+  if (view.month && t.month !== view.month) return false;
+  return matchText(t);
+}
+
+// 搜索页只按关键词过滤，不继承归档页的类型 / 系列 / 月份筛选
+function searchMatches(t) {
+  return matchText(t);
 }
 
 // 一个归档在某个维度上有哪些取值（演员/片商可能多个）
@@ -1279,11 +2023,12 @@ function renderActiveFilters() {
     chips.push(["“" + view.q.trim() + "”", () => { view.q = ""; $("q").value = ""; }]);
   }
 
+  // 没有生效筛选时整条收起：右侧栏已经承担了筛选入口，空着一条提示只会占高度
   if (!chips.length) {
-    box.append(el("span", "lb", "筛选"));
-    box.append(el("span", "lb", "按系列 / 演员 / 片商 · 月份筛选"));
+    box.hidden = true;
     return;
   }
+  box.hidden = currentView !== "archive";
   box.append(el("span", "lb", "已筛选"));
   for (const [label, drop] of chips) {
     const b = el("button", "pill on");
@@ -1311,56 +2056,114 @@ function cleanupPendingText(items) {
   return `已归档 · 源目录清理待处理 ${items.length} 项：` + detail.join("；")
     + (items.length > 3 ? "；其余见任务记录" : "");
 }
+const COVER_R2 = "https://covers.master.us.kg/javbus/www.javbus.com";
+function coverSrc(u) {
+  u = String(u || "");
+  if (!u) return "";
+  const jb = u.match(/^https?:\/\/(?:www\.)?javbus\.com(\/pics\/.*)$/i)
+    || u.match(/^https?:\/\/javbus\.img\.master\.us\.kg(\/pics\/.*)$/i);
+  if (jb) return COVER_R2 + jb[1];
+  if (u.startsWith("https://covers.master.us.kg/")) return u;
+  const dmm = u.match(/^https?:\/\/(pics\.dmm\.co\.jp|awsimgsrc\.dmm\.co\.jp)(\/.*)$/i);
+  if (dmm) return "https://covers.master.us.kg/javbus/" + dmm[1].toLowerCase() + dmm[2];
+  return BASE + "/proxy?u=" + encodeURIComponent(u);
+}
 function card(t) {
   const m = t.meta || {};
   const node = el("article", "card poster-card");
 
-  // 卡片只留两样：海报 + 标题。其余信息（演员/片商/评分/体积/路径/操作）
-  // 全在点开后的详情弹层里 —— 列表扫一眼就能看完，不被一堆标签挤满。
   const cover = el("div", "card-cover");
   if (m.cover) {
+    cover.classList.add("has-cover");
     const img = el("img");
     img.loading = "lazy";
     img.decoding = "async";
     img.referrerPolicy = "no-referrer";
     img.addEventListener("error", () => {
+      cover.classList.remove("has-cover");
       cover.classList.add("nocover");
       img.remove();
-      if (!cover.firstChild) cover.append(el("span", "noimg", "无封面"));
+      if (!cover.firstChild) cover.append(el("span", "card-ph", "NO COVER"));
     });
-    img.src = BASE + "/proxy?u=" + encodeURIComponent(m.cover);
+    img.src = coverSrc(m.cover);
     img.alt = "";
     cover.append(img);
   } else {
     cover.classList.add("nocover");
-    cover.append(el("span", "noimg", "无封面"));
+    cover.append(el("span", "card-ph", "NO COVER"));
   }
-  // 番号压在海报角上：列表里一眼能认出是哪部，不用读标题
-  const badge = el("span", "card-code", t.code || "");
-  cover.append(badge);
+
+  // 分辨率 / 字幕从文件名里读：归档目录里带 2160p、中字 这类标记才显示
+  const filesText = (t.files || []).join(" ").toLowerCase();
+  const isImage = t.cat === "image" || t.kind === "图片";
+  let res = "";
+  if (isImage) res = "图片";
+  else if (/2160|4k|uhd/.test(filesText)) res = "4K";
+  else if (/1080/.test(filesText)) res = "1080p";
+  else if (/720/.test(filesText)) res = "720p";
+  if (res) cover.append(el("span", "card-res", res));
+  if (/(中字|中文字幕|字幕|chs|cht|\bsub\b)/.test(filesText)) {
+    cover.append(el("span", "card-sub", "SUB"));
+  }
+  const watch = t.watch || {};
+  if (watch.done) {
+    cover.append(el("span", "card-watch", "已看"));
+  } else if (watch.pct > 0) {
+    const prog = el("div", "card-prog");
+    const bar = el("i");
+    bar.style.width = Math.max(2, Math.min(100, watch.pct)) + "%";
+    prog.append(bar);
+    cover.append(prog);
+  }
   node.append(cover);
 
-  // 标题：元数据里最有用的信息，放不下就截断
+  const info = el("div", "card-info");
   const title = m.title || t.code || "";
   const ti = el("div", "card-title", title);
   ti.title = title;
-  node.append(ti);
+  info.append(ti);
 
-  // 归档成功但源目录还留着内容：只提示，不提供删除 —— 要人自己核对
-  const cleanup = cleanupPendingText(t.cleanup_pending);
-  if (cleanup) node.append(el("div", "why cleanup-pending", cleanup));
-
-  // 点海报开详情弹层（点卡片其它地方不响应：卡片上已经没有别的动作了）
-  const openDetail = () => showArchiveDetail(t);
-  cover.classList.add("card-cover-btn");
-  cover.setAttribute("role", "button");
-  cover.setAttribute("tabindex", "0");
-  cover.setAttribute("aria-label", `${t.code} · 查看详情`);
-  cover.addEventListener("click", e => {
-    e.stopPropagation();
-    openDetail();
+  const date = String(m.date || m.release_date || "").slice(0, 10);
+  const meta = el("div", "card-meta");
+  meta.append(el("b", "card-code", t.code || ""));
+  if (date) meta.append(el("span", null, "· " + date));
+  const fav = el("button", "card-fav" + (watch.fav ? " on" : ""), watch.fav ? "★" : "☆");
+  fav.type = "button";
+  fav.title = watch.fav ? "取消收藏" : "收藏";
+  fav.setAttribute("aria-pressed", watch.fav ? "true" : "false");
+  fav.addEventListener("click", e => {
+    if (e && e.stopPropagation) e.stopPropagation();
+    toggleFavorite(t, fav);
   });
-  cover.addEventListener("keydown", e => {
+  fav.addEventListener("keydown", e => {
+    if (e && e.stopPropagation) e.stopPropagation();
+  });
+  meta.append(fav);
+  info.append(meta);
+
+  const genres = Array.isArray(m.genres) ? m.genres
+    : (Array.isArray(m.categories) ? m.categories : []);
+  if (genres.length) {
+    const chips = el("div", "card-chips");
+    for (const g of genres.slice(0, 3)) chips.append(el("span", "chip-tag", g));
+    info.append(chips);
+  }
+
+  const cleanup = cleanupPendingText(t.cleanup_pending);
+  if (cleanup) info.append(el("div", "card-pending", cleanup));
+
+  node.append(info);
+
+  // 整张卡片都是入口：海报、标题、番号行都能点开详情
+  const openDetail = () => showArchiveDetail(t);
+  node.classList.add("card-open");
+  node.setAttribute("role", "button");
+  node.setAttribute("tabindex", "0");
+  node.setAttribute("aria-label", `${t.code} · 查看详情`);
+  node.addEventListener("click", openDetail);
+  // 海报单独挂一次：整卡点击在浏览器里靠冒泡，但测试环境不冒泡，也方便键盘外的点按
+  cover.addEventListener("click", e => { if (e && e.stopPropagation) e.stopPropagation(); openDetail(); });
+  node.addEventListener("keydown", e => {
     if (e.key !== "Enter" && e.key !== " ") return;
     e.preventDefault();
     openDetail();
@@ -1391,7 +2194,7 @@ function closeLayerEl(layer) {
   document.body.style.overflow = still ? "hidden" : "";
 }
 
-// 归档详情弹层：海报 + 标题之外的全部信息。
+// 归档详情：海报头条 + 四个 Tab（概览 / 磁力与下载 / 云盘归档 / 附属文件）。
 // 字段一律按「有才渲染」处理 —— 缺什么就少一行，不编。
 function showArchiveDetail(t) {
   const m = t.meta || {};
@@ -1402,7 +2205,7 @@ function showArchiveDetail(t) {
   // 否则关掉弹层后整页再也滚不动。
   const closeLayer = () => {
     closeLightbox();               // 灯箱不是独立入口，跟着所在弹层一起收
-    closeLayerEl(layer);           // 摘监听器 + 移除节点 + 按剩余层数决定滚动锁
+    closeLayerEl(layer);
   };
   const onKey = e => {
     if (e.key !== "Escape") return;
@@ -1412,29 +2215,7 @@ function showArchiveDetail(t) {
   layer.addEventListener("click", e => { if (e.target === layer) closeLayer(); });
   document.addEventListener("keydown", onKey);
   LAYER_CLEANUP.set(layer.id, () => document.removeEventListener("keydown", onKey));
-  // 滚动锁放在**渲染完之后**再上：渲染途中抛异常（后端给了意外形状）的话，
-  // 弹层没挂上、监听器已挂、锁已上 —— 整页就再也滚不动、Esc 也关不掉。
 
-  const panel = el("div", "dpanel");
-  const head = el("div", "dhead");
-  head.append(el("span", "dcode", t.code || ""));
-  const close = el("button", "iconbtn txt", "关闭");
-  close.type = "button";
-  close.addEventListener("click", closeLayer);
-  head.append(close);
-  panel.append(head);
-
-  const top = el("div", "dtop");
-  const coverUrl = m.cover || m.cover_url || "";
-  if (coverUrl) {
-    const img = el("img", "dcover");
-    img.alt = t.code || "";
-    img.addEventListener("error", () => img.remove());
-    img.src = BASE + "/proxy?u=" + encodeURIComponent(coverUrl);
-    top.append(img);
-  }
-  const metaBox = el("div", "dmeta");
-  if (m.title) metaBox.append(el("div", "dtitle", m.title));
   // 字段名统一后优先读新键，老键兜底（归一之前的旧记录没写新键）
   const pick = (...keys) => {
     for (const k of keys) {
@@ -1443,100 +2224,423 @@ function showArchiveDetail(t) {
     }
     return "";
   };
-  // 数组字段的防护：后端有可能给字符串（拼错了就是 "演员甲"），
-  // 直接 .join 会抛异常 —— 而弹层还没挂上、滚动锁已经锁了、监听器已经挂了，
-  // 一抛错整页就再也滚不动、Esc 也关不掉。
+  // 数组字段的防护：后端有可能给字符串（拼错了就是 "演员甲"），直接 .join 会抛异常
   const asList = v => {
     if (Array.isArray(v)) return v;
     if (!v) return [];
     return String(v).split(/\s*[,/、]\s*/).filter(Boolean);
   };
-  const rows = [
-    ["番号", t.code],
-    // 系列：真实系列名（javbus 给的）优先；t.series 是从番号推导的（SSIS-123 → SSIS），
-    // 永远非空，放在前面会把真实系列名遮蔽掉
-    ["系列", pick("series") || t.series],
-    ["发行日期", pick("release_date", "date")],
-    ["时长", pick("runtime", "duration")],
-    ["片商", pick("maker")],
-    ["发行商", pick("publisher", "label")],
-    ["导演", pick("director")],
-    ["演员", asList(pick("actors")).join(" / ")],
-    ["类别", asList(pick("genres", "categories")).join("、")],
-    // 评分：javbus 把它存在 review 键里（0-10 的观众评分，不是简介）
-    ["评分", pick("score", "rating", "review")],
-    ["简介", pick("summary")],
-    ["封面尺寸", pick("cover_size")],
-    ["文件构成", t.kind],
-    ["体积", t.size_text],
-    ["文件数", t.count ? String(t.count) : ""],
-    ["归档时间", t.at],
-    ["云盘路径", t.path],
-    ["来源", m.source || t.source],
-  ].filter(r => r[1]);
-  for (const [k, v] of rows) {
-    const row = el("div", "drow");
-    row.append(el("span", "dk", k));
-    row.append(el("span", "dv", v));
-    metaBox.append(row);
+  const coverUrl = m.cover || m.cover_url || "";
+  const dateRaw = String(pick("release_date", "date") || "");
+  const genres = asList(pick("genres", "categories"));
+  const actors = asList(pick("actors"));
+  const files = Array.isArray(t.files) ? t.files : [];
+  const code = t.code || "";
+
+  const panel = el("div", "dpanel");
+
+  // —— 头图：海报 + 大番号 / 标题 / 标签
+  const hero = el("div", "dhero");
+  if (coverUrl) {
+    const img = el("img", "dposter");
+    img.alt = code;
+    img.addEventListener("error", () => img.replaceWith(el("div", "dposter ph", "NO COVER")));
+    img.src = coverSrc(coverUrl);
+    hero.append(img);
+  } else {
+    hero.append(el("div", "dposter ph", "NO COVER"));
   }
-  // 文件清单：归档里到底有哪些文件
-  if ((t.files || []).length) {
-    metaBox.append(el("div", "dsub", `文件 · ${t.files.length}`));
-    for (const name of t.files) {
-      const row = el("div", "drow");
-      row.append(el("span", "dv", name));
-      metaBox.append(row);
+  const info = el("div", "dinfo");
+  info.append(el("div", "dcode-big", code));
+  if (m.title) info.append(el("div", "dname", m.title));
+  const orig = pick("original_title");
+  if (orig && orig !== m.title) info.append(el("div", "dorig", orig));
+
+  const pills = el("div", "dpills");
+  if (dateRaw) pills.append(el("span", "dpill", dateRaw.slice(0, 4)));
+  const runtime = pick("runtime", "duration");
+  if (runtime) pills.append(el("span", "dpill", runtime));
+  if (t.size_text) pills.append(el("span", "dpill", t.size_text));
+  for (const g of genres.slice(0, 4)) pills.append(el("span", "dpill pink", g));
+  const score = pick("score", "rating", "review");
+  if (score) pills.append(el("span", "dpill violet", "★ " + score));
+  if (pills.children.length) info.append(pills);
+
+  const bits = [];
+  if (pick("series") || t.series) bits.push(["系列", pick("series") || t.series]);
+  if (pick("maker")) bits.push(["片商", pick("maker")]);
+  if (actors.length) {
+    bits.push(["演员", actors.slice(0, 4).join(" / ") + (actors.length > 4 ? " 等" : "")]);
+  }
+  if (bits.length) {
+    const line = el("div", "dmeta-line");
+    for (const [k, v] of bits) {
+      const s = el("span");
+      s.append(el("span", null, k + " "));
+      s.append(el("b", null, v));
+      line.append(s);
     }
+    info.append(line);
   }
-  top.append(metaBox);
-  panel.append(top);
+  hero.append(info);
 
-  if ((m.previews || []).length) {
-    panel.append(el("div", "dsub", `预览图 · ${m.previews.length}`));
-    panel.append(thumbWall(m.previews, "预览"));
-  }
+  const close = el("button", "dclose", "✕");
+  close.type = "button";
+  close.title = "关闭";
+  close.addEventListener("click", closeLayer);
+  hero.append(close);
+  panel.append(hero);
 
-  const actions = el("div", "dactions");
-  // 播放：取直链后在原地起一个 <video>，不新开标签页
-  const playBtn = el("button", "ghost", "播放");
-  playBtn.type = "button";
-  playBtn.title = "取云盘直链并原地播放";
-  playBtn.addEventListener("click", () => { playArchive(t, playBtn); });
-  actions.append(playBtn);
-  // 手动刮削：按需去源站重抓一次元数据。
-  // 先看差异再决定写不写 —— 不做「点一下就悄悄覆盖已有字段」。
-  const scrapeBtn = el("button", "ghost", "手动刮削");
-  scrapeBtn.type = "button";
-  scrapeBtn.title = "重新抓一次元数据，先看差异再决定是否写入";
-  scrapeBtn.addEventListener("click", () => { manualScrape(t, closeLayer, scrapeBtn); });
-  actions.append(scrapeBtn);
-  // 改名 / 删除：这两个是归档维护动作，放在详情里最合适 —— 卡片上不再挤按钮
-  const ren = el("button", "ghost", "改名");
-  ren.type = "button";
-  ren.title = "改番号：远端目录与归档记录一起改";
-  ren.addEventListener("click", () => { closeLayer(); askRename(t); });
-  actions.append(ren);
-  const del = el("button", "ghost danger", "删除");
-  del.type = "button";
-  del.title = "删除归档目录与记录（不可逆）";
-  del.addEventListener("click", () => { closeLayer(); askDelete(t); });
-  actions.append(del);
-  if (t.link) {
-    const gdrive = /drive\.google\.com/.test(t.link);
-    const a = el("a", "ghost", gdrive ? "Drive ↗" : "分享 ↗");
-    a.href = t.link; a.target = "_blank"; a.rel = "noopener";
-    actions.append(a);
-  }
-  if (m.url) {
-    const a = el("a", "ghost", "javbus 原页 ↗");
-    a.href = m.url; a.target = "_blank"; a.rel = "noopener";
-    actions.append(a);
-  }
-  panel.append(actions);
+  // —— 操作组（概览页底部）
+  const buildActions = () => {
+    const actions = el("div", "dactions");
+    // 播放：取直链后在原地起一个 <video>，不新开标签页
+    const playBtn = el("button", "ghost", "播放");
+    playBtn.type = "button";
+    playBtn.title = "取云盘直链并原地播放";
+    playBtn.addEventListener("click", () => { playArchive(t, playBtn); });
+    if (t.watch && t.watch.pct > 0 && !t.watch.done) playBtn.textContent = "继续播放";
+    actions.append(playBtn);
+    const favBtn = el("button", "ghost" + (t.watch && t.watch.fav ? " on" : ""),
+      t.watch && t.watch.fav ? "取消收藏" : "收藏");
+    favBtn.type = "button";
+    favBtn.title = "收藏这个番号，首页卡片上会带星标";
+    favBtn.addEventListener("click", () => { toggleFavorite(t, favBtn, true); });
+    actions.append(favBtn);
+    const markBtn = el("button", "ghost", t.watch && t.watch.done ? "标记未看" : "标记已看");
+    markBtn.type = "button";
+    markBtn.title = "手动切换已看状态";
+    markBtn.addEventListener("click", async () => {
+      const next = !(t.watch && t.watch.done);
+      markBtn.disabled = true;
+      try {
+        const watch = await postWatch(code, {done: next});
+        t.watch = watch;
+        setTaskWatch(code, watch, false);
+        markBtn.textContent = watch.done ? "标记未看" : "标记已看";
+        flash(watch.done ? "已标记为已看" : "已标记为未看");
+      } catch (e) {
+        flash("保存失败：" + (e.message || e), true);
+      } finally {
+        markBtn.disabled = false;
+      }
+    });
+    actions.append(markBtn);
+    const nextUp = nextInSeries(code);
+    if (nextUp) {
+      const nextBtn = el("button", "ghost", "下一部 · " + (nextUp.code || nextUp.id));
+      nextBtn.type = "button";
+      nextBtn.title = "同系列的下一部";
+      nextBtn.addEventListener("click", () => { closeLayer(); playArchive(nextUp); });
+      actions.append(nextBtn);
+    }
+    // 手动刮削：按需去源站重抓一次元数据，先看差异再决定写不写
+    const scrapeBtn = el("button", "ghost", "手动刮削");
+    scrapeBtn.type = "button";
+    scrapeBtn.title = "重新抓一次元数据，先看差异再决定是否写入";
+    scrapeBtn.addEventListener("click", () => { manualScrape(t, closeLayer, scrapeBtn); });
+    actions.append(scrapeBtn);
+    // 改名 / 删除：归档维护动作，只在详情里出现
+    const ren = el("button", "ghost", "改名");
+    ren.type = "button";
+    ren.title = "改番号：远端目录与归档记录一起改";
+    ren.addEventListener("click", () => { closeLayer(); askRename(t); });
+    actions.append(ren);
+    const del = el("button", "ghost danger", "删除");
+    del.type = "button";
+    del.title = "删除归档目录与记录（不可逆）";
+    del.addEventListener("click", () => { closeLayer(); askDelete(t); });
+    actions.append(del);
+    actions.append(el("span", "sp"));
+    if (t.link) {
+      const gdrive = /drive\.google\.com/.test(t.link);
+      const a = el("a", "ghost", gdrive ? "Drive ↗" : "分享 ↗");
+      a.href = t.link; a.target = "_blank"; a.rel = "noopener";
+      actions.append(a);
+    }
+    if (m.url) {
+      const a = el("a", "ghost", "javbus 原页 ↗");
+      a.href = m.url; a.target = "_blank"; a.rel = "noopener";
+      actions.append(a);
+    }
+    return actions;
+  };
+
+  // —— 概览
+  const buildOverview = () => {
+    const box = el("div");
+    const grid = el("div", "ovgrid");
+    const rows = [
+      // 系列：真实系列名（javbus 给的）优先；t.series 是从番号推导的，永远非空
+      ["系列", pick("series") || t.series],
+      ["发行日期", dateRaw],
+      ["时长", pick("runtime", "duration")],
+      ["片商", pick("maker")],
+      ["发行商", pick("publisher", "label")],
+      ["导演", pick("director")],
+      ["演员", actors.join(" / ")],
+      ["类别", genres.join("、")],
+      ["评分", pick("score", "rating", "review")],
+      ["封面尺寸", pick("cover_size")],
+      ["文件构成", t.kind],
+      ["体积", t.size_text],
+      ["文件数", t.count ? String(t.count) : ""],
+      ["归档时间", t.at],
+      ["云盘路径", t.path],
+      ["来源", m.source || t.source],
+    ].filter(r => r[1]);
+    for (const [k, v] of rows) {
+      const row = el("div", "ovrow");
+      row.append(el("span", "k", k));
+      row.append(el("span", "v" + (/云盘路径|来源|归档时间/.test(k) ? " mono" : ""), String(v)));
+      grid.append(row);
+    }
+    box.append(grid);
+    const summary = pick("summary");
+    if (summary) box.append(el("div", "ovsum", summary));
+    if (Array.isArray(m.previews) && m.previews.length) {
+      box.append(el("div", "side-h", `预览图 · ${m.previews.length}`));
+      box.append(thumbWall(m.previews, "预览", true));
+    }
+    box.append(buildActions());
+    return box;
+  };
+
+  // —— 磁力与下载：表格直接给「添加下载队列」
+  let loadMagnets = null;
+  const buildMagnets = () => {
+    const box = el("div");
+    const tool = el("div", "mtool");
+    const status = el("span", null, "正在搜索磁力…");
+    const sortSel = el("select");
+    for (const [v, label] of [["rec", "推荐排序"], ["seed", "做种数"], ["size", "体积"], ["sub", "中文字幕优先"]]) {
+      const o = el("option", null, label);
+      o.value = v;
+      sortSel.append(o);
+    }
+    tool.append(status, el("span", "sp"), sortSel);
+    const table = el("div", "mtable");
+    const hint = el("div", "mhint");
+    hint.hidden = true;
+    box.append(tool, table, hint);
+
+    let items = [];
+    const seedOf = it => seedCount(it.seeders);
+    const recRank = it => (it.has_subtitle ? 0 : 2) + (it.is_hd ? 0 : 1);
+    const byRec = (a, b) =>
+      recRank(a) - recRank(b)
+      || num(seedOf(b)) - num(seedOf(a))
+      || num(b.size_bytes) - num(a.size_bytes);
+
+    const render = () => {
+      table.textContent = "";
+      if (!items.length) return;
+      const head = el("div", "mhead");
+      for (const h of ["名称", "做种", "体积", "字幕 / 画质", ""]) head.append(el("span", null, h));
+      table.append(head);
+
+      const sorted = items.slice();
+      if (sortSel.value === "seed") sorted.sort((a, b) => num(seedOf(b)) - num(seedOf(a)) || byRec(a, b));
+      else if (sortSel.value === "size") sorted.sort((a, b) => num(b.size_bytes) - num(a.size_bytes) || byRec(a, b));
+      else if (sortSel.value === "sub") sorted.sort((a, b) => (b.has_subtitle ? 1 : 0) - (a.has_subtitle ? 1 : 0) || byRec(a, b));
+      else sorted.sort(byRec);
+
+      for (const it of sorted) {
+        const row = el("div", "mrow");
+        const name = el("div", "mname");
+        name.append(el("b", null, it.title || code || "磁力"));
+        const mag = String(it.magnet || "");
+        name.append(el("span", null, mag.length > 84 ? mag.slice(0, 84) + "…" : mag));
+        row.append(name);
+
+        const seed = seedOf(it);
+        row.append(el("span", "mseed" + (seed > 0 ? " hot" : ""),
+          seed === null ? "—" : String(seed)));
+        row.append(el("span", "msize", it.size_text || "—"));
+
+        const flags = el("div", "mflags");
+        if (it.has_subtitle) flags.append(el("span", "mflag sub", "中文"));
+        if (it.is_hd) flags.append(el("span", "mflag hd", "HD"));
+        if (it.added_exact) flags.append(el("span", "mflag done", "已添加"));
+        row.append(flags);
+
+        const btn = el("button", "addbtn", "+ 添加下载队列");
+        btn.type = "button";
+        if (it.added_exact) {
+          btn.disabled = true;
+          btn.textContent = "已在云盘";
+          btn.title = "这个资源云盘里已经有了（infohash 相同）";
+        } else {
+          btn.addEventListener("click", () => addToQueue(it, btn));
+        }
+        row.append(btn);
+        table.append(row);
+      }
+    };
+
+    const addToQueue = async (it, btn) => {
+      btn.disabled = true;
+      btn.textContent = "提交中…";
+      try {
+        const r = await fetch(BASE + "/api/download", authInit({
+          method: "POST", cache: "no-store",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({text: `${code} ${it.magnet}`, dedupe: true}),
+        }));
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) throw new Error((d && d.error) || `HTTP ${r.status}`);
+        btn.textContent = "已加入队列";
+        queueFlash(`${code} 已加入下载队列`);
+        loadJobs(true);
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = "+ 添加下载队列";
+        queueFlash("提交失败：" + (e.message || e), true);
+      }
+    };
+
+    const load = async () => {
+      table.textContent = "";
+      hint.hidden = true;
+      hint.className = "mhint";
+      status.textContent = "正在搜索磁力…";
+      try {
+        const r = await fetch(BASE + "/api/magnets?code=" + encodeURIComponent(code),
+                              authInit({cache: "no-store"}));
+        const d = await r.json().catch(() => ({}));
+        if (!d || d.ok === false) throw new Error((d && d.error) || `HTTP ${r.status}`);
+        items = d.items || [];
+        if (!items.length) {
+          status.textContent = "0 条候选";
+          hint.hidden = false;
+          hint.textContent = `${code} 没搜到磁力：可能没有源收录，或番号不对`;
+          return;
+        }
+        status.textContent = `找到 ${items.length} 条候选`;
+        render();
+      } catch (e) {
+        status.textContent = "搜索失败";
+        hint.hidden = false;
+        hint.className = "mhint err";
+        hint.textContent = "搜索失败：" + (e.message || e);
+        const retry = el("button", null, "重试");
+        retry.type = "button";
+        retry.addEventListener("click", () => { load(); });
+        hint.append(retry);
+      }
+    };
+    sortSel.addEventListener("change", render);
+    loadMagnets = load;
+    return box;
+  };
+
+  // —— 云盘归档：路径 / 体积 / 文件清单
+  const buildArchive = () => {
+    const box = el("div");
+    const grid = el("div", "ovgrid");
+    const rows = [
+      ["云盘路径", t.path],
+      ["体积", t.size_text],
+      ["文件数", t.count ? String(t.count) : ""],
+      ["文件构成", t.kind],
+      ["归档时间", t.at],
+      ["来源", m.source || t.source],
+    ].filter(r => r[1]);
+    for (const [k, v] of rows) {
+      const row = el("div", "ovrow");
+      row.append(el("span", "k", k));
+      row.append(el("span", "v" + (/云盘路径|来源|归档时间/.test(k) ? " mono" : ""), String(v)));
+      grid.append(row);
+    }
+    box.append(grid);
+    box.append(el("div", "side-h", `文件清单 · ${files.length}`));
+    if (!files.length) {
+      box.append(el("div", "dnote", "这条归档没有文件清单记录。"));
+    } else {
+      const list = el("div", "filelist");
+      for (const name of files) {
+        const ext = String(name).split(".").pop().toUpperCase().slice(0, 4);
+        const row = el("div", "frow");
+        row.append(el("span", "ic", ext || "FILE"));
+        row.append(el("span", "fn", name));
+        const isVideo = /\.(mp4|mkv|avi|wmv|mov|ts|m2ts|iso)$/i.test(name);
+        row.append(el("span", "fp", isVideo ? "VIDEO" : "FILE"));
+        list.append(row);
+      }
+      box.append(list);
+    }
+    if (t.link) {
+      const a = el("a", "ghost", "打开云盘 ↗");
+      a.href = t.link; a.target = "_blank"; a.rel = "noopener";
+      const wrap = el("div", "dactions");
+      wrap.append(a);
+      box.append(wrap);
+    }
+    return box;
+  };
+
+  // —— 附属文件：.nfo / .vtt / 字幕 / 预览图
+  const SIDECAR_RE = /\.(nfo|vtt|srt|ass|ssa|txt|json|jpe?g|png|webp)$/i;
+  const buildSidecar = () => {
+    const box = el("div");
+    const side = files.filter(n => SIDECAR_RE.test(n));
+    box.append(el("div", "side-h", `附属文件 · ${side.length}`));
+    if (!side.length) {
+      box.append(el("div", "dnote", "归档目录里没有 .nfo / .vtt / 字幕或预览图。"));
+    } else {
+      const list = el("div", "filelist");
+      for (const name of side) {
+        const ext = String(name).split(".").pop().toUpperCase().slice(0, 4);
+        const row = el("div", "frow");
+        row.append(el("span", "ic", ext));
+        row.append(el("span", "fn", name));
+        row.append(el("span", "fp", "SIDECAR"));
+        list.append(row);
+      }
+      box.append(list);
+    }
+    box.append(el("div", "dnote", "附属文件来自归档目录里的元数据、字幕与预览图。")); 
+    return box;
+  };
+
+  // —— Tab 装配
+  const tabs = el("div", "dtabs");
+  const bodyBox = el("div", "dbody");
+  const panes = {};
+  const tabBtns = {};
+  let active = "";
+  const activate = id => {
+    if (active === id) return;
+    active = id;
+    for (const k in tabBtns) tabBtns[k].classList.toggle("on", k === id);
+    for (const k in panes) panes[k].classList.toggle("on", k === id);
+    if (id === "magnets" && loadMagnets) {
+      const fn = loadMagnets;
+      loadMagnets = null;
+      fn();
+    }
+  };
+  const addTab = (id, label, build) => {
+    const b = el("button", "dtab", label);
+    b.type = "button";
+    b.addEventListener("click", () => activate(id));
+    tabBtns[id] = b;
+    tabs.append(b);
+    const pane = el("div", "dpane");
+    pane.append(build());
+    panes[id] = pane;
+    bodyBox.append(pane);
+  };
+  addTab("overview", "概览", buildOverview);
+  addTab("magnets", "磁力与下载", buildMagnets);
+  addTab("archive", "云盘归档", buildArchive);
+  addTab("sidecar", "附属文件", buildSidecar);
+
+  panel.append(tabs, bodyBox);
   layer.append(panel);
   document.body.append(layer);
   document.body.style.overflow = "hidden";
+  activate("overview");
 }
 
 // 手动刮削：先拉差异预览给用户看，确认了才写入。
@@ -1640,11 +2744,70 @@ async function manualScrape(t, closeLayer, btn) {
   }
 }
 
+function taskByCode(code) {
+  if (typeof allTasks === "undefined") return null;
+  for (const t of allTasks.values()) {
+    if ((t.code || t.id) === code) return t;
+  }
+  return null;
+}
+
+function setTaskWatch(code, watch, refresh) {
+  const t = taskByCode(code);
+  if (!t) return;
+  t.watch = watch || {};
+  if (refresh) applyFilter();
+}
+
+async function postWatch(code, payload) {
+  const r = await fetch(BASE + "/api/watch", authInit({
+    method: "POST",
+    cache: "no-store",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(Object.assign({code}, payload)),
+  }));
+  const d = await readJson(r, "/api/watch");
+  if (!d || !d.ok) throw new Error((d && d.error) || "保存观看状态失败");
+  return d.watch || {};
+}
+
+async function toggleFavorite(t, btn, detail) {
+  const code = t.code || t.id || "";
+  if (!code) return;
+  const next = !(t.watch && t.watch.fav);
+  if (btn) btn.disabled = true;
+  try {
+    const watch = await postWatch(code, {fav: next});
+    t.watch = watch;
+    setTaskWatch(code, watch, true);
+    if (btn && detail) btn.textContent = watch.fav ? "取消收藏" : "收藏";
+    flash(watch.fav ? "已收藏 " + code : "已取消收藏 " + code);
+  } catch (e) {
+    flash("收藏失败：" + (e.message || e), true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function nextInSeries(code) {
+  const cur = taskByCode(code);
+  if (!cur || !cur.series) return null;
+  const num = value => {
+    const m = String(value || "").match(/(\d+)\s*$/);
+    return m ? Number(m[1]) : -1;
+  };
+  const pool = [...allTasks.values()]
+    .filter(t => t.series === cur.series && (t.code || t.id) !== code)
+    .sort((a, b) => num(a.code || a.id) - num(b.code || b.id));
+  return pool.find(t => num(t.code || t.id) > num(code)) || pool[0] || null;
+}
+
 // 播放：取直链后在原地起一个 <video>。
 // 直链有有效期，不缓存 —— 每次播都重新取。
 async function playArchive(t, btn) {
   const code = t.code || t.id || "";
   if (!code) { alert("这条归档没有番号"); return; }
+  const resumeAt = t.watch && !t.watch.done ? Math.max(0, Number(t.watch.pos) || 0) : 0;
   if (btn) btn.disabled = true;
   let data = null;
   try {
@@ -1670,7 +2833,7 @@ async function playArchive(t, btn) {
     // 索引不在头部 —— **但不拦播放**。实测 Chrome 会自己去末尾取 moov，
     // 7 秒就起播（早先这里拦住不让播，是错的）。
     // 只是把「修复可播性」摆出来备用（Safari 等较保守的实现可能需要）。
-    openPlayer(code, data, src, true);
+    openPlayer(code, data, src, true, resumeAt);
     return;
   }
   if (data.playable === null) {
@@ -1681,12 +2844,12 @@ async function playArchive(t, btn) {
       + `如果一直这样，先点「修复可播性」确认文件本身是好的。`);
     return;
   }
-  openPlayer(code, data, src);
+  openPlayer(code, data, src, false, resumeAt);
 }
 
 // 播放器：原地铺一层。Esc / 点背景 / 关闭都退。
 // 多个画质档时给一排按钮（迅雷官方 API 的 medias），默认第一档。
-function openPlayer(code, data, src, knownUnplayable) {
+function openPlayer(code, data, src, knownUnplayable, resumeAt = 0) {
   closeLayerEl(document.getElementById("player-layer"));
   // 播放器是独立顶层：把归档详情层收掉。两层叠着时按一次 Esc 会把两层
   // 一起关掉（两个 onKey 都挂在 document 上，谁都不检查自己是不是最上层）。
@@ -1696,11 +2859,20 @@ function openPlayer(code, data, src, knownUnplayable) {
   // stall 定时器要在关闭时清掉 —— 不然关掉播放器 6 秒后它还会触发，
   // 去改一个已经随层被移除的游离节点。
   let stallTimer = null;
+  let saveProgress = () => {};
+  let onVisibility = null;
+  let closed = false;
   const closeLayer = () => {
+    const saving = saveProgress(true, true);
+    closed = true;
     const v = layer.querySelector("video");
     if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
     if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+    if (onVisibility) document.removeEventListener("visibilitychange", onVisibility);
     closeLayerEl(layer);           // 摘监听器 + 移除节点 + 按剩余层数决定滚动锁
+    // 等进度写回再刷新卡片/继续观看，否则关闭瞬间读到的是旧 watch
+    if (saving && saving.then) saving.then(applyFilter, applyFilter);
+    else applyFilter();
   };
   const onKey = e => {
     if (e.key !== "Escape") return;
@@ -1725,6 +2897,32 @@ function openPlayer(code, data, src, knownUnplayable) {
   video.preload = "metadata";
   video.playsInline = true;
   video.src = src;
+  let lastSent = 0;
+  let finished = Boolean((taskByCode(code) || {}).watch && taskByCode(code).watch.done);
+  saveProgress = (force, keepalive) => {
+    if (closed) return;
+    const dur = Number(video.duration);
+    const pos = Number(video.currentTime);
+    if (!code || !isFinite(dur) || dur <= 0 || !isFinite(pos)) return;
+    const known = taskByCode(code);
+    if (pos < 1 && !(known && known.watch && known.watch.pct)) return;
+    if (!force && Math.abs(pos - lastSent) < 10) return;
+    lastSent = pos;
+    return fetch(BASE + "/api/watch", authInit({
+      method: "POST",
+      cache: "no-store",
+      keepalive: !!keepalive,
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code, pos, dur}),
+    })).then(r => r.json()).then(d => {
+      if (!d || !d.ok) return;
+      setTaskWatch(code, d.watch, false);
+      if (d.watch && d.watch.done && !finished) {
+        finished = true;
+        flash("已标记为已看 " + code);
+      }
+    }).catch(() => {});
+  };
   // 播不出来时给一条出路：这批种子的 MP4 索引在末尾，浏览器认不了。
   // 「修复可播性」把索引提到文件头（要下载 + 重传，几分钟）。
   const hint = el("div", "player-hint");
@@ -1762,7 +2960,26 @@ function openPlayer(code, data, src, knownUnplayable) {
   video.addEventListener("loadedmetadata", () => {
     if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
     hint.style.display = "none";
+    const dur = Number(video.duration);
+    if (isFinite(dur) && dur > 0) {
+      if (resumeAt > 1 && resumeAt < dur - 5) {
+        try { video.currentTime = resumeAt; } catch (e) {}
+      }
+    }
   });
+  video.addEventListener("timeupdate", () => saveProgress(false));
+  video.addEventListener("pause", () => saveProgress(true));
+  video.addEventListener("seeked", () => saveProgress(true));
+  video.addEventListener("ended", () => {
+    finished = true;
+    postWatch(code, {done: true, pos: video.duration, dur: video.duration})
+      .then(watch => { setTaskWatch(code, watch, false); flash("已看完 " + code); })
+      .catch(() => {});
+  });
+  onVisibility = () => {
+    if (document.visibilityState === "hidden") saveProgress(true, true);
+  };
+  document.addEventListener("visibilitychange", onVisibility);
   panel.append(video);
   panel.append(hint);
 
@@ -1789,6 +3006,14 @@ function openPlayer(code, data, src, knownUnplayable) {
   const meta = el("div", "player-meta");
   meta.append(el("span", null, data.name || code));
   if (data.via) meta.append(el("span", null, "来源：" + data.via));
+  const nextUp = nextInSeries(code);
+  if (nextUp) {
+    const nextBtn = el("button", "pm-btn", "下一部 " + (nextUp.code || nextUp.id));
+    nextBtn.type = "button";
+    nextBtn.title = "同系列的下一部";
+    nextBtn.addEventListener("click", () => { closeLayer(); playArchive(nextUp); });
+    meta.append(nextBtn);
+  }
   panel.append(meta);
 
   layer.append(panel);
@@ -2116,6 +3341,11 @@ async function askDelete(t) {
 // 增量渲染：按 id 复用已有卡片，轮询时只重排、不重建
 const mounted = new Map();
 let inflight = null;
+// 首页分页窗口：只渲染前 N 张，滑到底再追加，避免一次挂满整库
+const ARCHIVE_PAGE = 12;
+let feedLimit = ARCHIVE_PAGE;
+let feedSig = "";
+let feedLoading = false;
 // 卡片的重建签名。**详情弹层读的每一个 meta 字段都要进来** ——
 // 少了哪个，手动刮削补上那个字段后签名就不变、卡片不重建，
 // 弹层里还是旧值（用户会以为写入失败而重复操作）。
@@ -2123,6 +3353,7 @@ let inflight = null;
 // 导演、发行日期、类别、发行商、简介、预览图全不在里面。
 const sigOf = t => JSON.stringify([t.at, t.code, t.kind, t.cat, t.size_text,
   t.link, t.path, t.series, t.cleanup_pending,
+  t.watch && [t.watch.pct, t.watch.done, t.watch.fav],
   t.meta && [t.meta.title, t.meta.cover, t.meta.cover_url, t.meta.maker,
     t.meta.publisher, t.meta.label, t.meta.director, t.meta.series,
     t.meta.release_date, t.meta.date, t.meta.runtime, t.meta.duration,
@@ -2158,22 +3389,103 @@ function syncFeed(tasks) {
   }
 }
 
+function continueItems() {
+  if (typeof allTasks === "undefined") return [];
+  return [...allTasks.values()]
+    .filter(t => t.watch && t.watch.pct > 1 && t.watch.pct < 90 && !t.watch.done)
+    .sort((a, b) => String((b.watch || {}).at || "").localeCompare(String((a.watch || {}).at || "")))
+    .slice(0, 8);
+}
+
+function renderContinue() {
+  const strip = $("continue-strip");
+  const row = $("continue-row");
+  if (!strip || !row) return;
+  const items = continueItems();
+  const show = currentView === "archive" && !view.q && !view.series && !view.month
+    && view.kind === "all" && items.length > 0;
+  strip.hidden = !show;
+  row.textContent = "";
+  if (!show) return;
+  const sub = $("continue-sub");
+  if (sub) sub.textContent = items.length + " 部未看完";
+  for (const t of items) {
+    const cardEl = el("button", "continue-card");
+    cardEl.type = "button";
+    const cover = el("div", "continue-cover");
+    const m = t.meta || {};
+    if (m.cover) {
+      const img = el("img");
+      img.src = coverSrc(m.cover);
+      img.alt = "";
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.referrerPolicy = "no-referrer";
+      cover.append(img);
+    }
+    const prog = el("div", "continue-prog");
+    const bar = el("i");
+    bar.style.width = Math.max(2, Math.min(100, t.watch.pct)) + "%";
+    prog.append(bar);
+    cover.append(prog);
+    cardEl.append(cover);
+    const body = el("div", "continue-body");
+    body.append(el("b", null, t.code || t.id || "—"));
+    const mins = Math.max(1, Math.round((t.watch.pos || 0) / 60));
+    body.append(el("span", null, t.watch.pct + "% · " + mins + " 分钟"));
+    cardEl.append(body);
+    cardEl.addEventListener("click", () => playArchive(t, cardEl));
+    row.append(cardEl);
+  }
+}
+
 function applyFilter() {
-  const tasks = [...allTasks.values()].filter(matches).sort(SORTS[view.sort] || SORTS.new);
+  const searchMode = currentView === "search";
+  // 类型分段只对「视频 / 图片都有」的库有意义：整库同质时「图片」恒为 0，
+  // 摆在那儿只会让人以为分类错了。搜索页不继承类型筛选，直接收起。
+  let videos = 0, images = 0;
+  for (const t of allTasks.values()) (t.cat === "image" ? images++ : videos++);
+  const bothKinds = videos > 0 && images > 0;
+  if ($("kindseg")) {
+    $("kindseg").hidden = searchMode || !bothKinds;
+    if (!searchMode && !bothKinds && view.kind !== "all") {
+      view.kind = "all"; syncKindSeg(); syncArchiveRoute(false, true);
+    }
+  }
+  if ($("search-back")) $("search-back").hidden = !searchMode;
+
+  const all = [...allTasks.values()].filter(searchMode ? searchMatches : matches).sort(SORTS[view.sort] || SORTS.new);
+  const sig = JSON.stringify([currentView, view.q, view.kind, view.series, view.month, view.dim, view.sort]);
+  if (sig !== feedSig) {
+    feedSig = sig; feedLimit = ARCHIVE_PAGE;
+    const scroller = document.querySelector(".main");
+    if (scroller) scroller.scrollTop = 0;
+  }
+  const tasks = all.slice(0, feedLimit);
   syncFeed(tasks);
   renderActiveFilters();
+  const more = $("feed-more");
+  if (more) {
+    const left = all.length - tasks.length;
+    more.hidden = left <= 0;
+    const moreBtn = more.querySelector ? more.querySelector("button") : null;
+    if (left > 0 && moreBtn) moreBtn.textContent = `加载更多（还有 ${left} 个）`;
+  }
 
   const total = allTasks.size;
-  const size = tasks.reduce((s, t) => s + (t.size || 0), 0);
+  const size = all.reduce((s, t) => s + (t.size || 0), 0);
   const bytes = b => b >= 1073741824 ? (b / 1073741824).toFixed(2) + "GB" : (b / 1048576).toFixed(0) + "MB";
   // 标题要说清「现在看的是哪一坨」：只写「全部归档」时，
   // 明明已按系列筛过，用户还得回头看侧栏才知道自己在哪
   const scope = view.series ? `${DIM_LABEL[view.dim]}：${view.series}`
     : (view.month ? fmtMonth(view.month) : "");
-  $("result-title").textContent = (KIND_LABEL[view.kind] || "全部归档") + (scope ? " · " + scope : "");
-  $("result-sub").textContent = tasks.length
-    ? `${tasks.length} / ${total} 个番号 · ${bytes(size)}`
-    : `${total} 个番号`;
+  $("result-title").textContent = searchMode
+    ? `搜索 “${view.q.trim() || "…"}”`
+    : (KIND_LABEL[view.kind] || "全部归档") + (scope ? " · " + scope : "");
+  $("result-sub").textContent = all.length
+    ? `${tasks.length} / ${all.length} ${searchMode ? "个结果" : "个番号"} · ${bytes(size)}`
+      + (all.length > tasks.length ? " · 下滑加载更多" : "")
+    : (searchMode ? "0 个结果" : `${total} 个番号`);
 
   // 输入像番号时，结果条右侧给「搜资源」：站内没有也能直接去网上找
   const resCode = codeOfQuery(view.q);
@@ -2194,7 +3506,10 @@ function applyFilter() {
       b.addEventListener("click", run);
       box.append(b);
     };
-    if (!total) {
+    if (searchMode && !view.q.trim()) {
+      box.append(el("b", null, "搜索归档"));
+      box.append(el("span", null, "在上方输入番号、系列或文件名；回车会同时搜索网络资源。"));
+    } else if (!total) {
       box.append(el("b", null, "还没有归档记录"));
       box.append(el("span", null, resShown
         ? "上面的网络资源就是搜到的候选：点「提交云添加」才会进队列。"
@@ -2210,11 +3525,25 @@ function applyFilter() {
       box.append(el("b", null, "站内没有 " + resCode));
       box.append(el("span", null, `站内 ${total} 个番号里没有它。搜一下网络资源，找到磁力再决定下不下。`));
       cta("搜网络资源", () => searchResources(resCode));
+    } else if (searchMode) {
+      box.append(el("b", null, "没有匹配的归档"));
+      box.append(el("span", null, "换个关键词试试，或输入完整番号去网络资源里找。"));
+      cta("在网上搜这个关键词", () => searchKeyword(view.q));
     } else {
       box.append(el("b", null, "没有匹配的番号"));
       box.append(el("span", null, "试试更短的关键词，或清空筛选条件。"));
     }
     slot.append(box);
+  }
+  renderContinue();
+  if (searchMode) {
+    syncSearchRoute(true);
+  } else if (currentView !== "archive") {
+    if ($("feed")) $("feed").hidden = true;
+    if ($("empty-slot")) $("empty-slot").hidden = true;
+    if ($("resultbar")) $("resultbar").hidden = true;
+  } else {
+    syncArchiveRoute(true);
   }
 }
 
@@ -2235,13 +3564,13 @@ function codeOfQuery(text) {
 
 const resState = {code: "", seq: 0, items: 0, sort: "rec"};
 
-function closeResources() {
+function closeResources(apply = true) {
   resState.seq += 1;           // 丢弃还没回来的响应
   resState.code = "";
   resState.items = 0;
   $("resource-slot").hidden = true;
   $("resource-slot").textContent = "";
-  if (!$("feed").hidden) applyFilter();
+  if (apply && !$("feed").hidden) applyFilter();
 }
 
 function setResHint(text, kind) {
@@ -2259,7 +3588,7 @@ function resMetaCard(code, info) {
     img.alt = code;
     img.loading = "lazy";
     img.addEventListener("error", () => img.remove());
-    img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
+    img.src = coverSrc(info.cover);
     box.append(img);
   }
   const meta = el("div");
@@ -2472,7 +3801,27 @@ $("kindseg").addEventListener("click", e => {
   syncKindSeg();
   applyFilter();
 });
+$("search-back").addEventListener("click", () => {
+  view.q = "";
+  $("q").value = "";
+  closeFind();
+  closeResources(false);
+  showView("archive");
+});
 $("sortsel").addEventListener("change", e => { view.sort = e.target.value; applyFilter(); });
+$("feed-more").addEventListener("click", () => { feedLimit += ARCHIVE_PAGE; applyFilter(); });
+// 列表只挂前 12 张；滚到接近底部再追加下一页
+const feedScroll = document.querySelector(".main");
+if (feedScroll) feedScroll.addEventListener("scroll", () => {
+  if ((currentView !== "archive" && currentView !== "search") || feedLoading) return;
+  const more = $("feed-more");
+  if (!more || more.hidden) return;
+  if (feedScroll.scrollTop + feedScroll.clientHeight < feedScroll.scrollHeight - 520) return;
+  feedLoading = true;
+  feedLimit += ARCHIVE_PAGE;
+  applyFilter();
+  setTimeout(() => { feedLoading = false; }, 220);
+}, {passive: true});
 // 结果条右侧「搜资源」：拿搜索框里的番号去网上找磁力
 $("resbtn").addEventListener("click", () => {
   const code = codeOfQuery(view.q);
@@ -2490,6 +3839,9 @@ $("q").addEventListener("keydown", e => {
   if (q.kind === "code") {
     e.preventDefault();
     closeFind();                    // 换成精确番号了，关键词结果收掉
+    view.q = q.code;
+    $("q").value = q.code;
+    showView("search");
     searchResources(q.code);
     return;
   }
@@ -2498,6 +3850,9 @@ $("q").addEventListener("keydown", e => {
   const text = (view.q || "").trim();
   if (!text) return;
   e.preventDefault();
+  view.q = text;
+  $("q").value = text;
+  showView("search");
   searchKeyword(text);
 });
 $("clear-series").addEventListener("click", () => { view.series = ""; renderSidebar(); applyFilter(); });
@@ -2529,9 +3884,12 @@ $("q").addEventListener("input", e => {
   if (resState.code && codeOfQuery(view.q) !== resState.code) closeResources();
   // 关键词搜索同理：输入变了就收掉上一次的结果
   if (findState.q && (view.q || "").trim() !== findState.q) closeFind();
-  // 在设置/元数据/订阅界面里搜索：先回到归档列表再筛，
-  // 否则输入半天看不到任何变化，像搜索框坏了。
-  if ($("q").value && $("feed").hidden) showView("archive");
+  // 关键词：切到独立的搜索页；清空则回归档
+  if (view.q.trim()) {
+    if (currentView !== "search") showView("search");
+  } else if (currentView === "search") {
+    showView("archive");
+  }
   clearTimeout(qTimer);
   qTimer = setTimeout(applyFilter, 160);
 });
@@ -2541,11 +3899,12 @@ document.addEventListener("keydown", e => {
     $("q").focus();
   }
   if (e.key === "Escape") {
-    if ($("metapanel").hidden === false) closeMeta();
-    if ($("healthpanel").hidden === false) closeHealth();
+    if ($("metapanel") && !$("metapanel").hidden) closeMeta();
+    if ($("healthpanel") && !$("healthpanel").hidden) closeHealth();
 
     closeQueue();
     closeSide();
+    closeRail();
   }
 });
 
@@ -2564,6 +3923,11 @@ function syncScrim() {
 }
 $("sidebtn").addEventListener("click", () => $("side").classList.contains("open") ? closeSide() : openSide());
 $("scrim").addEventListener("click", closeSide);
+// 右侧筛选栏：宽屏常驻；≤1180px 收成抽屉，由工具条上的筛选按钮开合
+function openRail() { document.body.classList.add("rail-open"); $("railscrim").hidden = false; }
+function closeRail() { document.body.classList.remove("rail-open"); $("railscrim").hidden = true; }
+$("railbtn").addEventListener("click", () => document.body.classList.contains("rail-open") ? closeRail() : openRail());
+$("railscrim").addEventListener("click", closeRail);
 $("queuebtn").addEventListener("click", () => currentView === "queue" ? closeQueue() : openQueue());
 $("queue-close").addEventListener("click", closeQueue);
 
@@ -2603,6 +3967,7 @@ async function load() {
       applyFilter();
       $("updated").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN");
       $("refresh").classList.remove("on");
+      updateTopStorageCapsule();
     } catch (e) {
       $("dot").className = "dot off";
       $("health").textContent = "刷新失败（显示的是上次结果）";
@@ -2630,7 +3995,7 @@ let subKind = "actor";
 const KIND_NAME = {actor: "演员", series: "系列"};
 const KIND_PLACEHOLDER = {
   actor: "JavBus 演员 ID 或链接，例如 w5a 或 https://javbus.com/star/w5a",
-  series: "JavBus 系列 ID 或链接，例如 https://javbus.com/series/xxxx",
+  series: "JavBus 系列 ID、番号前缀或链接，例如 wdg、TCHB 或 https://javbus.com/series/xxxx",
 };
 $("sub-kind").addEventListener("click", e => {
   const b = e.target.closest("button[data-kind]");
@@ -2638,18 +4003,26 @@ $("sub-kind").addEventListener("click", e => {
   subKind = b.dataset.kind;
   for (const x of $("sub-kind").children) x.classList.toggle("on", x.dataset.kind === subKind);
   $("sub-actor").placeholder = KIND_PLACEHOLDER[subKind];
+  if (!editingSubKey && subKind === "series") {
+    const fullR = document.querySelector('input[name="sub-scope"][value="full"]');
+    if (fullR) fullR.checked = true;
+  }
 });
 
 // 建议：按已归档元数据统计常看的人与系列，有 ID 的一键订阅。
 // 没 ID 的按钮禁用 — 订阅必须落到站内 actor/series ID，猜不得。
+let suggestOpen = false;
 function renderSuggest(box, suggest, subs) {
-  const rows = [...(suggest.actors || []), ...(suggest.series || [])];
-  if (!rows.length) return;
   const have = new Set((subs || []).map(s => `${s.kind}:${(s.name || "").toLowerCase()}`));
-  const head = el("div", "meta", "看得出你常看（按归档统计）");
-  box.append(head);
-  for (const row of rows.slice(0, 8)) {
-    if (have.has(`${row.kind}:${row.name.toLowerCase()}`)) continue;
+  const rows = [...(suggest.actors || []), ...(suggest.series || [])]
+    .filter(row => !have.has(`${row.kind}:${(row.name || "").toLowerCase()}`))
+    .slice(0, 8);
+  if (!rows.length) return;
+  const wrap = el("details", "subs-suggest");
+  wrap.open = suggestOpen;
+  wrap.addEventListener("toggle", () => { suggestOpen = wrap.open; });
+  wrap.append(el("summary", null, `常看推荐 · ${rows.length}`));
+  for (const row of rows) {
     const line = el("div", "sub-row");
     line.append(el("span", "tag", row.kind === "series" ? "系列" : "演员"));
     line.append(el("span", "nm", `${row.name} · ${row.count} 部`));
@@ -2672,8 +4045,9 @@ function renderSuggest(box, suggest, subs) {
     });
     r.append(add);
     line.append(r);
-    box.append(line);
+    wrap.append(line);
   }
+  box.append(wrap);
 }
 
 function setSubHint(text, kind) {
@@ -2721,24 +4095,34 @@ async function renderSubs() {
   }
   box.textContent = "";
   const subs = (data && data.subs) || [];
-  renderSuggest(box, (data && data.suggest) || {}, subs);
   // 待办与订阅是同一条链路（订阅发现 → 待办 → 提交），所以跟着 /api/subs
   // 一起渲染；放在「没有订阅」的提前返回之前，免得没订阅就看不到待办。
   renderBacklog((data && data.backlog) || null);
   if (!subs.length) {
     box.append(el("div", "meta", "还没有订阅。粘贴演员页链接后点「添加订阅」。"));
-    return;
   }
   for (const sub of subs) {
     const row = el("div", "sub-row" + (sub.enabled ? "" : " off"));
     const kindTag = el("span", "tag", KIND_NAME[sub.kind] || "演员");
     row.append(kindTag);
     row.append(el("span", "nm", sub.name || sub.id));
-    const meta = [`游标 ${sub.cursor || "—"}`, `每次 ${sub.max_per_run || 1} 部`];
+    const meta = [`游标 ${sub.cursor || "全量/未开始"}`, `每次 ${sub.max_per_run || 1} 部`];
     if (sub.max_size_gb) meta.push(`单片≤${sub.max_size_gb}GB`);
     if (sub.last_result) meta.push(sub.last_result);
     row.append(el("span", "meta", meta.join(" · ")));
+    const f = sub.filters || {};
+    const badges = el("div", "subs-badges");
+    if (f.full_series) badges.append(el("span", "subs-badge cyan", "完整系列"));
+    if (f.require_subtitle) badges.append(el("span", "subs-badge green", "中字"));
+    if (f.require_hd) badges.append(el("span", "subs-badge cyan", "高清"));
+    if (f.min_seeders) badges.append(el("span", "subs-badge", `做种≥${f.min_seeders}`));
+    if (f.min_size_gb) badges.append(el("span", "subs-badge", `≥${f.min_size_gb}GB`));
+    if (f.exclude_keywords) badges.append(el("span", "subs-badge", `排:${f.exclude_keywords}`));
+    if (f.include_keywords) badges.append(el("span", "subs-badge", `含:${f.include_keywords}`));
+    row.append(badges);
     const r = el("div", "r");
+    const edit = el("button", null, "设置");
+    edit.addEventListener("click", () => startEditSub(sub));
     const tog = el("button", null, sub.enabled ? "暂停" : "启用");
     tog.addEventListener("click", async () => {
       await subsApi("/api/subs/toggle", {id: sub.key || sub.id, enabled: !sub.enabled});
@@ -2757,12 +4141,17 @@ async function renderSubs() {
     del.addEventListener("click", async () => {
       if (!confirm(`取消对 ${sub.name || sub.id} 的订阅？\n已有的归档不受影响。`)) return;
       await subsApi("/api/subs/remove", {id: sub.key || sub.id});
+      if (editingSubKey && (editingSubKey === sub.key || editingSubKey === sub.id)) {
+        cancelEditSub();
+      }
       renderSubs();
     });
-    r.append(tog, run, del);
+    r.append(edit, tog, run, del);
     row.append(r);
     box.append(row);
   }
+  // 常看推荐只是锦上添花：排在订阅列表之后、默认收起，不挤占正常订阅
+  renderSuggest(box, (data && data.suggest) || {}, subs);
 }
 
 function openSubs() {
@@ -2793,6 +4182,17 @@ const BACKLOG_TONE = {
   skipped: "tag",
   done: "tag",
 };
+const BACKLOG_GROUPS = [
+  ["all", "全部"], ["retry", "待重查"], ["no_magnet", "无磁力"],
+  ["no_quality", "无对应清晰度"], ["filtered", "筛选不符"],
+  ["active", "进行中"], ["done", "已归档"], ["skipped", "已跳过"],
+];
+const BACKLOG_GROUP_LABEL = {
+  retry: "待重查", no_magnet: "无磁力", no_quality: "无对应清晰度",
+  filtered: "筛选不符", active: "进行中", done: "已归档", skipped: "已跳过",
+};
+let backlogGroup = "all";
+let backlogCache = null;
 
 function backlogTime(ts) {
   // next_at 是 unix 秒。0 或没有就是「下一轮就会试」，不显示时间。
@@ -2813,26 +4213,66 @@ function setBacklogHint(text, kind) {
 function renderBacklog(backlog) {
   const box = $("backlog-list");
   if (!box) return;
+  const chipBox = $("backlog-groups");
   box.textContent = "";
   if (!backlog) {
+    backlogCache = null;
+    if (chipBox) chipBox.textContent = "";
     setBacklogHint("待办读取失败", "err");
     box.append(el("div", "meta", "待办读取失败，稍后点「刷新待办」重试。"));
     return;
   }
+  backlogCache = backlog;
   const items = backlog.items || [];
-  const counts = backlog.counts || {};
-  const parts = ["pending", "queued", "skipped", "done"]
-    .map(s => `${BACKLOG_STATE[s]} ${counts[s] || 0}`);
-  setBacklogHint(parts.join(" · "));
-  if (!items.length) {
-    box.append(el("div", "meta", "没有待办：订阅发现的新片要么已经下好，要么暂时还没有资源。"));
+  const groupOf = it => it.group || (
+    it.state === "done" ? "done" :
+    it.state === "skipped" ? "skipped" :
+    it.state === "queued" ? "active" : "retry");
+  const local = {all: items.length};
+  for (const it of items) {
+    const g = groupOf(it);
+    local[g] = (local[g] || 0) + 1;
+  }
+  const remote = backlog.groups || {};
+  const groupCount = key => key === "all"
+    ? (remote.all || items.length) : (remote[key] || local[key] || 0);
+
+  const parts = BACKLOG_GROUPS
+    .filter(([key]) => key !== "all" && groupCount(key))
+    .map(([key, label]) => `${label} ${groupCount(key)}`);
+  setBacklogHint(`共 ${groupCount("all")} 条` + (parts.length ? ` · ${parts.join(" · ")}` : ""));
+
+  if (chipBox) {
+    chipBox.textContent = "";
+    for (const [key, label] of BACKLOG_GROUPS) {
+      const n = groupCount(key);
+      if (key !== "all" && !n && key !== backlogGroup) continue;
+      const b = el("button", key === backlogGroup ? "on" : null, null);
+      b.type = "button";
+      b.append(el("span", null, label));
+      b.append(el("b", null, String(n)));
+      b.addEventListener("click", () => {
+        backlogGroup = key;
+        renderBacklog(backlogCache);
+      });
+      chipBox.append(b);
+    }
+  }
+
+  const visible = items.filter(it => backlogGroup === "all" || groupOf(it) === backlogGroup);
+  if (!visible.length) {
+    const msg = items.length
+      ? "这个分类下没有待办。"
+      : "没有待办：订阅发现的新片要么已经下好，要么暂时还没有资源。";
+    box.append(el("div", "meta", msg));
     return;
   }
-  for (const it of items) {
+  for (const it of visible) {
+    const group = groupOf(it);
     const row = el("div", "kvrow");
     row.append(el("span", "nm", it.code || "—"));
     const stateTag = el("span", BACKLOG_TONE[it.state] || "tag",
-                        BACKLOG_STATE[it.state] || it.state || "");
+                        BACKLOG_GROUP_LABEL[group] || BACKLOG_STATE[it.state] || it.state || "");
     row.append(stateTag);
     // 标题有就显示，没有就只留番号，别显示空白占位
     if (it.title) row.append(el("span", "meta", it.title));
@@ -2851,7 +4291,8 @@ function renderBacklog(backlog) {
       const again = el("button", null, "立刻重试");
       again.addEventListener("click", async () => {
         again.disabled = true;
-        setBacklogHint(`重新排队 ${it.code}…`);
+        again.textContent = "查询中…";
+        setBacklogHint(`正在查找 ${it.code} 的磁力…`);
         await backlogAction("/api/backlog/retry", it, again);
       });
       r.append(again);
@@ -2876,18 +4317,27 @@ async function backlogAction(path, item, btn) {
     res = await subsApi(path, {code: item.code, sub: item.sub || ""});
   } catch (e) {
     setBacklogHint(`操作失败：${e.message}`, "err");
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = "立刻重试"; }
     return;
   }
   if (!res || !res.ok) {
     setBacklogHint(`操作失败：${(res && res.error) || "未知错误"}`, "err");
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = "立刻重试"; }
     return;
   }
-  setBacklogHint(path.includes("retry")
-    ? `${item.code} 已重新排队，下一轮会再查`
-    : `${item.code} 已忽略`, "ok");
-  renderSubs();                      // 待办状态变了，跟着刷新一次
+  let text, tone = "ok";
+  if (path.includes("retry")) {
+    if (res.started) {
+      text = `${item.code} 已提交下载${res.job ? " · " + res.job : ""}`;
+    } else {
+      text = `${item.code} 暂时没下到：${res.why || "稍后再试"}`;
+      tone = "";
+    }
+  } else {
+    text = `${item.code} 已忽略`;
+  }
+  await renderSubs();                // 待办状态变了，跟着刷新一次
+  setBacklogHint(text, tone);        // renderSubs 会重写 hint，结果要放在它后面
 }
 
 $("subs-open").addEventListener("click", () => $("subpanel").hidden ? openSubs() : closeSubs());
@@ -2898,19 +4348,107 @@ $("backlog-refresh").addEventListener("click", async () => {
   setBacklogHint("刷新中…");
   await renderSubs();
 });
+let editingSubKey = null;
+
+function getFormFilters() {
+  const fullRadio = document.querySelector('input[name="sub-scope"]:checked');
+  const isFull = fullRadio ? fullRadio.value === "full" : false;
+  return {
+    full_series: isFull,
+    min_size_gb: parseFloat($("sub-minsize").value || "0") || 0,
+    min_seeders: parseInt($("sub-seeders").value || "0", 10) || 0,
+    require_subtitle: $("sub-req-sub").checked,
+    require_hd: $("sub-req-hd").checked,
+    exclude_keywords: $("sub-exclude").value.trim(),
+    include_keywords: $("sub-include").value.trim(),
+  };
+}
+
+function startEditSub(sub) {
+  editingSubKey = sub.key || sub.id;
+  $("sub-actor").value = sub.id || sub.key || "";
+  $("sub-actor").disabled = true;
+  if (sub.kind) {
+    subKind = sub.kind;
+    for (const x of $("sub-kind").children) x.classList.toggle("on", x.dataset.kind === subKind);
+    $("sub-actor").placeholder = KIND_PLACEHOLDER[subKind];
+  }
+  $("sub-max").value = sub.max_per_run || 1;
+  $("sub-size").value = sub.max_size_gb || 8;
+  const f = sub.filters || {};
+  $("sub-minsize").value = f.min_size_gb || 0;
+  $("sub-seeders").value = f.min_seeders || 0;
+  $("sub-req-sub").checked = !!f.require_subtitle;
+  $("sub-req-hd").checked = !!f.require_hd;
+  $("sub-exclude").value = f.exclude_keywords || "";
+  $("sub-include").value = f.include_keywords || "";
+  const isFull = !!f.full_series;
+  const fullRadio = document.querySelector('input[name="sub-scope"][value="full"]');
+  const newRadio = document.querySelector('input[name="sub-scope"][value="new"]');
+  if (isFull && fullRadio) fullRadio.checked = true;
+  else if (newRadio) newRadio.checked = true;
+  $("sub-add").textContent = "保存修改";
+  $("sub-cancel-edit").style.display = "";
+  setSubHint(`正在编辑「${sub.name || sub.id}」条件，修改后点击「保存修改」`, "ok");
+  $("subpanel").scrollIntoView({behavior: "smooth"});
+}
+
+function cancelEditSub() {
+  editingSubKey = null;
+  $("sub-actor").value = "";
+  $("sub-actor").disabled = false;
+  $("sub-max").value = 1;
+  $("sub-size").value = 8;
+  $("sub-minsize").value = 0;
+  $("sub-seeders").value = 0;
+  $("sub-req-sub").checked = false;
+  $("sub-req-hd").checked = false;
+  $("sub-exclude").value = "";
+  $("sub-include").value = "";
+  const newRadio = document.querySelector('input[name="sub-scope"][value="new"]');
+  if (newRadio) newRadio.checked = true;
+  $("sub-add").textContent = "添加订阅";
+  $("sub-cancel-edit").style.display = "none";
+  setSubHint("");
+}
+
+$("sub-cancel-edit").addEventListener("click", cancelEditSub);
+
 $("sub-add").addEventListener("click", async () => {
   const actor = $("sub-actor").value.trim();
-  if (!actor) { setSubHint("先填演员页 ID 或链接", "err"); return; }
-  setSubHint("添加中…");
+  if (!actor && !editingSubKey) { setSubHint("先填订阅 ID 或链接", "err"); return; }
+  setSubHint(editingSubKey ? "保存中…" : "添加中…");
+  const maxPerRun = parseInt($("sub-max").value || "1", 10);
+  const maxSizeGb = parseFloat($("sub-size").value || "0");
+  const filters = getFormFilters();
+
+  if (editingSubKey) {
+    const res = await subsApi("/api/subs/update", {
+      id: editingSubKey,
+      max_per_run: maxPerRun,
+      max_size_gb: maxSizeGb,
+      filters: filters,
+    });
+    if (res && res.ok) {
+      cancelEditSub();
+      setSubHint("已保存修改", "ok");
+      renderSubs();
+    } else {
+      setSubHint((res && res.error) || "保存失败", "err");
+    }
+    return;
+  }
+
   const res = await subsApi("/api/subs/add", {
     actor,
     kind: subKind,
-    max_per_run: parseInt($("sub-max").value || "1", 10),
-    max_size_gb: parseFloat($("sub-size").value || "0"),
+    max_per_run: maxPerRun,
+    max_size_gb: maxSizeGb,
+    filters: filters,
   });
   if (res && res.ok) {
-    $("sub-actor").value = "";
-    setSubHint("已添加", "ok");
+    cancelEditSub();
+    setSubHint("已添加订阅", "ok");
     renderSubs();
   } else {
     setSubHint((res && res.error) || "添加失败", "err");
@@ -2929,29 +4467,48 @@ $("sub-run").addEventListener("click", async () => {
 // 主内容区整块切换：点侧栏某项，中间区域整个换成那个界面，归档列表暂时隐藏。
 // 以前各功能是弹层（section.panel 浮在归档列表上），多个可以叠在一起；
 // 同一时刻只显示一个视图（归档 / 任务队列 / 订阅 / 归档维护 / 设置）。
-function showView(name) {
+function applyPrivacy() {
+  const listView = currentView === "archive" || currentView === "search";
+  const on = privacyCovers && listView;
+  if (on) document.body.classList.add("privacy-covers");
+  else document.body.classList.remove("privacy-covers");
+  const btn = $("privacy-toggle");
+  if (!btn) return;
+  btn.hidden = !listView;
+  if (privacyCovers) btn.classList.add("on"); else btn.classList.remove("on");
+  btn.setAttribute("aria-pressed", privacyCovers ? "true" : "false");
+  btn.title = privacyCovers
+    ? "封面已模糊；点击显示原图（仅本次打开有效）"
+    : "封面已显示原图；点击重新模糊";
+}
+
+function showView(name, syncRoute = true) {
   const isArchive = name === "archive";
+  const isList = isArchive || name === "search";
   const resBox = $("resource-slot");
   const views = [
-    ["resultbar", isArchive], ["feed", isArchive], ["empty-slot", isArchive],
-    // 关键词搜索结果：归档视图、且真的搜过（有内容）才显示
-    ["find-slot", isArchive && !!$("find-slot") && $("find-slot").childElementCount > 0],
-    // 资源结果面板只在归档视图、且真的搜过（有内容）时才显示
-    ["resource-slot", isArchive && !!resBox && resBox.childElementCount > 0],
+    ["resultbar", isList], ["feed", isList], ["empty-slot", isList],
+    // 关键词搜索结果：列表视图、且真的搜过（有内容）才显示
+    ["find-slot", isList && !!$("find-slot") && $("find-slot").childElementCount > 0],
+    // 资源结果面板只在列表视图、且真的搜过（有内容）时才显示
+    ["resource-slot", isList && !!resBox && resBox.childElementCount > 0],
     // 提交区同理：只有输入里真的粘着磁力/直链时才显示
-    ["submit-slot", isArchive && !!($("submit-slot") || {}).childElementCount],
+    ["submit-slot", isList && !!($("submit-slot") || {}).childElementCount],
     ["subpanel", name === "subs"],
     ["metapanel", name === "maint"],
     ["settingspanel", name === "settings"], ["queue", name === "queue"],
+    ["logpanel", name === "logs"],
   ];
   currentView = name;
+  applyPrivacy();
+  renderContinue();
   for (const [id, on] of views) {
     const el = $(id);
     if (el) el.hidden = !on;
   }
-  // 归档列表在维护视图要藏起来：两块内容不能同时占主区
-  if (!isArchive) {
-    for (const id of ("feed", "empty-slot")) {
+  // 列表视图以外的页面把归档网格收起来；搜索页仍用这套网格
+  if (!isList) {
+    for (const id of ["feed", "empty-slot"]) {
       const el = $(id);
       if (el) el.hidden = true;
     }
@@ -2959,26 +4516,215 @@ function showView(name) {
   // 侧栏导航高亮：只有当前视图那一项 on（add/remove，不用 toggle，兼容假 DOM）
   // queuebtn（任务队列）单独维护 on，切视图时一并清掉，避免双高亮
   const navOn = [
-    ["archive-open", isArchive],
+    ["archive-open", isList],
     ["subs-open", name === "subs"],
     ["settings-open", name === "settings"],
+    ["maint-open", name === "maint"],
     // 队列也是视图：在这一页时侧栏同样高亮，切走就清掉（别双高亮）
     ["queuebtn", name === "queue"],
+    ["log-open", name === "logs"],
   ];
   for (const [id, on] of navOn) {
     const el = $(id);
     if (!el) continue;
     if (on) el.classList.add("on"); else el.classList.remove("on");
   }
+  // 日志视图才轮询，切走立刻停，别让后台一直读文件
+  if (name === "logs") startLogPoll(); else stopLogPoll();
   // 筛选条只对归档列表有意义。以前切到设置/元数据时它还挂着，
   // 「在左侧选择系列或月份」在最上方空转，点它什么都不会发生。
-  if ($("activefilters")) $("activefilters").hidden = !isArchive;
+  if ($("activefilters")) {
+    $("activefilters").hidden = !isArchive || !document.querySelector("#activefilters .pill");
+  }
+  // 右侧筛选栏只服务归档视图：其它页面收起，把宽度让给内容；
+  // 窄屏下打开它的按钮也一起藏掉，免得点半天没反应（搜索页不吃系列/月份筛选）
+  if ($("rail")) $("rail").hidden = !isArchive;
+  if ($("railbtn")) $("railbtn").hidden = !isArchive;
+  if (!isArchive) closeRail();
   // 窄屏：侧栏是抽屉，选了条目还把抽屉留在原地 = 挡住刚切过去的界面
   if (!isArchive && window.innerWidth <= 960 && $("side").classList.contains("open")) closeSide();
+  if (syncRoute && !routeLock) {
+    if (name === "settings") {
+      navigate("settings", settingsTab ? {tab: settingsTab} : {}, false);
+    } else if (name === "maint") {
+      const nameTab = document.querySelector('#maint-tabs button[data-mtab="name"].on');
+      navigate("maint", {tab: nameTab ? "name" : "meta"}, false);
+    } else if (name === "archive") {
+      syncArchiveRoute(false);
+    } else if (name === "search") {
+      syncSearchRoute(false);
+    } else {
+      navigate(name, {}, false);
+    }
+  }
 }
-function showArchive() { showView("archive"); }
+function showArchive() {
+  if (currentView === "search") {
+    view.q = "";
+    $("q").value = "";
+    closeFind();
+    closeResources(false);
+  }
+  showView("archive");
+}
 
 $("archive-open").addEventListener("click", showArchive);
+$("privacy-toggle").addEventListener("click", () => {
+  privacyCovers = !privacyCovers;
+  applyPrivacy();
+});
+$("log-open").addEventListener("click", () => showView("logs"));
+
+// ── 路由与子页面保持
+let routeLock = false;
+
+function buildRouteHash(name, params = {}) {
+  const isArchive = name === "archive";
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") p.set(k, String(v));
+  }
+  const q = p.toString();
+  if (isArchive) {
+    return q ? "#/archive?" + q : "#/";
+  }
+  return "#/" + name + (q ? "?" + q : "");
+}
+
+function parseRoute() {
+  const loc = (typeof window !== "undefined" && window.location) ? window.location : {};
+  let h = loc.hash || "";
+  if (h.startsWith("#")) h = h.slice(1);
+  if (h.startsWith("/")) h = h.slice(1);
+  if (!h && loc.pathname) {
+    const p = loc.pathname.replace(/^\/+|\/+$/g, "");
+    if (["queue", "subs", "settings", "maint", "logs", "archive", "search"].includes(p)) h = p;
+  }
+  const [path, query] = h.split("?");
+  const segs = (path || "").split("/").filter(Boolean);
+  const name = segs[0] || "archive";
+  const params = {};
+  if (query) {
+    const sp = new URLSearchParams(query);
+    for (const [k, v] of sp.entries()) params[k] = v;
+  }
+  if (segs[1] && !params.tab) {
+    params.tab = decodeURIComponent(segs[1]);
+  }
+  const valid = ["queue", "subs", "settings", "maint", "logs", "archive", "search"];
+  return {
+    view: valid.includes(name) ? name : "archive",
+    params: params,
+  };
+}
+
+function navigate(name, params = {}, replace = false) {
+  const target = buildRouteHash(name, params);
+  const loc = (typeof window !== "undefined" && window.location) ? window.location : null;
+  if (!loc) { applyRoute(); return; }
+  if (loc.hash !== target) {
+    if (replace && window.history && window.history.replaceState) {
+      window.history.replaceState(null, "", target);
+      applyRoute();
+    } else {
+      loc.hash = target;
+    }
+  }
+}
+
+function syncArchiveRoute(replace = true, force = false) {
+  if (currentView !== "archive" || (routeLock && !force)) return;
+  const p = {};
+  if (view.series) { p.series = view.series; p.dim = view.dim; }
+  if (view.month) p.month = view.month;
+  if (view.kind !== "all") p.kind = view.kind;
+  const qk = queryKind(view.q);
+  if (view.q && qk.kind !== "magnet" && qk.kind !== "link") p.q = view.q.trim();
+  navigate("archive", p, replace);
+}
+
+// 搜索页单独一条路由：搜索词只属于这一页，不把系列/月份/类型一起带过去
+function syncSearchRoute(replace = true, force = false) {
+  if (currentView !== "search" || (routeLock && !force)) return;
+  const q = (view.q || "").trim();
+  navigate("search", q ? {q} : {}, replace);
+}
+
+function applyRoute() {
+  if (routeLock) return;
+  routeLock = true;
+  try {
+    const r = parseRoute();
+    const targetView = r.view;
+    const params = r.params;
+    showView(targetView, false);
+    const loc = (typeof window !== "undefined" && window.location) ? window.location : null;
+    if (loc && !loc.hash && loc.pathname && loc.pathname !== "/") {
+      const target = buildRouteHash(targetView, params);
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, "", target);
+      }
+    }
+    if (targetView === "queue") {
+      loadJobs();
+    } else if (targetView === "subs") {
+      renderSubs();
+    } else if (targetView === "settings") {
+      const prevTab = settingsTab;
+      if (params.tab) settingsTab = params.tab;
+      if (!Object.keys(settingsGroups).length) {
+        loadSettings();
+      } else if (params.tab && params.tab !== prevTab) {
+        switchSettingsTab(params.tab, false);
+      }
+    } else if (targetView === "maint") {
+      const tab = params.tab || "meta";
+      switchMaintTab(tab, false);
+    } else if (targetView === "search") {
+      const nextQ = params.q || "";
+      if (view.q !== nextQ) {
+        view.q = nextQ;
+        if ($("q")) $("q").value = nextQ;
+        closeFind();
+        closeResources(false);
+      }
+      applyFilter();
+    } else if (targetView === "archive") {
+      const nextQ = params.q || "";
+      const nextSeries = params.series || "";
+      const nextMonth = params.month || "";
+      const nextDim = params.dim || "series";
+      const nextKind = params.kind || "all";
+      let changed = false;
+      if (view.q !== nextQ) {
+        view.q = nextQ;
+        if ($("q")) $("q").value = nextQ;
+        changed = true;
+      }
+      if (view.series !== nextSeries) {
+        view.series = nextSeries;
+        changed = true;
+      }
+      if (view.month !== nextMonth) {
+        view.month = nextMonth;
+        changed = true;
+      }
+      if (view.dim !== nextDim) {
+        view.dim = nextDim;
+        changed = true;
+      }
+      if (view.kind !== nextKind) {
+        view.kind = nextKind;
+        syncKindSeg();
+        changed = true;
+      }
+      if (changed) renderSidebar();
+      applyFilter();
+    }
+  } finally {
+    routeLock = false;
+  }
+}
 
 // ── 搜索框的三种输入：番号 / 磁力 / 直链
 // 提交区已并入搜索框：粘贴磁力或直链就地出提交区，不再另开一页。
@@ -3137,6 +4883,8 @@ const STAGE_TEXT = {queued: "排队中", downloading: "准备中", organizing: "
   uploading: "上传中", cloud: "云端落地中", deferred: "额度等待", done: "完成",
   cancelled: "已停止", failed: "失败"};
 const ACTIVE = new Set(["queued", "downloading", "organizing", "uploading", "cloud", "deferred"]);
+const JOB_RANK = {downloading: 0, organizing: 0, uploading: 0, cloud: 0,
+  queued: 1, deferred: 1, failed: 2, cancelled: 2, done: 3};
 // 已结束：这些可以删记录（后端也按同一份集合校验）
 const DONE_STAGES = new Set(["done", "failed", "cancelled"]);
 let lastJobs = [];
@@ -3146,7 +4894,7 @@ function jobNode(j) {
     : j.stage === "done" ? "done" : j.stage === "cancelled" ? "failed" : ""));
   const top = el("div", "jtop");
   top.append(el("span", "jcode", j.code || j.name || (j.source || "").slice(0, 22) || j.id));
-  top.append(el("span", "jst", STAGE_TEXT[j.stage] || j.stage || "—"));
+  top.append(el("span", "jst s-" + (j.stage || "unknown"), STAGE_TEXT[j.stage] || j.stage || "—"));
 
   // 右上角动作：停止（进行中才有）与时间线开关。都放 jacts 里，
   // 这样「停止」不会再单独抢 margin-left:auto 的位。
@@ -3205,10 +4953,13 @@ function jobNode(j) {
   top.append(acts);
   node.append(top);
 
+  const prog = el("div", "jprog");
   const bar = el("div", "jbar");
   const fill = el("i");
   bar.append(fill);
-  node.append(bar);
+  const pct = el("span", "jpct");
+  prog.append(bar, pct);
+  node.append(prog);
 
   const meta = el("div", "jmeta");
   const text = el("span");
@@ -3254,6 +5005,8 @@ function jobNode(j) {
       tlSig = timelineSig();
     }
     fill.style.width = (j.stage === "done" ? 100 : (j.percent || 0)) + "%";
+    pct.textContent = j.stage === "done" ? "100%"
+      : (ACTIVE.has(j.stage) && j.percent ? Math.round(j.percent) + "%" : "");
     const bits = [];
     if (ACTIVE.has(j.stage) && j.downloaded) bits.push(gb(j.downloaded) + " 已落盘");
     if (ACTIVE.has(j.stage) && j.percent) bits.push((j.percent).toFixed(0) + "%");
@@ -3264,6 +5017,7 @@ function jobNode(j) {
     const cleanup = cleanupPendingText(j.cleanup_pending);
     if (cleanup) bits.push(cleanup);
     text.textContent = bits.join(" · ") || fmt(j.at);
+    text.title = text.textContent;
   };
   update();
   node.updateJob = update;
@@ -3272,11 +5026,6 @@ function jobNode(j) {
 
 // 展开中的时间线（按 job id 记），loadJobs 重建卡片时据此复原
 const tlOpen = new Set();
-
-const PHASE_TEXT = {
-  PHASE_TYPE_PENDING: "排队", PHASE_TYPE_RUNNING: "下载中", PHASE_TYPE_PAUSED: "已暂停",
-  PHASE_TYPE_COMPLETE: "完成", PHASE_TYPE_ERROR: "失败",
-};
 
 // ── 图片灯箱
 // 预览图以前是 <a target="_blank">：点一下新开标签页，看完还得手动关，手机上
@@ -3345,9 +5094,9 @@ function showLightbox(srcs, index) {
 
 // 预览图 / 截图墙：点开在站内看。href 保留（右键仍可「在新标签打开图片」），
 // 左键一律 preventDefault 交给灯箱。
-function thumbWall(srcs, label) {
+function thumbWall(srcs, label, r2) {
   const wall = el("div", "dwall");
-  const full = (srcs || []).map(s => BASE + "/proxy?u=" + encodeURIComponent(s));
+  const full = (srcs || []).map(s => r2 ? coverSrc(s) : BASE + "/proxy?u=" + encodeURIComponent(s)).filter(Boolean);
   full.forEach((href, i) => {
     const a = el("a", "dthumb");
     a.href = href;
@@ -3401,7 +5150,7 @@ function showDetail(code, info) {
     img.alt = code;
     // 取不到封面就整块不显示：破图标 + alt 文字比没有图更难看
     img.addEventListener("error", () => img.remove());
-    img.src = BASE + "/proxy?u=" + encodeURIComponent(info.cover);
+    img.src = coverSrc(info.cover);
     top.append(img);
   }
   const metaBox = el("div", "dmeta");
@@ -3508,128 +5257,11 @@ async function showMagnetPreview(item, btn) {
   document.body.append(layer);
 }
 
-async function panelControl(id, action, btn) {
-  const label = {pause: "暂停", resume: "继续", delete: "删除任务记录"}[action] || action;
-  if (action === "delete" && !confirm(`删除迅雷任务记录？\n\n只删任务条目，已下载的文件留在迅雷那边不动。`)) return;
-  if (btn) btn.disabled = true;
-  try {
-    const r = await fetch(BASE + "/api/xunlei/control", authInit({
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({id, action}),
-    }));
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok || !data.ok) alert(`${label}失败：${data.error || ("HTTP " + r.status)}`);
-  } catch (e) {
-    alert(`${label}失败：${e.message || e}`);
-  } finally {
-    if (btn) btn.disabled = false;
-    loadJobs(true);
-  }
-}
-
-// 迅雷面板里的任务：本程序之外下的东西也能在这里看到，不用另开 2345
-//
-// 减法：这一段是**外部下载器**的任务，不是 x-drive 的任务，默认收起。
-// 队列面板的主体只放自己的任务；要看迅雷那边再点开。
-const XL_PANEL_OPEN = "xlp";          // 展开状态记在 localStorage：刷新后还在
-async function appendPanelTasks(box, tail, seq, signal) {
-  let data = null;
-  try {
-    const r = await fetch(BASE + "/api/xunlei", authInit({cache: "no-store", signal}));
-    if (r.ok) data = await readJson(r, "/api/xunlei");
-  } catch (e) { return; }
-  if (seq !== jobsSeq) return;       // 面板必须属于当前未失效的队列快照
-  const tasks = (data && data.tasks) || [];
-  if (!tasks.length) {
-    // 面板清空了：把上一轮的节点收掉（renderQueueBlock 传空列表即按 scope 清理）
-    renderQueueBlock(box, [], "xl:", tail);
-    return;
-  }
-  const open = localStorage.getItem(XL_PANEL_OPEN) === "1";
-  const panelItems = [{
-    key: "xl:head",
-    sig: queueSig(["head", data.error || ""]),
-    build: () => {
-      const head = el("div", "queue-sec xl-head" + (data.error ? " err" : ""),
-                      data.error ? `迅雷面板不可用：${data.error}` : "迅雷面板");
-      const caret = el("span", "xl-caret", open ? "▾" : "▸");
-      head.insertBefore(caret, head.firstChild);
-      head.title = open ? "点一下收起" : "点一下展开（外部下载器的任务，不是本程序的任务）";
-      head.addEventListener("click", () => {
-        const next = localStorage.getItem(XL_PANEL_OPEN) === "1" ? "0" : "1";
-        localStorage.setItem(XL_PANEL_OPEN, next);
-        loadJobs(true);                       // 重画：头部文字与任务可见性跟着变
-      });
-      return head;
-    },
-  }];
-  if (open) {
-    for (const t of tasks.slice(0, 20)) {
-      panelItems.push({
-        key: "xl:" + t.id,
-        // 同上：phase/name 决定结构（按钮不一样），percent/speed 只改字
-        sig: queueSig(["xl", t.name, t.phase, t.error ? 1 : 0]),
-        build: () => panelTaskNode(t),
-        update: node => node.updatePanel && node.updatePanel(t),
-      });
-    }
-  }
-  renderQueueBlock(box, panelItems, "xl:", tail);
-}
-
-// 一条迅雷面板任务（从 appendPanelTasks 里提出来，便于按签名复用）
-function panelTaskNode(t) {
-  {
-    const node = el("div", "job" + (t.phase === "PHASE_TYPE_ERROR" ? " failed" : ""));
-    const top = el("div", "jtop");
-    top.append(el("span", "jcode", t.name || t.id));
-    top.append(el("span", "jst", PHASE_TEXT[t.phase] || t.phase));
-    const acts = el("span", "jacts");
-    if (t.phase === "PHASE_TYPE_RUNNING" || t.phase === "PHASE_TYPE_PENDING") {
-      const b = el("button", "jstop", "暂停");
-      b.type = "button"; b.title = "暂停这个迅雷任务";
-      b.addEventListener("click", () => panelControl(t.id, "pause", b));
-      acts.append(b);
-    } else if (t.phase === "PHASE_TYPE_PAUSED") {
-      const b = el("button", "jstop", "继续");
-      b.type = "button"; b.title = "继续这个迅雷任务";
-      b.addEventListener("click", () => panelControl(t.id, "resume", b));
-      acts.append(b);
-    }
-    const del = el("button", "jstop", "删除");
-    del.type = "button"; del.title = "删除这条任务记录（不动已下载的文件）";
-    del.addEventListener("click", () => panelControl(t.id, "delete", del));
-    acts.append(del);
-    top.append(acts);
-    node.append(top);
-    const bar = el("div", "jbar");
-    const fill = el("i");
-    bar.append(fill);
-    node.append(bar);
-    const meta = el("div", "jmeta");
-    node.append(meta);
-    const update = next => {
-      if (next) t = next;
-      fill.style.width = Math.max(0, Math.min(100, Number(t.percent) || 0)) + "%";
-      const bits = [];
-      if (t.percent) bits.push(Number(t.percent).toFixed(0) + "%");
-      if (t.speed) bits.push((t.speed / 1048576).toFixed(1) + "MB/s");
-      if (t.error) bits.push(t.error);
-      meta.textContent = bits.join(" · ") || "—";
-    };
-    update();
-    node.updatePanel = update;
-    return node;
-  }
-}
-
 // 队列增量渲染：3 秒一次的轮询不能整块重建。
 //
 // 以前是 `box.textContent = ""` 再全量 append，于是每 3 秒——
 //   · 所有卡片被销毁重建（正在看的「时间线」展开状态靠 tlOpen 勉强保住，
 //     但按钮的 :active / hover、图片解码、滚动锚点全丢）；
-//   · 「迅雷面板」那一块要先被清掉、再等 /api/xunlei 回来才重新出现，
-//     中间有一帧空白 —— 看起来就是整块在闪。
 // 现在按 key(=任务 id) 与 sig(=这条数据的内容指纹) 复用节点：
 // 内容没变的卡片原样留着，只重排顺序；内容变了的才重建。
 const QUEUE_NODES = new Map();     // key -> {sig, node}
@@ -3665,7 +5297,6 @@ function renderQueueBlock(box, items, scope, after) {
     cursor = entry.node;
   }
   // 只清掉本区内这次不再出现的（任务被清掉/删记录）。
-  // 必须按 scope 限定：队列和迅雷面板分两次渲染，否则第二次会把第一次的节点全删了。
   for (const [key, entry] of [...QUEUE_NODES]) {
     if (!key.startsWith(scope) || seen.has(key)) continue;
     entry.node.remove();
@@ -3705,8 +5336,17 @@ async function loadJobs(force = false) {
       // 视图头部的状态：进行中 / 失败数，一眼看清这页有没有东西在跑
       const stat = $("queue-stat");
       if (stat) {
-        stat.textContent = active ? `${active} 个进行中` : `${lastJobs.length} 条记录`;
-        stat.className = "badge" + (active ? " ok" : (bad ? " warn" : ""));
+        stat.textContent = "";
+        const runN = lastJobs.filter(j => ACTIVE.has(j.stage) && j.stage !== "queued" && j.stage !== "deferred").length;
+        const waitN = lastJobs.filter(j => j.stage === "queued" || j.stage === "deferred").length;
+        const doneN = lastJobs.filter(j => j.stage === "done").length;
+        for (const [tone, label, n] of [["run", "进行中", runN], ["wait", "排队", waitN], ["bad", "失败", bad], ["okk", "完成", doneN]]) {
+          if (!n) continue;
+          const pill = el("span", "qstat " + tone);
+          pill.append(el("b", null, String(n)), el("span", null, label));
+          stat.append(pill);
+        }
+        if (!stat.children.length) stat.append(el("span", "qstat", "空闲"));
       }
       const qhint = $("queue-hint");
       if (qhint) qhint.textContent = bad ? `${bad} 个失败，点任务上的「时间线」看原因` : "";
@@ -3722,13 +5362,16 @@ async function loadJobs(force = false) {
           sig: "empty",
           build: () => {
             const empty = el("div", "queue-empty");
-            empty.append(el("div", null, "队列是空的"));
-            empty.append(el("div", null, "提交云添加后进度会显示在这里"));
+            empty.append(el("div", "qe-t", "队列是空的"));
+            empty.append(el("div", "qe-s", "提交云添加后进度会显示在这里"));
             return empty;
           },
         });
       } else {
-        for (const j of lastJobs) {
+        // 进行中排前面，其次排队、失败、完成；同组保持接口给的先后顺序
+        const ordered = lastJobs.slice().sort((a, b) =>
+          (JOB_RANK[a.stage] ?? 9) - (JOB_RANK[b.stage] ?? 9));
+        for (const j of ordered) {
           items.push({
             key: "job:" + j.id,
             // 签名只放「会改变卡片结构」的字段（阶段、番号、有没有链接、有没有错误行）。
@@ -3742,8 +5385,7 @@ async function loadJobs(force = false) {
           });
         }
       }
-      const tail = renderQueueBlock(box, items, "job:");
-      await appendPanelTasks(box, tail, seq, controller.signal);
+      renderQueueBlock(box, items, "job:");
       if (seq !== jobsSeq) return;
       box.scrollTop = keepTop;
 
@@ -3798,8 +5440,8 @@ function wallCard(item, onClick) {
     if (!img.dataset.retried) {
       img.dataset.retried = "1";
       setTimeout(() => {
-        img.src = BASE + "/proxy?u=" + encodeURIComponent(item.cover)
-          + "&r=" + Date.now();
+        const retry = coverSrc(item.cover);
+        img.src = retry + (retry.includes("?") ? "&" : "?") + "r=" + Date.now();
       }, 600);
       return;
     }
@@ -3807,8 +5449,8 @@ function wallCard(item, onClick) {
     img.remove();
     if (!pic.firstChild) pic.append(el("span", "noimg", "无封面"));
   });
-  // 封面走同源代理：javbus 图床直连会被拦，代理白名单里已有 www.javbus.com
-  img.src = BASE + "/proxy?u=" + encodeURIComponent(item.cover);
+  // 封面直连图床；JavBus 图源走 Cloudflare 图片代理
+  img.src = coverSrc(item.cover);
   pic.append(img);
   pic.append(el("span", "wall-code", item.code));
   if (wallOwned(item.code)) pic.append(el("span", "wall-owned", "已归档"));
@@ -3912,6 +5554,102 @@ function setFindHint(text, kind) {
   h.textContent = text || "";
   h.className = "hint" + (kind ? " " + kind : "");
 }
+
+
+// ── 运行日志（bot 与 web 共写 /data/x-drive.log，网页只看尾部）
+let logTimer = null;
+const logState = {level: "", q: "", paused: false, items: []};
+
+function logMatch(it) {
+  if (logState.level === "ERROR") {
+    if (it.level !== "ERROR" && it.level !== "CRITICAL") return false;
+  } else if (logState.level && it.level !== logState.level) {
+    return false;
+  }
+  if (logState.q && !((it.text || "") + " " + (it.name || "")).toLowerCase().includes(logState.q)) {
+    return false;
+  }
+  return true;
+}
+
+function renderLogs() {
+  const box = $("log-list");
+  if (!box) return;
+  const items = logState.items.filter(logMatch);
+  const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+  box.textContent = "";
+  if (!items.length) {
+    box.append(el("div", "log-empty",
+      logState.items.length ? "没有匹配的日志" : "还没有日志，跑一次任务就有了"));
+    return;
+  }
+  for (const it of items) {
+    const row = el("div", "lrow lv-" + String(it.level || "").toLowerCase());
+    row.append(el("span", "lt", (it.at || "").slice(11, 23).replace(",", ".")));
+    row.append(el("span", "llv", it.level || "—"));
+    const msg = el("span", "lmsg", it.text || "");
+    if (it.name) msg.title = it.name;
+    row.append(msg);
+    box.append(row);
+  }
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+async function loadLogs() {
+  const box = $("log-list");
+  if (!box) return;
+  try {
+    const r = await fetch(BASE + "/api/logs?limit=800", authInit({cache: "no-store"}));
+    const d = await readJson(r, "/api/logs");
+    if (!r.ok || !d.ok) throw new Error(d.error || ("HTTP " + r.status));
+    logState.items = d.items || [];
+    if ($("log-hint")) {
+      $("log-hint").textContent = "实时 · 2 秒刷新" + (d.size ? " · " + gb(d.size) : "");
+    }
+    renderLogs();
+  } catch (e) {
+    if ($("log-hint")) {
+      $("log-hint").textContent = "读取失败：" + (e && e.message ? e.message : String(e));
+    }
+  }
+}
+
+function startLogPoll() {
+  stopLogPoll();
+  if (logState.paused) return;
+  loadLogs();
+  logTimer = setInterval(loadLogs, 2000);
+}
+
+function stopLogPoll() {
+  if (logTimer) clearInterval(logTimer);
+  logTimer = null;
+}
+
+for (const btn of document.querySelectorAll("#log-level button")) {
+  btn.addEventListener("click", () => {
+    logState.level = btn.dataset.level || "";
+    for (const x of document.querySelectorAll("#log-level button")) {
+      x.classList.toggle("on", x === btn);
+    }
+    renderLogs();
+  });
+}
+if ($("log-q")) {
+  $("log-q").addEventListener("input", () => {
+    logState.q = ($("log-q").value || "").trim().toLowerCase();
+    renderLogs();
+  });
+}
+if ($("log-pause")) {
+  $("log-pause").addEventListener("click", () => {
+    logState.paused = !logState.paused;
+    $("log-pause").textContent = logState.paused ? "继续" : "暂停";
+    $("log-pause").classList.toggle("on", logState.paused);
+    if (logState.paused) stopLogPoll(); else startLogPoll();
+  });
+}
+if ($("log-refresh")) $("log-refresh").addEventListener("click", loadLogs);
 
 // ── 任务时间线（任务队列里的「时间线」展开）
 // 数据源：/api/jobs 里每条任务的 events（后端 job_events 表，按时间升序）。
@@ -4555,7 +6293,7 @@ function closeMeta() {
 // 归档维护台的两个子块：元数据与完整性（字段/补刮/附件/远端核对）、目录命名。
 // 以前是四个子块、三个独立视图，侧栏占三格；合到一块后这里只有两格。
 const MAINT_TABS = ["meta", "name"];
-function switchMaintTab(tab) {
+function switchMaintTab(tab, updateRoute = true) {
   const want = MAINT_TABS.includes(tab) ? tab : "meta";
   for (const t of MAINT_TABS) {
     const pane = $("maint-" + t);
@@ -4569,6 +6307,12 @@ function switchMaintTab(tab) {
   // 子块自己带数据：切过去就顺手把该拉的拉了（原来在各自视图里手动触发）
   if (want === "name") loadNormPlan();
   if (want === "meta") { loadMetaStatus(); renderVerifySummary(); renderVerifyList(); }
+  if (updateRoute && currentView === "maint" && !routeLock) {
+    const cur = parseRoute();
+    if (cur.view !== "maint" || cur.params.tab !== want) {
+      navigate("maint", {tab: want}, true);
+    }
+  }
 }
 $("maint-open").addEventListener("click",
   () => $("metapanel").hidden ? openMeta() : closeMeta());
@@ -4866,42 +6610,6 @@ $("norm-refresh").addEventListener("click", loadNormPlan);
 $("norm-adopt-run").addEventListener("click", () => runNorm("adopt", $("norm-adopt-run")));
 $("norm-rename-run").addEventListener("click", () => runNorm("rename", $("norm-rename-run")));
 
-// 面板里多天前的失败任务：只删任务记录，不动迅雷那边的文件
-$("panel-clean").addEventListener("click", async () => {
-  let plan = null;
-  try {
-    // days=0：连今天失败的也一起清。以前默认 7 天，刚失败的那些永远留在界面上
-    const r = await fetch(BASE + "/api/xunlei/cleanup", authInit({
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({days: 0}),
-    }));
-    plan = await readJson(r, "/api/xunlei/cleanup");
-  } catch (e) {
-    queueFlash("取清理清单失败：" + e.message, true);
-    return;
-  }
-  const list = (plan && plan.delete) || [];
-  if (!list.length) {
-    queueFlash("迅雷面板里没有失败任务");
-    return;
-  }
-  const names = list.slice(0, 10).map(i => i.name).join("\n");
-  if (!confirm(`删除迅雷面板里 ${list.length} 条失败任务记录？\n\n${names}\n\n只删任务条目，已下载的文件留在迅雷那边不动。`)) return;
-  try {
-    const r2 = await fetch(BASE + "/api/xunlei/cleanup", authInit({
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({confirm: true, days: 0}),
-    }));
-    const res = await r2.json().catch(() => ({}));
-    const failed = (res.failed || []).length;
-    queueFlash(`已清理 ${(res.deleted || []).length} 条` + (failed ? `，失败 ${failed} 条` : ""),
-               failed > 0);
-    loadJobs(true);
-  } catch (e) {
-    queueFlash("清理失败：" + (e.message || e), true);
-  }
-});
-
 // 队列自己的提示：不借用全局状态行（那行每 30 秒会被 load() 覆盖）
 let queueFlashTimer = null;
 function queueFlash(msg, isError) {
@@ -4939,7 +6647,48 @@ async function clearJobs(stage, label) {
 $("queue-clear").addEventListener("click", () => clearJobs("", "已结束的"));
 $("queue-clear-failed").addEventListener("click", () => clearJobs("failed", "失败"));
 
-showView("archive");   // 初始首页 = 归档列表
+async function updateTopStorageCapsule() {
+  const cap = $("top-storage");
+  if (!cap) return;
+  const dot = $("top-storage-dot");
+  const val = $("top-storage-val");
+  try {
+    const res = await subsApi("/api/storage/test", null);
+    if (!res) return;
+    if (res.ok) {
+      if (dot) dot.className = "top-capsule-dot";
+      const m = (res.detail || "").match(/剩余\s*([\d\.]+\s*[TGMK]?B)/i);
+      if (m && val) {
+        val.textContent = m[1] + " 可用";
+      } else if (val) {
+        val.textContent = "运行正常";
+      }
+    } else {
+      if (dot) dot.className = "top-capsule-dot err";
+      if (val) val.textContent = "连接异常";
+    }
+  } catch (_) {}
+}
+
+if ($("top-storage")) {
+  $("top-storage").addEventListener("click", () => navigate("settings", {tab: "存储"}));
+  $("top-storage").addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      navigate("settings", {tab: "存储"});
+    }
+  });
+}
+
+if (typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("keydown", e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      const q = $("q");
+      if (q) { q.focus(); q.select(); }
+    }
+  });
+}
 
 load();
 loadJobs();
@@ -4995,7 +6744,7 @@ function settingsTabOf(key) {
   return "";
 }
 
-function switchSettingsTab(name) {
+function switchSettingsTab(name, updateRoute = true) {
   if (!name) return;
   settingsTab = name;
   for (const tab of $("settings-tabs").children) {
@@ -5009,6 +6758,12 @@ function switchSettingsTab(name) {
     pane.hidden = pane.dataset.group !== name;
   }
   renderDirty();
+  if (updateRoute && currentView === "settings" && !routeLock) {
+    const cur = parseRoute();
+    if (cur.view !== "settings" || cur.params.tab !== name) {
+      navigate("settings", {tab: name}, true);
+    }
+  }
 }
 
 async function loadSettings(afterSave = false) {
@@ -5042,10 +6797,7 @@ async function loadSettings(afterSave = false) {
       "存储": ["STORAGE_BACKEND", "STORAGE_ROOT", "CD2_URL", "CD2_USER", "CD2_PASSWORD",
                "CD2_TLS", "CD2_CA_FILE", "CD2_CHUNK_MB", "CD2_CALL_TIMEOUT",
                "CD2_TASK_TIMEOUT", "CD2_LINK_MODE", "SHARE_LINK_TEMPLATE",
-               "OPENLIST_URL", "OPENLIST_USER", "OPENLIST_PASSWORD", "OPENLIST_OTP",
-               "OPENLIST_TIMEOUT", "OPENLIST_UPLOAD_TIMEOUT", "OPENLIST_MULTIPART",
-               "OPENLIST_MULTIPART_MB", "OPENLIST_SHARE", "OPENLIST_SHARE_DAYS",
-               "OPENLIST_SHARE_PWD", "CLOUD_INGEST", "CLOUD_INBOX", "CLOUD_DEST",
+               "CLOUD_INGEST", "CLOUD_INBOX", "CLOUD_DEST",
                "CLOUD_LAND_TIMEOUT", "CLOUD_LAND_STABLE", "CLOUD_POLL",
                "XLPAN_CLIENT_ID", "XLPAN_TOKEN", "XLPAN_CAPTCHA_TOKEN", "XLPAN_DEVICE_ID"],
     };
@@ -5095,7 +6847,7 @@ async function loadSettings(afterSave = false) {
         pane.append(settingsRow(key, it));
       }
       list.append(pane);    });
-    switchSettingsTab(settingsTab);
+    switchSettingsTab(settingsTab, false);
     applyStorageScope();
     st.textContent = "已加载";
     hint.textContent = `${Object.keys(items).length} 项 · ${names.length} 个分区 · 来源标注在每项右侧`;
@@ -5106,27 +6858,22 @@ async function loadSettings(afterSave = false) {
   }
 }
 
-// 存储分区按「选了哪个后端」收起无关参数：
-// 以前切到 CloudDrive2，OpenList 的十来个字段还杵在那儿，看起来像切换没生效。
+// CloudDrive2 连接说明。
 const STORAGE_SCOPE_HINT = {
-  rclone: "rclone：remote 与 rclone.conf 是启动参数（.env 的 RCLONE_REMOTE / RCLONE_CONFIG_HOST），这里没有要填的。",
-  openlist: "OpenList：填地址与账号即可。分享链接需要账号有分享权限，没有就只显示路径。",
   clouddrive2: "CloudDrive2：填地址与账号（注册邮箱）。上传是异步任务，程序会等它传完再记账。",
 };
 
 // 容器里填宿主机 LAN 地址会连不上：后端会自动改写成 host.docker.internal。
 // 面板上提一句，免得用户以为「我明明填的是 192.168.1.170，怎么报错的又是别名」。
 function storageNetNote(chosen) {
-  // rclone 走挂载配置，跟地址改写无关，别提
   if (!storageInfo || !storageInfo.net || !storageInfo.net.container) return "";
-  if (chosen === "rclone") return "";
   return `（在容器内跑：宿主地址连不上时会自动改按 ${storageInfo.net.alias} 连，`
     + `结果里会注明改过）`;
 }
 
 function storageChoice() {
   // 优先用下拉里还没保存的选择：切过去就立刻只显示那一套参数
-  return settingsDirty["STORAGE_BACKEND"] || settingsSaved["STORAGE_BACKEND"] || "rclone";
+  return settingsDirty["STORAGE_BACKEND"] || settingsSaved["STORAGE_BACKEND"] || "clouddrive2";
 }
 
 function applyStorageScope() {
@@ -5138,24 +6885,13 @@ function applyStorageScope() {
   }
   const hint = pane.querySelector("#storage-scope-hint");
   if (hint) {
-    // 别的后端那几项如果也有没保存的改动，得说出来 —— 它们被收起来了，
-    // 否则「保存全部改动」会顺手存掉用户看不见的东西
-    const hiddenDirty = [...pane.querySelectorAll(".kvrow.setting[data-scope]")]
-      .filter(r => r.hidden && Object.keys(settingsDirty).some(k => settingsTabOf(k) === "存储"
-        && k.startsWith(r.dataset.scope === "openlist" ? "OPENLIST_" : "CD2_")))
-      .map(r => r.dataset.scope);
-    const others = [...new Set(hiddenDirty)].filter(x => x !== chosen);
-    let text = (STORAGE_SCOPE_HINT[chosen] || "") + storageNetNote(chosen);
-    if (others.length) {
-      text += `（另：${others.map(o => o === "openlist" ? "OpenList" : "CloudDrive2")
-        .join(" / ")} 的改动还没保存，切过去看一眼再保存更稳妥）`;
-    }
+    const text = (STORAGE_SCOPE_HINT[chosen] || "") + storageNetNote(chosen);
     hint.textContent = text;
   }
   // 状态行：已保存的后端与当前选择不一致时明说，免得以为已经切过去了
   const val = pane.querySelector(".svalread");
   if (val) {
-    const saved = settingsSaved["STORAGE_BACKEND"] || "rclone";
+    const saved = settingsSaved["STORAGE_BACKEND"] || "clouddrive2";
     const root = settingsSaved["STORAGE_ROOT"]
       || (storageInfo && storageInfo.root) || "X-Drive";
     // 只有「当前选择就是已保存的那个」才谈得上配置齐不齐
@@ -5482,7 +7218,7 @@ function storageStatusRow() {
   btn.addEventListener("click", async () => {
     btn.disabled = true;
     hint.className = "hint";
-    // 走云端的探测可能要几十秒（rclone 要问一次配额）：把秒数跑出来，
+    // 走云端的探测可能要几十秒（需要查询配额）：把秒数跑出来，
     // 否则一直停在「测试中…」，看起来像按钮没反应
     // 用递归 setTimeout 而不是 setInterval：页面里只该有那两个轮询定时器，
     // 这个秒数只是「正在等」的即时反馈，结束即停。
@@ -5526,7 +7262,7 @@ function storageStatusRow() {
 function settingsRow(key, it) {
   const row = el("div", "kvrow setting");
   // 「只属于某个后端」的参数带一个 scope：切后端时只显示当前后端要填的那几项，
-  // 不然二十来个 OpenList 字段会一直挂在 CloudDrive2 的选择下面（看着像没生效）
+  // 重新应用连接说明和可见项计数
   if (it.only) row.dataset.scope = it.only;
   row.dataset.key = key;
   const nm = el("span", "nm");
@@ -5692,6 +7428,12 @@ $("settings-tabs").addEventListener("keydown", e => {
   switchSettingsTab(next.dataset.group);
   next.focus();
 });
+
+applyRoute();
+if (typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("hashchange", applyRoute);
+  window.addEventListener("popstate", applyRoute);
+}
 </script>
 </body>
 </html>

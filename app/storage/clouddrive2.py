@@ -1,4 +1,4 @@
-"""CloudDrive2 适配器：直连它的 gRPC 服务（默认 19798），不经 rclone / WebDAV。
+"""CloudDrive2 适配器：直连它的 gRPC 服务（默认 19798），不经 WebDAV。
 
 两条必须记住的行为差异（都踩过）：
 

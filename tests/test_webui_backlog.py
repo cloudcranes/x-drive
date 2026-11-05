@@ -25,13 +25,15 @@ PAGE = Path(__file__).resolve().parent.parent / "app" / "webui.html"
 DOM = r"""
 function node(tag) {
   return {
-    tagName: tag, children: [], className: "", textContent: "", hidden: false,
+    tagName: tag, children: [], className: "", hidden: false,
     value: "", disabled: false, dataset: {}, listeners: {},
     classList: { add(){}, remove(){}, contains(){ return false; } },
     append(...xs) { this.children.push(...xs); },
     appendChild(x) { this.children.push(x); },
     addEventListener(ev, fn) { (this.listeners[ev] = this.listeners[ev] || []).push(fn); },
     setAttribute() {}, remove() {},
+    get textContent() { return this._tc || ""; },
+    set textContent(v) { this._tc = v == null ? "" : String(v); this.children = []; },
     get text() { return this._t || ""; },
     set text(v) { this._t = v; this.children = []; },
   };
@@ -293,8 +295,40 @@ def test_success_triggers_a_rerender(node_bin):
 
 def test_panel_dom_exists():
     html = PAGE.read_text(encoding="utf-8")
-    for hook in ('id="backlog-list"', 'id="backlog-hint"', 'id="backlog-refresh"'):
+    for hook in ('id="backlog-list"', 'id="backlog-hint"', 'id="backlog-refresh"',
+                 'id="backlog-groups"'):
         assert hook in html, f"缺少 {hook}"
+
+
+FILTER_BODY = r"""
+const out = {};
+const ITEMS = [
+  {code: "A-1", state: "pending", group: "no_magnet", why: "12 分钟后再查",
+   note: "还没有磁力", tries: 1, next_at: 0, title: "", sub: "s"},
+  {code: "A-2", state: "pending", group: "no_quality", why: "12 分钟后再查",
+   note: "未满足筛选：6 条非高清", tries: 1, next_at: 0, title: "", sub: "s"},
+  {code: "A-3", state: "done", group: "done", why: "已归档",
+   note: "已归档", tries: 0, next_at: 0, title: "", sub: "s"},
+];
+ctx.renderBacklog({ok: true, items: ITEMS,
+                   counts: {pending: 2, queued: 0, skipped: 0, done: 1},
+                   groups: {all: 3, no_magnet: 1, no_quality: 1, done: 1}});
+const chips = get("backlog-groups");
+out.chips = chips.children.map(c =>
+  c.children.map(x => x.textContent).join(" "));
+const target = chips.children.find(c => c.children[0].textContent === "无磁力");
+target.listeners.click[0]();
+out.active = chips.children.find(c => c.className === "on").children[0].textContent;
+out.filtered = get("backlog-list").children.map(r => r.children[0].textContent);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_backlog_groups_filter_rows(node_bin):
+    data = _run(node_bin, FILTER_BODY, PAGE)
+    assert data["chips"] == ["全部 3", "无磁力 1", "无对应清晰度 1", "已归档 1"], data["chips"]
+    assert data["active"] == "无磁力"
+    assert data["filtered"] == ["A-1"], data["filtered"]
 
 
 def test_reads_backlog_from_subs_response():
@@ -315,7 +349,7 @@ def test_both_endpoints_referenced():
 
 
 def test_no_new_interval_added():
-    """待办不新增定时器：页面已有 30 秒轮询，再加一个只会多打后端。"""
+    """定时器只留给必要的轮询：队列、元数据、日志各一个，别再加。"""
     html = PAGE.read_text(encoding="utf-8")
-    assert html.count("setInterval(") == 2, \
+    assert html.count("setInterval(") == 3, \
         f"setInterval 数量变了：{html.count('setInterval(')}"

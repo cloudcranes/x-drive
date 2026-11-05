@@ -139,20 +139,16 @@ def test_bot_old_finish_cleanup_and_to_thread_remain_fenced(tmp_path, monkeypatc
     b.run(bot.lease_end, cfg, "j")
 
 
-@pytest.mark.parametrize("current_kind", ["openlist", "rclone"])
-def test_bot_delete_blocks_cross_backend_archive(tmp_path, monkeypatch, current_kind):
+@pytest.mark.parametrize("legacy_kind", ["openlist", "rclone"])
+def test_bot_delete_blocks_legacy_backend_archive(tmp_path, monkeypatch, legacy_kind):
     calls, replies = [], []
-    cfg = SimpleNamespace(allowed={7}, remote="gdrive", drive_root="new-root",
+    cfg = SimpleNamespace(allowed={7}, drive_root="new-root",
                           state_path=str(tmp_path / "state.json"))
-    saved = {"code": "AB-1", "backend": "clouddrive2", "rel": "old-root/AB-1",
-             "path": "clouddrive2:old-root/AB-1"}
+    saved = {"code": "AB-1", "backend": legacy_kind, "rel": "old-root/AB-1",
+             "path": f"{legacy_kind}:old-root/AB-1"}
     state = {"AB-1": saved}
-    backend = SimpleNamespace(kind=current_kind, purge=lambda rel: calls.append(rel))
+    backend = SimpleNamespace(kind="clouddrive2", purge=lambda rel: calls.append(rel))
     monkeypatch.setattr(bot.storage, "get", lambda: backend)
-    async def no_rclone(*args, **kw):
-        calls.append(args)
-        return 0, "", ""
-    monkeypatch.setattr(bot, "rclone", no_rclone)
     async def reply(text):
         replies.append(text)
     update = SimpleNamespace(effective_message=SimpleNamespace(reply_text=reply),

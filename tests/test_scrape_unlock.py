@@ -1,12 +1,14 @@
 """补刮接口的三个缺口：解锁、单附件重试、批量校验分页。
 
-不连任何真实服务：state 用临时文件，rclone 与 MetaTube 全部打桩。
+不连任何真实服务：state 用临时文件，CloudDrive2 与 MetaTube 全部打桩。
 """
 from __future__ import annotations
 
 import json
 
 import pytest
+
+from tests.storage_fake import upload_backend
 
 from app import core, metadata
 
@@ -29,7 +31,8 @@ def _env(tmp_path, monkeypatch):
 
 
 def _record(title="旧标题", locked=()):
-    return {"code": "SSIS-123", "path": "gdrive:X-Drive/SSIS-123",
+    return {"code": "SSIS-123", "path": "clouddrive2:X-Drive/SSIS-123",
+            "backend": "clouddrive2", "rel": "X-Drive/SSIS-123",
             "files": ["SSIS123.mp4"], "meta": {"code": "SSIS-123", "title": title},
             "locked": sorted(locked), "manifest": {"files": [
                 {"name": "SSIS123.mp4", "size": 100, "ext": ".mp4"}]}}
@@ -111,16 +114,17 @@ def test_lock_still_adds_and_returns_locked(tmp_path, monkeypatch):
 
 # ─────────────────────────────────────────── D1-b 单附件重试
 
-def _fake_rclone(monkeypatch, web, rc_by_name=None):
+def _fake_cd2(monkeypatch, web, rc_by_name=None):
     sent = []
 
-    def fake(cmd, src, dst, **kw):
+    def upload(src, dst):
         name = dst.rsplit("/", 1)[-1]
         sent.append(name)
-        rc = (rc_by_name or {}).get(name, 0)
-        return rc, "", "" if rc == 0 else "boom"
+        if (rc_by_name or {}).get(name, 0):
+            raise web.storage.StorageError("boom")
+        return dst
 
-    monkeypatch.setattr(web, "rclone", fake)
+    upload_backend(monkeypatch, web, upload)
     monkeypatch.setattr(web, "NFO_ON", True)
     monkeypatch.setattr(web, "POSTER_ON", False)
     return sent
@@ -129,7 +133,7 @@ def _fake_rclone(monkeypatch, web, rc_by_name=None):
 def test_sync_attachments_only_pushes_named_file(tmp_path, monkeypatch):
     """only=["movie.nfo"] 时只推 movie.nfo，别的附件不推。"""
     core, web = _env(tmp_path, monkeypatch)
-    sent = _fake_rclone(monkeypatch, web)
+    sent = _fake_cd2(monkeypatch, web)
 
     out = web.sync_attachments("SSIS-123", _record(), only=["movie.nfo"])
 
@@ -143,7 +147,7 @@ def test_sync_attachments_without_only_pushes_everything(tmp_path, monkeypatch):
     """only 为空 / None 时行为与原来一致：全部重推。"""
     core, web = _env(tmp_path, monkeypatch)
 
-    sent = _fake_rclone(monkeypatch, web)
+    sent = _fake_cd2(monkeypatch, web)
     full = web.sync_attachments("SSIS-123", _record())
     assert set(sent) == {"movie.nfo", "metadata.json", "manifest.json"}
     assert "skipped" not in full
@@ -156,7 +160,7 @@ def test_sync_attachments_without_only_pushes_everything(tmp_path, monkeypatch):
 def test_sync_attachments_only_rejects_arbitrary_names(tmp_path, monkeypatch):
     """only 是白名单：路径穿越和不相干文件名都不收，不会拼进远端路径。"""
     core, web = _env(tmp_path, monkeypatch)
-    sent = _fake_rclone(monkeypatch, web)
+    sent = _fake_cd2(monkeypatch, web)
 
     out = web.sync_attachments("SSIS-123", _record(),
                                only=["../../etc/passwd", "SSIS123.mp4", "x.nfo"])
@@ -168,7 +172,7 @@ def test_sync_attachments_only_rejects_arbitrary_names(tmp_path, monkeypatch):
 def test_sync_attachments_never_pushes_video(tmp_path, monkeypatch):
     """视频永不重传：即使只有里点了视频名，也不推。"""
     core, web = _env(tmp_path, monkeypatch)
-    sent = _fake_rclone(monkeypatch, web)
+    sent = _fake_cd2(monkeypatch, web)
 
     web.sync_attachments("SSIS-123", _record(), only=["SSIS123.mp4"])
 
@@ -179,7 +183,7 @@ def test_sync_attachments_never_pushes_video(tmp_path, monkeypatch):
 def test_scrape_sync_passes_only_through(tmp_path, monkeypatch):
     """scrape_sync 把 only 透传给 sync_attachments（需要 confirm）。"""
     core, web = _env(tmp_path, monkeypatch)
-    sent = _fake_rclone(monkeypatch, web)
+    sent = _fake_cd2(monkeypatch, web)
     core.save_state(web.STATE, {"SSIS-123": _record()})
 
     out = web.scrape_sync("SSIS-123", confirm=True, only=["metadata.json"])
@@ -191,7 +195,7 @@ def test_scrape_sync_passes_only_through(tmp_path, monkeypatch):
 
 def test_scrape_sync_without_confirm_does_not_push(tmp_path, monkeypatch):
     core, web = _env(tmp_path, monkeypatch)
-    sent = _fake_rclone(monkeypatch, web)
+    sent = _fake_cd2(monkeypatch, web)
     core.save_state(web.STATE, {"SSIS-123": _record()})
 
     web.scrape_sync("SSIS-123", only=["metadata.json"])

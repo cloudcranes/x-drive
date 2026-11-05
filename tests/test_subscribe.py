@@ -685,22 +685,89 @@ def test_backlog_view_explains_state_and_job(tmp_path, monkeypatch):
     rows = {r["code"]: r for r in view["items"]}
     assert "分钟后再查" in rows["AAA-1"]["why"]
     assert rows["AAA-1"]["tries"] == 2
+    assert rows["AAA-1"]["group"] == "no_magnet"
     assert rows["AAA-2"]["job_stage"] == "downloading"
+    assert rows["AAA-2"]["group"] == "active"
     assert view["counts"][bl.PENDING] == 1 and view["counts"][bl.QUEUED] == 1
 
 
-def test_backlog_retry_clears_backoff_and_tried(tmp_path, monkeypatch):
-    """手动再试：退避与已试候选都清掉，否则点了也没变化。"""
+def test_backlog_view_groups_by_reason(tmp_path, monkeypatch):
+    """待办按原因分类：无磁力、无清晰度、筛选不符、待重查、进行中、归档、跳过。"""
     bl, web = _iso_env(tmp_path, monkeypatch)
+    now = time.time()
+    todo = {"javbus:actor:w5a": {
+        "NOMAG-1": {"state": bl.PENDING, "note": "还没有磁力", "next_at": now + 600},
+        "HD-1": {"state": bl.PENDING, "note": "未满足筛选：6 条非高清", "next_at": now + 600},
+        "SUB-1": {"state": bl.PENDING, "note": "未满足筛选：2 条未含字幕", "next_at": now + 600},
+        "RETRY-1": {"state": bl.PENDING, "note": "上次提交未成功：boom", "next_at": 0},
+        "RUN-1": {"state": bl.QUEUED, "note": "", "job_id": "jRun"},
+        "DEAD-1": {"state": bl.QUEUED, "note": "", "job_id": "jDead"},
+        "DONE-1": {"state": bl.DONE, "note": "已归档"},
+        "SKIP-1": {"state": bl.SKIPPED, "note": "手动忽略"},
+    }}
+    web.STORE.start("jRun", "RUN-1", "magnet:run")
+    web.STORE.update("jRun", stage="downloading")
+    web.STORE.start("jDead", "DEAD-1", "magnet:dead")
+    web.STORE.update("jDead", stage="failed", error="no peers")
+    web.subs_save({}, todo)
+
+    view = web.backlog_view()
+    groups = {r["code"]: r["group"] for r in view["items"]}
+    assert groups == {
+        "NOMAG-1": "no_magnet", "HD-1": "no_quality", "SUB-1": "filtered",
+        "RETRY-1": "retry", "RUN-1": "active", "DEAD-1": "retry",
+        "DONE-1": "done", "SKIP-1": "skipped",
+    }
+    assert view["groups"] == {
+        "retry": 2, "no_magnet": 1, "no_quality": 1, "filtered": 1,
+        "active": 1, "done": 1, "skipped": 1, "all": 8,
+    }
+    dead = next(r for r in view["items"] if r["code"] == "DEAD-1")
+    assert dead["why"] == "上次任务失败：no peers"
+
+
+def test_backlog_retry_clears_backoff_and_searches_now(tmp_path, monkeypatch):
+    """手动再试：清掉退避后立刻查一次；没磁力要把新原因写回去。"""
+    bl, web = _iso_env(tmp_path, monkeypatch)
+    calls = []
+
+    async def fake_best(code, max_gb=0, client=None, tried=None, filters=None):
+        calls.append((code, max_gb, tried, filters))
+        return None, "还没有磁力"
+
+    monkeypatch.setattr(web.subscribe, "fetch_best", fake_best)
     todo = {"javbus:actor:w5a": {
         "AAA-1": {"date": "", "state": bl.PENDING, "tries": 4,
                   "next_at": time.time() + 86400, "tried": ["aa", "bb"]}}}
     web.subs_save({}, todo)
     out = web.retry_backlog("AAA-1")
-    assert out["ok"] is True
+    assert out["ok"] is True and out["started"] is False
+    assert out["why"] == "还没有磁力"
+    assert calls and calls[0][0] == "AAA-1" and calls[0][2] == ["aa", "bb"]
     item = web.backlog_load()["javbus:actor:w5a"]["AAA-1"]
-    assert item["next_at"] == 0 and item["tries"] == 0
-    assert item["note"] == "手动重试"
+    assert item["note"] == "还没有磁力"
+    assert item["tries"] == 1 and item["next_at"] > time.time()
+
+
+def test_backlog_retry_submits_when_magnet_found(tmp_path, monkeypatch):
+    """查到了就立刻进任务队列，不要只把状态改成「下一轮会试」。"""
+    bl, web = _iso_env(tmp_path, monkeypatch)
+
+    async def fake_best(code, max_gb=0, client=None, tried=None, filters=None):
+        return {"magnet": "magnet:?xt=urn:btih:" + "a" * 40,
+                "size_mb": 123}, ""
+
+    monkeypatch.setattr(web.subscribe, "fetch_best", fake_best)
+    monkeypatch.setattr(web, "start_job", lambda *a, **k: "j9")
+    todo = {"javbus:actor:w5a": {
+        "AAA-1": {"date": "", "state": bl.PENDING, "tries": 2,
+                  "next_at": time.time() + 86400, "title": "待查"}}}
+    web.subs_save({"javbus:actor:w5a": {"id": "w5a", "max_size_gb": 8}}, todo)
+    out = web.retry_backlog("AAA-1")
+    assert out["ok"] is True and out["started"] is True and out["job"] == "j9"
+    item = web.backlog_load()["javbus:actor:w5a"]["AAA-1"]
+    assert item["state"] == bl.QUEUED and item["job_id"] == "j9"
+    assert item["tries"] == 0
 
 
 def test_backlog_ignore_marks_skipped(tmp_path, monkeypatch):
@@ -757,3 +824,17 @@ def test_backlog_view_finds_job_outside_latest_200(tmp_path, monkeypatch):
         f"任务在 200 条之外被误判成进行中：{row['job_stage']}"
     assert "failed" in row["why"] or "失败" in row["why"], \
         f"why 应反映真实失败：{row['why']}"
+
+
+def test_add_series_prefix_keeps_prefix_key(tmp_path, monkeypatch):
+    """番号前缀按原样存，发现时走搜索接口，不再改写成站内系列 ID。"""
+    from app import web
+
+    monkeypatch.setattr(web, "SUBS", str(tmp_path / "subs.json"))
+    monkeypatch.setattr(web, "STORE", store.Store(str(tmp_path / "jobs.db")))
+
+    out = web.add_sub("TCHB", kind="series", filters={"full_series": True})
+    assert out["ok"]
+    assert out["sub"]["id"] == "TCHB"
+    assert out["sub"]["key"] == "javbus:series:TCHB"
+    assert out["sub"]["name"] == "TCHB"

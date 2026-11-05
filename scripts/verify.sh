@@ -67,42 +67,14 @@ else
   bad "测试镜像构建失败"
 fi
 
-say "== 4. 容器内自检（telegram / 迅雷 / 挂载 / 权限 / rclone）"
+say "== 4. 容器内自检（telegram / 工作区 / 权限 / CloudDrive2）"
 if TAG="$TAG_RUNTIME" compose run --rm --no-deps web python -m app.allinone --check; then
   ok "自检通过"
 else
   bad "自检未通过：重点看「迅雷」「下载目录」「工作区」三行"
 fi
 
-say "== 5. 下载目录与宿主机是同一份"
-marker=".x-drive-verify-$$"
-if compose run --rm --no-deps web sh -c "touch /downloads/$marker" >/dev/null 2>&1; then
-  host_dir="$(grep '^XUNLEI_DOWNLOADS_HOST=' "$ENV_FILE" | cut -d= -f2-)"
-  if [ -n "$host_dir" ] && [ -e "$host_dir/$marker" ]; then
-    ok "共享挂载一致"
-    rm -f "$host_dir/$marker"
-  else
-    bad "容器写的 /downloads/$marker 在宿主机 ${host_dir:-（未配置）} 看不见"
-  fi
-else
-  bad "容器内无法写入 /downloads（挂载缺失或只读）"
-fi
-
-say "== 6. 面板从容器内可达"
-if compose run --rm --no-deps web python - <<'PY'
-import asyncio, os
-from app import xunlei
-async def main():
-    xl = xunlei.Xunlei(os.getenv("XUNLEI_URL",""), os.getenv("XUNLEI_PARENT_ID",""),
-                       os.getenv("TMP_ROOT","/downloads"), os.getenv("XUNLEI_PAN_AUTH",""))
-    async with xl.client() as c:
-        await xl.alive(c)
-    print("panel-ok")
-asyncio.run(main())
-PY
-then ok "容器到面板链路正常"; else bad "容器连不上迅雷面板（XUNLEI_URL 不要写 127.0.0.1）"; fi
-
-say "== 7. 状态库可写、可迁移、可备份"
+say "== 5. 状态库可写、可迁移、可备份"
 if compose run --rm --no-deps web python - <<'PY'
 import os, sqlite3, tempfile
 from app.store import Store
@@ -121,7 +93,7 @@ print("store-ok", st.migrate())
 PY
 then ok "状态库与备份可用"; else bad "状态库写入/备份失败"; fi
 
-say "== 8. 归属与迁移测试（测试镜像，运行镜像里没有 pytest 与 tests）"
+say "== 6. 归属与迁移测试（测试镜像，运行镜像里没有 pytest 与 tests）"
 if TAG="$TAG_TEST" compose run --rm --no-deps web python -m pytest \
      tests/test_workspace.py tests/test_store.py tests/test_lease.py \
      -q -p no:cacheprovider >/dev/null 2>&1; then

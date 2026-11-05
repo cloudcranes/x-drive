@@ -197,3 +197,59 @@ def test_clean_sources_keeps_shell_when_unknown_content_remains(fake, cd2):
 def cloudingest_items(cd2, root):
     from app import cloudingest
     return cloudingest.measure(cd2, root)
+
+
+# ─────────────────────────────────────────── 归档后整目录自动清理
+
+def test_purge_task_inbox_removes_task_dir_but_keeps_shared_root(fake, cd2):
+    fake.add_file("/inbox/task/SEED-1/extras/second.mp4", 2048)
+
+    cloudadd.purge_task_inbox(cd2, "inbox/task", protected_root="inbox")
+
+    assert "task" not in cd2.list_dirs("inbox")
+    assert "inbox" in cd2.list_dirs(""), "共享收件根必须保留"
+
+
+def test_purge_task_inbox_refuses_shared_root(fake, cd2):
+    cd2.ensure_dir("inbox/task")
+
+    with pytest.raises(ValueError, match="不在落地根"):
+        cloudadd.purge_task_inbox(cd2, "inbox", protected_root="inbox")
+
+    assert "task" in cd2.list_dirs("inbox")
+
+
+def test_purge_task_inbox_refuses_outside_root(fake, cd2):
+    cd2.ensure_dir("other/task")
+
+    with pytest.raises(ValueError, match="不在落地根"):
+        cloudadd.purge_task_inbox(cd2, "other/task", protected_root="inbox")
+
+    assert "task" in cd2.list_dirs("other")
+
+
+def test_purge_task_inbox_refuses_shallow_path(fake, cd2):
+    cd2.ensure_dir("inbox")
+
+    with pytest.raises(ValueError, match="层级过浅"):
+        cloudadd.purge_task_inbox(cd2, "inbox")
+
+
+def test_purge_task_inbox_clears_unknown_leftovers(fake, cd2):
+    """安全清理留下的未知内容，由整目录清理收掉，不再挂 cleanup_pending。"""
+    root = "inbox/task"
+    fake.add_file(f"/{root}/SEED-1/main.mp4", 4096)
+    fake.add_file(f"/{root}/SEED-1/extras/second.mp4", 2048)
+
+    items = cloudingest_items(cd2, root)
+    plan = cloudorganize.plan("SEED-1", items["SEED-1"]["files"], folder_code="DEMO-1")
+    cloudorganize.apply(cd2, root, plan, "DEMO-1", dst_root="dest")
+    leftover = cloudadd.clean_sources(
+        cd2, [{"plan": plan, "src_root": root, "dst_root": "dest"}])
+    assert leftover, "安全清理应当保留未知内容"
+
+    cloudadd.purge_task_inbox(cd2, root, protected_root="inbox")
+
+    assert "task" not in cd2.list_dirs("inbox")
+    assert [f.name for f in cd2.list_files("dest/DEMO-1")] == ["DEMO-1.mp4"], \
+        "归档文件不能被连带删除"

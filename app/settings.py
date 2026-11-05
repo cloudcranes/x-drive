@@ -10,15 +10,15 @@
   · 两个进程共享同一份：web 与 bot 挂同一个 ./data，state 表是同一个库文件。
 
 哪些算「启动参数」不进这里（改了必须重启，见 README 的 .env 说明）：
-  TELEGRAM_BOT_TOKEN / WEB_PORT / XUNLEI_URL / RCLONE_CONFIG_HOST /
+  TELEGRAM_BOT_TOKEN / WEB_PORT /
   TMP_ROOT / STATE_DIR / 各类挂载路径。它们仍走 os.getenv。
 
 刮削源（MetaTube / JavBus）的地址、代理、超时以前也是启动参数，改一次就得
 改 .env 再重启；现在收进这里，网页「设置 → 数据源」直接改、下一次调用即生效。
 METATUBE_TOKEN 标成 secret：网页只能写、不回显，快照里只给「已设置 / 未设置」。
 
-存储后端（STORAGE_BACKEND + OpenList / CloudDrive2 的地址与账号）也在这里：
-切后端、改地址都只影响「下一次上传」。密码类同样标 secret。它们没有做成启动参数，
+CloudDrive2 的地址与账号也在这里：
+改地址只影响「下一次调用」。密码类同样标 secret。它们没有做成启动参数，
 就是为了不用为了换一个网盘去改 .env 再重启容器。
 """
 from __future__ import annotations
@@ -30,6 +30,14 @@ import time
 # 每一项：key=state 表里的键（也是环境变量名），后面跟 type/默认值/分组/说明。
 # 类型用字符串标记，读写时据此转换，避免每个值手写一段 if。
 SETTINGS_SPEC: dict[str, dict] = {
+    # ── 调度
+    #    订阅一轮可能提交十几条、手动提交与恢复也能同时插进来。下载/整理/上传
+    #    都是重活，不设上限会在云端瞬间堆出一串任务，既容易被限流，也让每条
+    #    任务的等待时间失控。超出的任务留在队列里，前一条收尾后立刻补位。
+    "MAX_ACTIVE_JOBS": {"type": "int", "default": 1, "group": "调度",
+                        "label": "同时执行任务数",
+                        "note": "全局并发上限：所有来源（订阅/手动/恢复）合计，"
+                                "默认 1，一条落地结束后自动开始下一条"},
     # ── 刮削
     "SCRAPE": {"type": "bool", "default": True, "group": "刮削",
                "label": "刮削元数据", "note": "关掉就只传视频不生成 NFO/封面"},
@@ -44,9 +52,6 @@ SETTINGS_SPEC: dict[str, dict] = {
                             "label": "回收保留最近几个", "note": "永远保留最近 N 个"},
     "CLEANUP_OLDER_DAYS": {"type": "float", "default": 0.0, "group": "内容",
                            "label": "回收只考虑多久前的", "note": "0 = 关闭"},
-    # ── 面板
-    "PANEL_CLEAN_DAYS": {"type": "float", "default": 0.0, "group": "内容",
-                         "label": "面板失败记录保留天数", "note": "0 = 不自动清"},
     # ── 数据源：MetaTube（刮削后端）。地址/代理/超时改完下一次请求就生效。
     "METATUBE_URL": {"type": "str", "default": "", "group": "内容",
                      "label": "MetaTube 地址",
@@ -92,6 +97,10 @@ SETTINGS_SPEC: dict[str, dict] = {
     "CLOUD_INBOX": {"type": "str", "default": "", "group": "存储",
                     "label": "离线落地目录",
                     "note": "云盘里的目录，例如 迅雷云盘/我的资源；留空则不允许启用云添加"},
+    "AUTO_CLEAN_SOURCE": {"type": "bool", "default": True, "group": "存储",
+                          "label": "归档后自动清理源目录",
+                          "note": "归档记录落盘后递归删除任务收件目录（含广告、"
+                                  "未知残留）；关掉则只删已知丢弃文件，其余挂待清理"},
     "CLOUD_DEST": {"type": "str", "default": "", "group": "存储",
                    "label": "归档根目录（云添加目标）",
                    "note": "整理后的位置，例如 迅雷云盘/X-Drive。"
@@ -131,8 +140,6 @@ SETTINGS_SPEC: dict[str, dict] = {
                             "label": "迅雷 x-captcha-token",
                             "note": "写操作的风控凭据：程序自动签发（/v1/shield/captcha/init），"
                                     "一般不用手填"},
-    # ── 存储：归档往哪儿放。默认还是 rclone；切到 openlist / clouddrive2 之后
-    #    网页改完下一次上传就生效（连接实例会按配置指纹重建）。
     # ── 迅雷凭据的主动续期节奏
     #    access_token 只活 12 小时。续期以前是「用到官方 API 才续」—— 而直链走
     #    CD2、云添加落地判定走 CD2 目录指纹，官方 API 可能一整天没人碰。等到
@@ -154,43 +161,16 @@ SETTINGS_SPEC: dict[str, dict] = {
                              "label": "分块下载并发数",
                              "note": "下载整片时同时拉几段。默认 4；调大更快但可能"
                                      "触发迅雷 CDN 限流（503）"},
-    "STORAGE_BACKEND": {"type": "str", "default": "rclone", "group": "存储",
+    "STORAGE_BACKEND": {"type": "str", "default": "clouddrive2", "group": "存储",
                         "label": "存储后端",
-                        "choices": ["rclone", "openlist", "clouddrive2"],
-                        "note": "切换后只显示这个后端需要的参数；rclone 的 remote 与配置文件是启动参数，走 .env（RCLONE_REMOTE / RCLONE_CONFIG_HOST）"},
+                        "choices": ["clouddrive2"],
+                        "note": "仅支持 CloudDrive2；地址与账号可在下方配置"},
     "STORAGE_ROOT": {"type": "str", "default": "", "group": "存储",
                      "label": "归档根目录（兜底）",
                      "note": "**一般不用填**：留空 = 跟随上面的「归档根目录」（云添加目标）。"
                              "只有当老归档记在别处、而兜底路径要指向那个位置时才填。"
-                             "OpenList/CD2 里是虚拟路径。"
+                             "CloudDrive2 里是虚拟路径。"
                              "上方「测试连接」会真去连一次，走云端的后端可能要几十秒"},
-    # OpenList（自建，AList v3 兼容 REST）
-    "OPENLIST_URL": {"type": "str", "default": "", "group": "存储", "only": "openlist",
-                     "label": "OpenList 地址",
-                     "note": "例如 http://192.168.1.170:5244"},
-    "OPENLIST_USER": {"type": "str", "default": "", "group": "存储", "only": "openlist",
-                      "label": "OpenList 账号", "note": "管理员账号"},
-    "OPENLIST_PASSWORD": {"type": "str", "default": "", "group": "存储", "only": "openlist", "secret": True,
-                          "label": "OpenList 密码", "note": "只写不回显，留空表示不改"},
-    "OPENLIST_OTP": {"type": "str", "default": "", "group": "存储", "only": "openlist",
-                     "label": "OpenList 两步验证码",
-                     "note": "账号开了 2FA 才填；每次登录要新码，一般是关掉 2FA 更省事"},
-    "OPENLIST_TIMEOUT": {"type": "float", "default": 30.0, "group": "存储", "only": "openlist",
-                         "label": "OpenList 请求超时 (秒)", "note": "列表/建目录这类短请求"},
-    "OPENLIST_UPLOAD_TIMEOUT": {"type": "float", "default": 3600.0, "group": "存储", "only": "openlist",
-                                "label": "OpenList 上传超时 (秒)", "note": "单个文件写入的读超时"},
-    "OPENLIST_MULTIPART": {"type": "bool", "default": False, "group": "存储", "only": "openlist",
-                           "label": "OpenList 分片上传",
-                           "note": "服务端开了 multipart 才有效；不可用时自动退回单次 PUT"},
-    "OPENLIST_MULTIPART_MB": {"type": "float", "default": 512.0, "group": "存储", "only": "openlist",
-                              "label": "分片阈值 (MB)", "note": "超过这个大小才分片"},
-    "OPENLIST_SHARE": {"type": "bool", "default": True, "group": "存储", "only": "openlist",
-                       "label": "上传后建分享链接",
-                       "note": "关掉就只显示路径；没有分享权限也自动退回路径"},
-    "OPENLIST_SHARE_DAYS": {"type": "int", "default": 0, "group": "存储", "only": "openlist",
-                            "label": "分享有效期 (天)", "note": "0 = 永久"},
-    "OPENLIST_SHARE_PWD": {"type": "str", "default": "", "group": "存储", "only": "openlist",
-                           "label": "分享提取码", "note": "留空 = 不要提取码"},
     # CloudDrive2（gRPC，19798）
     "CD2_URL": {"type": "str", "default": "", "group": "存储", "only": "clouddrive2",
                 "label": "CloudDrive2 地址",
@@ -344,6 +324,8 @@ class Settings:
         try:
             coerced = _coerce(spec["type"], value)
         except (TypeError, ValueError):
+            return False
+        if key == "STORAGE_BACKEND" and coerced != "clouddrive2":
             return False
         try:
             data = self._store.state_get(SETTINGS_KEY)

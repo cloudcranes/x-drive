@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -31,6 +32,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "JOBS", {})
     monkeypatch.setattr(web, "WAITING", {})
     monkeypatch.setattr(web, "_queued_at", {})
+    monkeypatch.setattr(web, "_active_jobs", set())
+    web._queue_wake.clear()
     web.set_paused(False)
     yield db
     web.set_paused(False)
@@ -120,6 +123,23 @@ def test_requeue_holds_task_while_reconcile_pending(env, started):
     assert started == ["j1"], "确认后任务被真实放行，不需要再靠下一轮泵"
 
 
+def test_requeue_takes_over_lease_from_previous_web_process(env):
+    """重启恢复：旧 web 进程的心跳可能还在 120s 内，但进程已经没了。
+
+    只按心跳判断会让 requeue 静默拒绝，任务停在原阶段（TCHR-001 实测卡 cloud）。
+    旧代次（PROC_ID 启动时间不同）必须先释放租约再入队。
+    """
+    _queued_job()
+    old_owner = "web-1-999999:j1:old"
+    assert web._store().claim_owner("j1", old_owner, now=time.time())
+
+    assert web.requeue("j1", "magnet:a", "ABC-1") is True
+
+    job = web._store().get("j1")
+    assert job["exec_owner"].startswith(web.PROC_ID + ":")
+    assert "j1" not in web.WAITING
+
+
 def test_admit_itself_refuses_while_gate_closed(env, started):
     """admit() 是唯一的开工入口：直接调它也不能绕过闸门（以前它完全不看暂停）。"""
     _queued_job()
@@ -152,6 +172,47 @@ def test_stop_job_removing_from_queue_wins_over_late_admit(env, started):
     assert web.pump_queue() == 0
     assert started == []
     assert web._store().get("j1")["stage"] == "cancelled"
+
+
+# ─────────────────────────────────────────────── 全局并发闸门
+
+def test_global_cap_holds_excess_jobs_until_slots_open(env, monkeypatch):
+    """MAX_ACTIVE_JOBS=1：三条同时排队也只放行一条，其余留在 WAITING 等补位。"""
+    assert web.set_setting("MAX_ACTIVE_JOBS", 1) is True
+    release = threading.Event()
+    seen: list[str] = []
+
+    def slow_job(job_id, source, code):
+        seen.append(job_id)
+        release.wait(5)
+
+    monkeypatch.setattr(web, "run_web_job", slow_job)
+    for i in range(3):
+        _queued_job(f"j{i}", f"ABC-{i}")
+
+    assert web.pump_queue() == 1
+    deadline = time.time() + 5
+    while len(seen) < 1 and time.time() < deadline:
+        time.sleep(0.01)
+    assert seen == ["j0"], "第一条先开工"
+    assert len(web.WAITING) == 2, "另外两条必须还在排队"
+    assert web.pump_queue() == 0, "槽位没释放，再泵也不许超发"
+
+    release.set()
+    deadline = time.time() + 5
+    while web.WAITING and time.time() < deadline:
+        web.pump_queue()
+        time.sleep(0.01)
+
+    assert sorted(seen) == ["j0", "j1", "j2"], "槽位释放后逐条补位"
+    assert not web.WAITING and not web._active_jobs
+
+
+def test_global_cap_setting_is_read_live(env):
+    """设置页改了上限立刻生效：默认 1，改成 3 之后这里读到 3。"""
+    assert web.max_active_jobs() == 1
+    assert web.set_setting("MAX_ACTIVE_JOBS", 3) is True
+    assert web.max_active_jobs() == 3
 
 
 # ─────────────────────────────────────────────── E2：标记写失败是硬失败

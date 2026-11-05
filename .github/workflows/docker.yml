@@ -30,7 +30,7 @@ jobs:
       - name: 单元测试
         run: |
           docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim sh -c "
-            python -m pip install --no-cache-dir -q -r requirements.txt pytest &&
+            python -m pip install --no-cache-dir -q -r requirements.txt -r requirements-cd2.txt pytest &&
             python -m pytest tests -q -p no:cacheprovider
           "
 
@@ -41,7 +41,7 @@ jobs:
         run: |
           set +e
           OUT=$(docker run --rm -v "${PWD}:/src" -w /src python:3.12-slim sh -c "
-            python -m pip install --no-cache-dir -q -r requirements.txt pytest &&
+            python -m pip install --no-cache-dir -q -r requirements.txt -r requirements-cd2.txt pytest &&
             python -m pytest tests -p no:cacheprovider --tb=line -q
           " 2>&1)
           echo "$OUT" > /tmp/ci-failure.txt
@@ -100,7 +100,7 @@ jobs:
             type=sha,format=short
           labels: |
             org.opencontainers.image.title=x-drive
-            org.opencontainers.image.description=Telegram 机器人：把 x.com 推文媒体转存到 Google Drive
+            org.opencontainers.image.description=Telegram 机器人：通过 CloudDrive2 归档媒体
 
       - name: 构建并推送
         uses: docker/build-push-action@v6
